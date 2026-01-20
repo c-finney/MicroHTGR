@@ -135,6 +135,16 @@ elif params["control_material"] == "Hf":
     control.add_element("Hf", 1.0)
     control.set_density("g/cm3", 13.3)
 
+operating_temp = params["temperature_K"]
+
+fuel.temperature = operating_temp
+buffer.temperature = operating_temp
+pyc.temperature = operating_temp
+sic.temperature = operating_temp
+graphite.temperature = operating_temp
+helium.temperature = operating_temp
+control.temperature = operating_temp
+
 materials += [fuel, buffer, pyc, sic, graphite, helium, control]
 materials.export_to_xml()
 
@@ -328,7 +338,7 @@ core_lattice.pitch = (params["bundle_pitch"],)
 core_lattice.universes = core_lattice_univs
 
 # ====================================================================================================
-# 7. FULL CORE AND REFLECTOR CREATION
+# 8. FULL CORE AND REFLECTOR CREATION
 # ====================================================================================================
 
 core_outer_cell = openmc.Cell(fill = graphite)
@@ -352,7 +362,7 @@ geometry = openmc.Geometry([core_cell, top_refl_cell, bottom_refl_cell])
 model.geometry = geometry
 
 # ====================================================================================================
-# 8. GEOMETRY PLOT GENERATION
+# 9. GEOMETRY PLOT GENERATION
 # ====================================================================================================
 
 m_colors[fuel] = 'palegreen'
@@ -407,44 +417,65 @@ plot5.color_by = 'cell'
 model.plots = openmc.Plots([plot1, plot2, plot3, plot4, plot5])
 
 # ====================================================================================================
-# 9. TALLY CREATION
+# 10. TALLY CREATION
 # ====================================================================================================
 
 tallies = openmc.Tallies()
 
+# ----- Energy Spectrum Tallies -----
 fuel_filter = openmc.MaterialFilter(fuel)
-
-energy_bins = np.logspace(-9, 7, 200) # thermal --> fast
+energy_bins = np.logspace(-9, 7, 200)
 energy_filter = openmc.EnergyFilter(energy_bins)
 
-flux_tally = openmc.Tally(name="flux")
-flux_tally.scores = ["flux"]
-flux_tally.filters = [energy_filter]
+flux_spectrum_tally = openmc.Tally(name="flux_energy_spectrum")
+flux_spectrum_tally.scores = ["flux"]
+flux_spectrum_tally.filters = [energy_filter]
 
-power_tally = openmc.Tally(name="power")
-power_tally.scores = ["fission"]
-power_tally.filters = [fuel_filter]
+fission_tally = openmc.Tally(name="fission")
+fission_tally.scores = ["fission"]
 
-tallies += [flux_tally, power_tally]
+heating_tally = openmc.Tally(name="heating")
+heating_tally.scores = ["heating-local"]
+
+tallies += [flux_spectrum_tally, fission_tally, heating_tally]
+
+# ----- Spatial Mesh Tallies -----
+# Create a cylindrical mesh for your HTGR
+# Using Cartesian mesh that covers the cylindrical core
+mesh = openmc.RegularMesh()
+mesh.dimension = [200, 200, params["n_ax_zones"]]  # nx, ny, nz
+mesh.lower_left = [-params["core_radius"], -params["core_radius"], reactor_bottom]
+mesh.upper_right = [params["core_radius"], params["core_radius"], reactor_top]
+
+mesh_filter = openmc.MeshFilter(mesh)
+
+# Mesh tally for spatial distributions
+mesh_tally = openmc.Tally(name='mesh_rates')
+mesh_tally.filters = [mesh_filter]
+mesh_tally.scores = ['flux', 'fission', 'nu-fission']
+
+# Global tally for total rates
+global_tally = openmc.Tally(name='global_rates')
+global_tally.scores = ['flux', 'fission', 'nu-fission']
+
+tallies += [mesh_tally, global_tally]
 
 model.tallies = tallies
 
 # ====================================================================================================
-# 10. MONTE CARLO SETTINGS
+# 11. MONTE CARLO SETTINGS
 # ====================================================================================================
 
 settings = openmc.Settings()
 settings.run_mode = "eigenvalue"
-settings.batches = 2500
-settings.inactive = 500
+settings.batches = 100
+settings.inactive = 10
 settings.particles = 50_000
-settings.power = params["power_MW"] * 1e6
 settings.temperature = {
     'method': 'interpolation',
     'range': (293.0, 1800.0),
     'tolerance': 100.0
 }
-settings.trace = (1, 1, 16673)
 
 r_dist = openmc.stats.Uniform(a = 0.0, b = params["core_radius"])
 phi_dist = openmc.stats.Uniform(a = 0.0, b = 2*np.pi)
@@ -460,7 +491,7 @@ settings.source = source
 model.settings = settings
 
 # ============================================================
-# 11. RUN OPENMC
+# 12. RUN OPENMC
 # ============================================================
 
 model.export_to_xml()
