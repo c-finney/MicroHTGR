@@ -335,7 +335,7 @@ core_outer_cell = openmc.Cell(fill = graphite)
 core_outer_univ = openmc.Universe(cells = [core_outer_cell])
 core_lattice.outer = core_outer_univ
 
-core_cyl = openmc.ZCylinder(r = params["core_radius"])
+core_cyl = openmc.ZCylinder(r = params["core_radius"], boundary_type = 'vacuum')
 core_cell = openmc.Cell(fill=core_lattice, region=-core_cyl & +min_z & -max_z)
 
 top_refl_z = reactor_top + params["reflector_thickness"]
