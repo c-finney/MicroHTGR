@@ -2,9 +2,9 @@ import openmc
 import numpy as np
 import os
 
-BASE_DIR = '/home/cade/Desktop/OpenMC/SeniorDesign/MicroHTGR_Output/htgr_run_00.37.19_01.20.2026'
-batch_number = 100
-target_power_MW = 5.0  # target reactor power
+BASE_DIR = '/home/cade/Desktop/OpenMC/SeniorDesign/MicroHTGR_Output/htgr_run_09.17.29_01.21.2026_ParametricStudy_triso_pf/triso_pf_Case_03_0.15'
+batch_number = 50
+target_power_MW = 15.0  #Ttarget reactor power
 
 sp_path = os.path.join(BASE_DIR, f'statepoint.{batch_number}.h5')
 sp = openmc.StatePoint(sp_path)
@@ -25,14 +25,14 @@ heating_rate_j = heating_rate_ev * joule_per_ev  # J/source
 power_watts = target_power_MW * 1e6
 source_per_sec = power_watts / heating_rate_j
 
-print(f"\n{'='*70}")
+print(f"\n{'='*80}")
 print(f"MANUAL POWER NORMALIZATION")
-print(f"{'='*70}")
+print(f"{'='*80}")
 print(f"Heating rate: {heating_rate_ev:.3e} eV/source")
 print(f"Heating rate: {heating_rate_j:.3e} J/source")
 print(f"Target power: {target_power_MW:.3f} MW")
 print(f"Source rate: {source_per_sec:.3e} source particles/s")
-print(f"{'='*70}\n")
+print(f"{'='*80}\n")
 
 # ============================================================
 # GET GLOBAL TALLIES AND SCALE
@@ -57,6 +57,19 @@ total_flux = total_flux_per_source * source_per_sec
 total_fission_rate = total_fission_per_source * source_per_sec
 total_nu_fission = total_nu_fission_per_source * source_per_sec
 
+keff = sp.keff.nominal_value
+
+# Calculate leakage using neutron balance
+# In steady state: Production = Absorption + Leakage
+# k_eff = Production / (Absorption + Leakage/k_eff)
+# Simplified: Leakage ≈ Production * (k_eff - 1) / k_eff
+
+leakage_per_source = total_nu_fission_per_source * (keff - 1.0) / keff
+leakage_fraction = leakage_per_source / total_nu_fission_per_source
+
+# Which simplifies to:
+leakage_fraction = (keff - 1.0) / keff
+
 # ============================================================
 # VERIFY POWER CALCULATION
 # ============================================================
@@ -69,9 +82,9 @@ power_from_fission_MW = power_from_fission_watts / 1e6
 # Calculate power from heating tally (should match exactly)
 power_from_heating_MW = heating_rate_ev * 1e-6 * source_per_sec * joule_per_ev  # MW
 
-print(f"{'='*70}")
+print(f"{'='*80}")
 print(f"GLOBAL REACTION RATES (Batch {batch_number})")
-print(f"{'='*70}")
+print(f"{'='*80}")
 print(f"k-effective: {sp.keff.nominal_value:.5f} ± {sp.keff.std_dev:.5f}")
 print(f"\nPer Source Particle (before normalization):")
 print(f"  Flux: {total_flux_per_source:.3e} n·cm/source")
@@ -85,7 +98,11 @@ print(f"\nPower Verification:")
 print(f"  Target power: {target_power_MW:.3f} MW")
 print(f"  Power from fission (200 MeV est.): {power_from_fission_MW:.3f} MW")
 print(f"  Power from heating tally: {power_from_heating_MW:.3f} MW")
-print(f"{'='*70}\n")
+print(f"\nNeutron Balance:")
+print(f"  Nu-Fission (production): {total_nu_fission_per_source:.3e} neutrons/source")
+print(f"  Leakage: {leakage_per_source:.3e} neutrons/source")
+print(f"  Leakage Fraction: {leakage_fraction:.4f} ({leakage_fraction*100:.2f}%)")
+print(f"{'='*80}\n")
 
 # ============================================================
 # CHECK MESH TALLY TOTALS
@@ -99,9 +116,9 @@ mesh_fission_per_source = mesh_tally.mean[:, 0, fission_idx]
 mesh_flux = mesh_flux_per_source * source_per_sec
 mesh_fission = mesh_fission_per_source * source_per_sec
 
-print(f"{'='*70}")
+print(f"{'='*80}")
 print(f"MESH TALLY STATISTICS:")
-print(f"{'='*70}")
+print(f"{'='*80}")
 print(f"Number of mesh cells: {len(mesh_flux)}")
 print(f"\nPer Source Particle:")
 print(f"  Sum of mesh flux: {mesh_flux_per_source.sum():.3e} n·cm/source")
@@ -115,7 +132,7 @@ print(f"  Min flux: {mesh_flux.min():.3e} n/(cm²·s)")
 print(f"  Max flux: {mesh_flux.max():.3e} n/(cm²·s)")
 print(f"  Min fission: {mesh_fission.min():.3e} fissions/s")
 print(f"  Max fission: {mesh_fission.max():.3e} fissions/s")
-print(f"{'='*70}\n")
+print(f"{'='*80}\n")
 
 # Save normalization factor for use in plotting script
 normalization_data = {

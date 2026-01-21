@@ -39,32 +39,38 @@ def run_simulation(params, run_dir):
     fuel.add_nuclide("U235", params["enrichment"])
     fuel.add_nuclide("U238", 1.0 - params["enrichment"])
     fuel.add_element("C", 1.0)
-    fuel.set_density("g/cm3", params["kernel_density"])
+    fuel.add_element('O', 0.50)
+    fuel.set_density("kg/m3", params["kernel_density"])
     fuel.depletable = True
 
     # ----- TRISO Layers -----
     buffer = openmc.Material(name="Buffer") # Carbon buffer layer
     buffer.add_element("C", 1.0)
-    buffer.set_density("g/cm3", 1.0)
+    buffer.set_density("kg/m3", params["buffer_density"])
 
     pyc = openmc.Material(name="PyC") # Pyrolytic carbon layer (inner and outer)
     pyc.add_element("C", 1.0)
-    pyc.set_density("g/cm3", 1.9)
+    pyc.set_density("kg/m3", params["pyc_density"])
 
     sic = openmc.Material(name="SiC") # Silicon carbide layer
     sic.add_element("Si", 1.0)
     sic.add_element("C", 1.0)
-    sic.set_density("g/cm3", 3.2)
+    sic.set_density("kg/m3", params["sic_density"])
 
-    # ----- Moderator / Reflector -----
+    # ----- Moderator/Reflector -----
     graphite = openmc.Material(name="Graphite")
-    graphite.add_element("C", 1.0)
-    graphite.set_density("g/cm3", 1.7)
+    boron_mass_fraction = params["boron_ppm"] / 1e6
+    A_carbon = 12.011
+    A_boron = 10.811
+    boron_atom_fraction = boron_mass_fraction * A_carbon / A_boron
+    graphite.add_element("C", 1.0 - boron_atom_fraction)
+    graphite.add_element("B", boron_atom_fraction)
+    graphite.set_density("kg/m3", params["matrix_density"])
 
     # ----- Helium Coolant -----
     helium = openmc.Material(name="Helium")
     helium.add_nuclide("He4", 1.0)
-    helium.set_density("g/cm3", 0.00018)
+    helium.set_density("kg/m3", params["coolant_density"])
 
     # ----- Control Rods -----
     control = openmc.Material(name="Control Rod")
@@ -73,11 +79,11 @@ def run_simulation(params, run_dir):
         control.add_nuclide("B10", 0.2)
         control.add_nuclide("B11", 0.8)
         control.add_element("C", 1.0)
-        control.set_density("g/cm3", 2.52)
+        control.set_density("kg/m3", 2.52)
 
     elif params["control_material"] == "Hf":
         control.add_element("Hf", 1.0)
-        control.set_density("g/cm3", 13.3)
+        control.set_density("kg/m3", 13.3)
 
     # Set initial temperature of each material
     operating_temp = params["temperature_K"]
@@ -414,9 +420,9 @@ def run_simulation(params, run_dir):
 
     settings = openmc.Settings()
     settings.run_mode = "eigenvalue"
-    settings.batches = 50
-    settings.inactive = 10
-    settings.particles = 50_000
+    settings.batches = 300
+    settings.inactive = 50
+    settings.particles = 100_000
     settings.temperature = {
         'method': 'interpolation',
         'range': (293.0, 1800.0),
@@ -498,29 +504,32 @@ def run_simulation(params, run_dir):
 params = {
     # ----- Fuel Kernel -----
     "fuel_type": "UCO",
-    "enrichment": 0.2,          # U-235 atom fraction
+    "enrichment": 0.1975,                      # U-235 atom fraction
+    "kernel_radius": 0.021485,
     "kernel_density": 10820, 
-    "buffer_density": 1050,
-    "PyC_density": 1900,
-    "SiC_density": 3203,
-    "matrix_density": 1700,
-    "coolant_density": 5.5508, 
 
     # ----- TRISO Layers -----
-    "kernel_radius": 0.021485,
     "buffer_thickness": 0.01,
     "ipyc_thickness": 0.004,
     "sic_thickness": 0.0035,
     "opyc_thickness": 0.004,
+    "buffer_density": 1050,
+    "pyc_density": 1900,
+    "sic_density": 3203,
 
     # ----- Fuel Compact  -----
     "compact_radius": 0.635,
     "compact_height": 4.93,
-    "triso_pf": 0.15,                   # Packing fraction of triso particles in fuel compact
+    "triso_pf": 0.15,                          # Packing fraction of triso particles in fuel compact
 
     # ----- Coolant Channel -----
-    "n_coolant_channels_per_block": 18, # number of coolant channels per assembly
-    "coolant_radius": 0.8, 
+    "n_coolant_channels_per_block": 18,        # Number of coolant channels per assembly
+    "coolant_radius": 0.8,
+    "coolant_density": 2.873, 
+
+    # ----- Graphite Moderator/Reflector -----
+    "boron_ppm": 0.03,
+    "matrix_density": 1770,
 
     # ----- Hexagonal Lattice -----
     "fuel_to_coolant_distance": 1.88,
@@ -533,15 +542,12 @@ params = {
     "n_ax_zones": 50,
 
     # ----- Control Rods -----
-    "control_material": "B4C",            # Currently only pure B4C or Hf implemented
-    "control_radius": 0.50,               # Control rod radius  
-    "control_insertion": 0.50,            # Fractional control rod insertion (0-1.0)
-
-    # ----- Graphite Moderator -----
-    "boron_ppm": 0.01,
+    "control_material": "B4C",                 # Currently only pure B4C or Hf implemented
+    "control_radius": 0.50,                    # Control rod radius  
+    "control_insertion": 0.50,                 # Fractional control rod insertion (0-1.0)
 
     # ----- Steady-State Operation -----
-    "temperature_K": 1173.15              # Desired initial reactor temperature in Kelvin
+    "temperature_K": 1173.15                   # Desired initial reactor temperature in Kelvin
 }
 
 # ====================================================================================================
@@ -555,7 +561,7 @@ parametric_values = None
 # parametric_values = [0.05, 0.10, 0.15, 0.20, 0.25, 0.30]
 
 # parametric_param = "enrichment"
-# parametric_values = [0.01, 0.025, 0.05, 0.075, 0.10, 0.125, 0.15, 0.175, 0.1975]
+# parametric_values = [0.075, 0.10, 0.125, 0.15, 0.175, 0.1975]
 
 # parametric_param = "boron_ppm"
 # parametric_values = [0.005, 0.01, 0.02, 0.03, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0]

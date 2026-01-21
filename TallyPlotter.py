@@ -4,9 +4,9 @@ import matplotlib.pyplot as plt
 import os
 
 # Set path to your run directory
-BASE_DIR = '/home/cade/Desktop/OpenMC/SeniorDesign/MicroHTGR_Output/htgr_run_00.37.19_01.20.2026'
-batch_number = 100
-target_power_MW = 5.0  # target reactor power
+BASE_DIR = '/home/cade/Desktop/OpenMC/SeniorDesign/MicroHTGR_Output/htgr_run_10.37.14_01.21.2026_SingleRun'
+batch_number = 300
+target_power_MW = 15.0  # Target reactor power
 
 def get_normalization_factor(sp_path):
     """
@@ -262,9 +262,9 @@ def print_global_rates(batch):
     power_from_heating_watts = heating_rate_ev * joule_per_ev * source_per_sec  # W
     power_from_heating_MW = power_from_heating_watts / 1e6  # Convert to MW
     
-    print("\n" + "="*70)
+    print("\n" + '='*80)
     print(f"GLOBAL REACTION RATES (Batch {batch}) - MANUAL NORMALIZATION")
-    print("="*70)
+    print('='*80)
     print(f"k-effective: {sp.keff.nominal_value:.5f} ± {sp.keff.std_dev:.5f}")
     print(f"\nNormalization:")
     print(f"  Heating rate: {heating_rate_ev:.3e} eV/source")
@@ -277,7 +277,7 @@ def print_global_rates(batch):
     print(f"  Target Power: {target_power_MW:.3f} MW")
     print(f"  Calculated Power (from fission): {power_mw:.3f} MW")
     print(f"  Calculated Power (from heating): {power_from_heating_MW:.3f} MW")
-    print("="*70 + "\n")
+    print('='*80 + "\n")
 
 
 # Example usage:
