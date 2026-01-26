@@ -573,7 +573,7 @@ parametric_values = None
 if __name__ == "__main__":
     # ----- Create base directory structure -----
     now = datetime.now()
-    run_name = f"htgr_run_{now.strftime('%H.%M.%S_%m.%d.%Y')}"
+    run_name = f"htgr_run_{now.strftime('%m.%d.%Y_%H.%M.%S')}"
     
     SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
     PARENT_DIR = os.path.dirname(SCRIPT_DIR)
