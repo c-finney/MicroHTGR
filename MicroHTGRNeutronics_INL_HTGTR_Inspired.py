@@ -207,7 +207,7 @@ def run_simulation(params, run_dir):
         # Create fluid cells and clone the material to set unique densities (for TH coupling)
         coolant_matrix_cell = openmc.Cell(region=+coolant_cyl, fill=graphite)
         coolant_cell = openmc.Cell(region=-coolant_cyl, fill=helium)
-        coolant_cell.fill = [helium.clone() for i in range(55 * params["n_coolant_channels_per_block"])]
+        coolant_cell.fill = [helium.clone() for i in range(params["n_fuel_assemblies_per_core"] * params["n_coolant_channels_per_block"])]
 
         # Manually set each coolant channels color for plotting to be the same
         for mat in range(len(coolant_cell.fill)):
@@ -271,10 +271,14 @@ def run_simulation(params, run_dir):
     ring0 = [f]
     ring1 = [f] * 6
     ring2 = [f] * 12
-    ring3 = [f] * 18
-    ring4 = ([r] + [f] + [f] + [f]) * 6
+    # ring3 = [f] * 18
+    ring3 = ([r] + [f] + [f]) * 6
+    # ring3 = ([r] + [f] + [f]) * 6
+    # ring4 = ([r] + [f] + [f] + [f]) * 6
 
-    core_lattice_univs = [ring4, ring3, ring2, ring1, ring0]
+    # core_lattice_univs = [ring4, ring3, ring2, ring1, ring0]
+    core_lattice_univs = [ring3, ring2, ring1, ring0]
+
 
     core_lattice = openmc.HexLattice(name="Core Lattice")
     core_lattice.center = (0.0, 0.0)
@@ -290,20 +294,69 @@ def run_simulation(params, run_dir):
     core_lattice.outer = core_outer_univ
 
     core_cyl = openmc.ZCylinder(r = params["core_radius"], boundary_type = 'vacuum')
-    core_cell = openmc.Cell(fill=core_lattice, region=-core_cyl & +min_z & -max_z)
 
-    top_refl_z = reactor_top + params["reflector_thickness"]
-    bottom_refl_z = reactor_bottom - params["reflector_thickness"]
-    top_refl = openmc.ZPlane(z0 = top_refl_z, boundary_type = 'vacuum')
-    bottom_refl = openmc.ZPlane(z0 = bottom_refl_z, boundary_type = 'vacuum')
+    if params["use_1/12_geometry"]:
+        # Plane 1: along x-axis (angle = `0°`)
+        plane_1 = openmc.Plane(a=0, b=1, c=0, d=0, boundary_type='reflective')  # y = 0
 
-    top_refl_cell = openmc.Cell(fill=graphite, region=-core_cyl & +max_z & -top_refl)
+        # Plane 2: at 30° from x-axis
+        angle_deg = 30.0
+        angle_rad = np.radians(angle_deg)
+        # Normal vector for plane at 30°: perpendicular to the radial direction
+        plane_2 = openmc.Plane(
+            a=-np.sin(angle_rad), 
+            b=np.cos(angle_rad), 
+            c=0, 
+            d=0, 
+            boundary_type='reflective'
+        )
 
-    bottom_refl_cell = openmc.Cell(fill=graphite, region=-core_cyl & +bottom_refl & -min_z)
+        # Define the 1/12 geometry wedge region
+        # The wedge is defined as: inside cylinder AND between the two reflective planes
+        wedge_region = (
+            -core_cyl & 
+            +min_z & 
+            -max_z & 
+            +plane_1 &  # Above first plane (y > 0 side)
+            -plane_2    # Below second plane (30° side)
+        )
 
-    geometry = openmc.Geometry([core_cell, top_refl_cell, bottom_refl_cell])
+        core_cell = openmc.Cell(fill=core_lattice, region=wedge_region)
 
-    model.geometry = geometry
+        # Modify reflector cells to also respect wedge boundaries
+        top_refl_z = reactor_top + params["reflector_thickness"]
+        bottom_refl_z = reactor_bottom - params["reflector_thickness"]
+        top_refl = openmc.ZPlane(z0 = top_refl_z, boundary_type = 'vacuum')
+        bottom_refl = openmc.ZPlane(z0 = bottom_refl_z, boundary_type = 'vacuum')
+
+        top_refl_cell = openmc.Cell(
+            fill=graphite, 
+            region=-core_cyl & +max_z & -top_refl & +plane_1 & -plane_2
+        )
+
+        bottom_refl_cell = openmc.Cell(
+            fill=graphite, 
+            region=-core_cyl & +bottom_refl & -min_z & +plane_1 & -plane_2
+        )
+
+        geometry = openmc.Geometry([core_cell, top_refl_cell, bottom_refl_cell])
+        model.geometry = geometry
+    
+    else:
+        core_cell = openmc.Cell(fill=core_lattice, region=-core_cyl & +min_z & -max_z)
+
+        top_refl_z = reactor_top + params["reflector_thickness"]
+        bottom_refl_z = reactor_bottom - params["reflector_thickness"]
+        top_refl = openmc.ZPlane(z0 = top_refl_z, boundary_type = 'vacuum')
+        bottom_refl = openmc.ZPlane(z0 = bottom_refl_z, boundary_type = 'vacuum')
+
+        top_refl_cell = openmc.Cell(fill=graphite, region=-core_cyl & +max_z & -top_refl)
+
+        bottom_refl_cell = openmc.Cell(fill=graphite, region=-core_cyl & +bottom_refl & -min_z)
+
+        geometry = openmc.Geometry([core_cell, top_refl_cell, bottom_refl_cell])
+
+        model.geometry = geometry
 
     # ====================================================================================================
     # 9. GEOMETRY PLOT GENERATION
@@ -392,25 +445,43 @@ def run_simulation(params, run_dir):
 
     tallies += [flux_spectrum_tally, fission_tally, heating_tally]
 
-    # ----- Spatial Mesh Tallies -----
-    # Create a cylindrical mesh for active core region
-    # Using Cartesian mesh that covers the cylindrical active core region
+    # ----- Active Core Region Spatial Mesh Tallies -----
+    # Create a cylindrical mesh for active core region using Cartesian mesh that covers the cylindrical active core region
     mesh = openmc.RegularMesh()
-    mesh.dimension = [259, 250, params["n_ax_zones"]]
+    mesh.dimension = [300, 300, params["n_ax_zones"]]
     mesh.lower_left = [-params["core_radius"], -params["core_radius"], reactor_bottom]
     mesh.upper_right = [params["core_radius"], params["core_radius"], reactor_top]
     mesh_filter = openmc.MeshFilter(mesh)
 
     # Mesh tally for spatial distributions
-    mesh_tally = openmc.Tally(name='mesh_rates')
-    mesh_tally.filters = [mesh_filter]
-    mesh_tally.scores = ['flux', 'fission', 'nu-fission']
+    mesh_tally_active = openmc.Tally(name='mesh_rates')
+    mesh_tally_active.filters = [mesh_filter]
+    mesh_tally_active.scores = ['flux', 'fission', 'nu-fission']
 
-    # Global tally for total rates
+    # ----- Full Core Spatial Mesh Tallies -----
+    # Use coarser axial resolution for reflectors
+    n_reflector_zones = 10  # Zones in each reflector
+    n_total_zones = n_reflector_zones + params["n_ax_zones"] + n_reflector_zones
+
+    mesh_full = openmc.RegularMesh()
+    mesh_full.dimension = [300, 300, n_total_zones]
+
+    mesh_bottom = reactor_bottom - params["reflector_thickness"]
+    mesh_top = reactor_top + params["reflector_thickness"]
+
+    mesh_full.lower_left = [-params["core_radius"], -params["core_radius"], mesh_bottom]
+    mesh_full.upper_right = [params["core_radius"], params["core_radius"], mesh_top]
+    mesh_full_filter = openmc.MeshFilter(mesh_full)
+
+    mesh_tally_full = openmc.Tally(name='mesh_rates_full')
+    mesh_tally_full.filters = [mesh_full_filter]
+    mesh_tally_full.scores = ['flux', 'fission', 'nu-fission']
+
+    # ----- Global tally for total rates -----
     global_tally = openmc.Tally(name='global_rates')
     global_tally.scores = ['flux', 'fission', 'nu-fission']
 
-    tallies += [mesh_tally, global_tally]
+    tallies += [mesh_tally_active, mesh_tally_full, global_tally]
 
     model.tallies = tallies
 
@@ -420,8 +491,8 @@ def run_simulation(params, run_dir):
 
     settings = openmc.Settings()
     settings.run_mode = "eigenvalue"
-    settings.batches = 300
-    settings.inactive = 50
+    settings.batches = 50
+    settings.inactive = 10
     settings.particles = 100_000
     settings.temperature = {
         'method': 'interpolation',
@@ -533,13 +604,15 @@ params = {
 
     # ----- Hexagonal Lattice -----
     "fuel_to_coolant_distance": 1.88,
-    "bundle_pitch": 16,
+    "bundle_pitch": 16.28,
+    "n_fuel_assemblies_per_core": 31,
 
     # ----- Core Dimensions -----
-    "core_radius": 90.0,
-    "core_height": 237.9,
-    "reflector_thickness": 79.3,
+    "core_radius": 80.0,
+    "core_height": 158.6,
+    "reflector_thickness": 60, 
     "n_ax_zones": 50,
+    "use_1/12_geometry": False,
 
     # ----- Control Rods -----
     "control_material": "B4C",                 # Currently only pure B4C or Hf implemented
@@ -554,11 +627,11 @@ params = {
 # PARAMETRIC STUDY CONNFIGURATION
 # ====================================================================================================
 
-parametric_param = None
-parametric_values = None
+# parametric_param = None
+# parametric_values = None
 
-# parametric_param = "triso_pf"
-# parametric_values = [0.05, 0.10, 0.15, 0.20, 0.25, 0.30]
+parametric_param = "triso_pf"
+parametric_values = [0.10, 0.125, 0.15, 0.175, 0.2, 0.225, 0.25]
 
 # parametric_param = "enrichment"
 # parametric_values = [0.075, 0.10, 0.125, 0.15, 0.175, 0.1975]
