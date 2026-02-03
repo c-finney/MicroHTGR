@@ -635,7 +635,7 @@ def run_simulation(params, run_dir):
         ring1_graphite = [g_inner] * 6
         ring0_graphite = [g_inner]
         
-        control_assembly_univs = [ring4, ring3, ring2_graphite, ring1_graphite, ring0_graphite]
+        control_assembly_univs = [ring4, ring3, ring2, ring1_graphite, ring0_graphite]
         fuel_control_lattice_univs.append(control_assembly_univs)
     
     # Create a new hex lattice for the controlled fuel assembly with graphite inner rings
@@ -731,7 +731,7 @@ def run_simulation(params, run_dir):
         ring1_graphite = [g_inner] * 6
         ring0_graphite = [g_inner]
         
-        control_poison_assembly_univs = [ring4_poison, ring3, ring2_graphite, ring1_graphite, ring0_graphite]
+        control_poison_assembly_univs = [ring4_poison, ring3, ring2, ring1_graphite, ring0_graphite]
         fuel_control_poison_lattice_univs.append(control_poison_assembly_univs)
     
     fuel_assembly_control_poison_lat = openmc.HexLattice(name="Fuel Lattice with Poison for Control Assembly")
@@ -838,8 +838,8 @@ def run_simulation(params, run_dir):
     fcp = fuel_assembly_control_poison_univ
 
     ring0 = [fcp]
-    ring1 = [fp] * 6
-    ring2 = ([f] + [f]) * 6
+    ring1 = [f] * 6
+    ring2 = ([f] + [fc]) * 6
     # ring3 = [f] * 18
     ring3 = ([r] + [f] + [f]) * 6
     # ring4 = ([r] + [f] + [f] + [f]) * 6
@@ -1212,10 +1212,10 @@ params = {
     "B4C_density_poison": 2380,
 
     # ----- Control Rods -----
-    "control_radius": 5.08,                    # Radius for reflector assembly control rods
-    "fuel_assembly_control_radius": 5.08,      # Radius for circular control rods in fuel assemblies
-    "sheath_thickness": 0.3, 
-    "guide_tube_thickness": 0.5,  
+    "control_radius": 2.54,                    # Radius for reflector assembly control rods
+    "fuel_assembly_control_radius": 2.54,      # Radius for circular control rods in fuel assemblies
+    "sheath_thickness": 0.1, 
+    "guide_tube_thickness": 0.2,  
     "control_insertion": 1.0,                  # Fractional control rod insertion (0-1.0)
     "B10_enrichment_control": 0.6,
     "B10_wt_percent_control": 0.001,
