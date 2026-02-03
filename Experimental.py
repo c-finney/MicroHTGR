@@ -270,7 +270,6 @@ def run_simulation(params, run_dir):
     # ----- Incoloy 800H -----
     incoloy800H = openmc.Material(name='Incoloy 800H')
     incoloy800H.set_density('kg/m3', params["Incoloy800H_density"])
-
     incoloy800H.add_element('Ni', 32.5, 'wo')
     incoloy800H.add_element('Cr', 21.0, 'wo')
     incoloy800H.add_element('Al', 0.40, 'wo')
@@ -409,6 +408,7 @@ def run_simulation(params, run_dir):
     axial_coords = np.linspace(reactor_bottom, reactor_top, params["n_ax_zones"] + 1)
     fuel_lattice_univs = []
     poison_lattice_univs = []
+    poison_lattice_univs_alt = []
 
     m_colors = {}
 
@@ -468,7 +468,7 @@ def run_simulation(params, run_dir):
         ring4 = (d + [c] + [f]) * 6        
 
         fuel_lattice_univs.append([ring4, ring3, ring2, ring1, ring0])
-
+    
         # Poison assembly rings (outer 6 corners of ring4 replaced with poison)
         ring4_poison = []
         for i, univ in enumerate((d + [c] + [f]) * 6):
@@ -479,6 +479,7 @@ def run_simulation(params, run_dir):
                 ring4_poison.append(univ)
 
         poison_lattice_univs.append([ring4_poison, ring3, ring2, ring1, ring0])
+        poison_lattice_univs_alt.append([ring4, ring3, ring2, ring1, [p]])
 
     # ====================================================================================================
     # 5. CONTROL ROD CREATION (FOR REFLECTOR ASSEMBLIES)
@@ -606,6 +607,18 @@ def run_simulation(params, run_dir):
     fuel_assembly_poison_cell = openmc.Cell(fill=fuel_assembly_poison_lat, 
                                            region=hex_prism_fuel & +min_z & -max_z)
     fuel_assembly_poison_univ = openmc.Universe(cells=[fuel_assembly_poison_cell])
+
+    # ----- 6.2a Fuel Assembly with Poison Rods Alt -----
+    fuel_assembly_poison_lat_alt = openmc.HexLattice(name="Fuel Lattice with Poison Alt")
+    fuel_assembly_poison_lat_alt.orientation = 'x'
+    fuel_assembly_poison_lat_alt.center = (0.0, 0.0, 0.5 * (reactor_bottom + reactor_top))
+    fuel_assembly_poison_lat_alt.pitch = (params["fuel_to_coolant_distance"], axial_section_height)
+    fuel_assembly_poison_lat_alt.universes = poison_lattice_univs_alt
+    fuel_assembly_poison_lat_alt.outer = inf_graphite_universe
+
+    fuel_assembly_poison_cell_alt = openmc.Cell(fill=fuel_assembly_poison_lat_alt, 
+                                           region=hex_prism_fuel & +min_z & -max_z)
+    fuel_assembly_poison_univ_alt = openmc.Universe(cells=[fuel_assembly_poison_cell_alt])
 
     # ----- 6.3 Fuel Assembly with Central CIRCULAR Control Rod (FIXED) -----
     # Create the assembly with ring0, ring1, ring2 replaced by graphite
@@ -834,6 +847,7 @@ def run_simulation(params, run_dir):
     f = fuel_assembly_univ
     r = reflector_assembly_univ
     fp = fuel_assembly_poison_univ
+    fpa = fuel_assembly_poison_univ_alt
     fc = fuel_assembly_control_univ
     fcp = fuel_assembly_control_poison_univ
 
@@ -1216,7 +1230,7 @@ params = {
     "fuel_assembly_control_radius": 2.54,      # Radius for circular control rods in fuel assemblies
     "sheath_thickness": 0.1, 
     "guide_tube_thickness": 0.2,  
-    "control_insertion": 1.0,                  # Fractional control rod insertion (0-1.0)
+    "control_insertion": 0.0,                  # Fractional control rod insertion (0-1.0)
     "B10_enrichment_control": 0.6,
     "B10_wt_percent_control": 0.001,
     "B4C_density_control": 2380,
