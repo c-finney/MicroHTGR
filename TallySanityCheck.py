@@ -2,7 +2,7 @@ import openmc
 import numpy as np
 import os
 
-BASE_DIR = '/home/cade/Desktop/OpenMC/SeniorDesign/MicroHTGR_Output/htgr_run_09.17.29_01.21.2026_ParametricStudy_triso_pf/triso_pf_Case_03_0.15'
+BASE_DIR = '/home/cade/Desktop/OpenMC/SeniorDesign/MicroHTGR_Output/htgr_run_02.01.2026_13.53.30_SingleRun'
 batch_number = 50
 target_power_MW = 15.0  #Ttarget reactor power
 

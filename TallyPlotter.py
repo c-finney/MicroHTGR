@@ -4,10 +4,10 @@ import matplotlib.pyplot as plt
 import os
 
 # Set path to your run directory
-BASE_DIR = '/home/cade/Desktop/OpenMC/SeniorDesign/MicroHTGR_Output/htgr_run_01.26.2026_20.43.55_SingleRun'
+BASE_DIR = '/home/cade/Desktop/OpenMC/SeniorDesign/MicroHTGR_Output/htgr_run_02.01.2026_13.41.45_SingleRun'
 batch_number = 50
 target_power_MW = 15.0  # Target reactor power
-IS_WEDGE_GEOMETRY = False  # Set to True if using 1/12 geometry
+IS_WEDGE_GEOMETRY = False  # Set to True if using 1/6 geometry
 
 def get_normalization_factor(sp_path):
     """
@@ -36,16 +36,16 @@ def get_normalization_factor(sp_path):
     power_watts = target_power_MW * 1e6
     source_per_sec = power_watts / heating_rate_j
     
-    # If wedge geometry, multiply by 12 to get full core normalization
-    if IS_WEDGE_GEOMETRY:
-        source_per_sec *= 12
+    # # If wedge geometry, multiply by 6 to get full core normalization
+    # if IS_WEDGE_GEOMETRY:
+    #     source_per_sec *= 6
     
     return source_per_sec
 
 
 def reconstruct_full_core(data_wedge, mesh):
     """
-    Reconstruct full core data from 1/12 wedge by rotating 12 times
+    Reconstruct full core data from 1/6 wedge by rotating 6 times
     
     Parameters:
     -----------
@@ -82,9 +82,9 @@ def reconstruct_full_core(data_wedge, mesh):
     for z_idx in range(nz):
         data_slice = data_wedge[:, :, z_idx]
         
-        # Rotate and fill each of 12 sectors
-        for sector in range(12):
-            angle = sector * 30.0  # degrees
+        # Rotate and fill each of 6 sectors
+        for sector in range(6):
+            angle = sector * 60.0  # degrees
             angle_rad = np.radians(angle)
             
             # Rotation matrix
@@ -105,7 +105,7 @@ def reconstruct_full_core(data_wedge, mesh):
                     x_wedge = cos_a * x_point + sin_a * y_point
                     y_wedge = -sin_a * x_point + cos_a * y_point
                     
-                    # Check if point is in wedge region (0° to 30°)
+                    # Check if point is in wedge region (0° to 60°)
                     r = np.sqrt(x_point**2 + y_point**2)
                     if r < core_radius and r > 0:
                         angle_point = np.arctan2(y_point, x_point)
@@ -116,7 +116,7 @@ def reconstruct_full_core(data_wedge, mesh):
                         # Map to wedge sector
                         sector_angle = (angle_point - angle_rad) % (2 * np.pi)
                         
-                        if 0 <= sector_angle <= np.radians(30):
+                        if 0 <= sector_angle <= np.radians(60):
                             # Interpolate from wedge data
                             if (mesh.lower_left[0] <= x_wedge <= mesh.upper_right[0] and
                                 mesh.lower_left[1] <= y_wedge <= mesh.upper_right[1]):
@@ -194,7 +194,7 @@ def plot_htgr_xyslice(batch, z_index, reconstruct=False):
         x_edges = np.linspace(mesh.lower_left[0], mesh.upper_right[0], nx + 1)
         y_edges = np.linspace(mesh.lower_left[1], mesh.upper_right[1], ny + 1)
         core_radius = max(abs(mesh.lower_left[0]), abs(mesh.upper_right[0]))
-        geometry_label = "1/12 Wedge" if IS_WEDGE_GEOMETRY else "Full Core"
+        geometry_label = "1/6 Wedge" if IS_WEDGE_GEOMETRY else "Full Core"
     
     # Get min/max for consistent color scaling
     flux_min, flux_max = np.min(flux_xy[flux_xy > 0]), flux_xy.max()
@@ -220,8 +220,8 @@ def plot_htgr_xyslice(batch, z_index, reconstruct=False):
     # Add wedge boundaries if showing wedge
     if IS_WEDGE_GEOMETRY and not reconstruct:
         ax.plot([0, core_radius], [0, 0], 'w--', linewidth=1.5, alpha=0.7, label='Wedge boundary')
-        ax.plot([0, core_radius * np.cos(np.radians(30))], 
-                [0, core_radius * np.sin(np.radians(30))], 'w--', linewidth=1.5, alpha=0.7)
+        ax.plot([0, core_radius * np.cos(np.radians(60))], 
+                [0, core_radius * np.sin(np.radians(60))], 'w--', linewidth=1.5, alpha=0.7)
         ax.legend()
     
     suffix = '_reconstructed' if (IS_WEDGE_GEOMETRY and reconstruct) else '_wedge' if IS_WEDGE_GEOMETRY else ''
@@ -250,8 +250,8 @@ def plot_htgr_xyslice(batch, z_index, reconstruct=False):
     # Add wedge boundaries if showing wedge
     if IS_WEDGE_GEOMETRY and not reconstruct:
         ax.plot([0, core_radius], [0, 0], 'w--', linewidth=1.5, alpha=0.7, label='Wedge boundary')
-        ax.plot([0, core_radius * np.cos(np.radians(30))], 
-                [0, core_radius * np.sin(np.radians(30))], 'w--', linewidth=1.5, alpha=0.7)
+        ax.plot([0, core_radius * np.cos(np.radians(60))], 
+                [0, core_radius * np.sin(np.radians(60))], 'w--', linewidth=1.5, alpha=0.7)
         ax.legend()
     
     save_path = os.path.join(BASE_DIR, f'batch{batch}_fission_xy_z{z_index}_normalized{suffix}.png')
@@ -559,7 +559,7 @@ def plot_htgr_axial_profile(batch):
     # Plot
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6), dpi=150)
     
-    geometry_label = "1/12 Wedge" if IS_WEDGE_GEOMETRY else "Full Core"
+    geometry_label = "1/6 Wedge" if IS_WEDGE_GEOMETRY else "Full Core"
     
     ax1.plot(z_centers, flux_axial, 'b-', linewidth=2)
     ax1.set_xlabel('Axial Position [cm]')
@@ -605,9 +605,9 @@ def print_global_rates(batch):
     power_watts = target_power_MW * 1e6
     source_per_sec = power_watts / heating_rate_j
     
-    # Multiply by 12 for wedge geometry
-    if IS_WEDGE_GEOMETRY:
-        source_per_sec *= 12
+    # # Multiply by 6 for wedge geometry
+    # if IS_WEDGE_GEOMETRY:
+    #     source_per_sec *= 6
     
     # Get global tally
     tally = sp.get_tally(name='global_rates')
@@ -638,7 +638,7 @@ def print_global_rates(batch):
     power_from_heating_watts = heating_rate_ev * joule_per_ev * source_per_sec  # W
     power_from_heating_MW = power_from_heating_watts / 1e6  # Convert to MW
     
-    geometry_label = "1/12 WEDGE GEOMETRY" if IS_WEDGE_GEOMETRY else "FULL CORE GEOMETRY"
+    geometry_label = "1/6 WEDGE GEOMETRY" if IS_WEDGE_GEOMETRY else "FULL CORE GEOMETRY"
     
     print("\n" + '='*80)
     print(f"GLOBAL REACTION RATES (Batch {batch}) - {geometry_label}")
@@ -648,7 +648,7 @@ def print_global_rates(batch):
     print(f"  Heating rate: {heating_rate_ev:.3e} eV/source")
     print(f"  Source rate: {source_per_sec:.3e} source/s")
     if IS_WEDGE_GEOMETRY:
-        print(f"  (Multiplied by 12 for full core equivalence)")
+        print(f"  (Multiplied by 6 for full core equivalence)")
     print(f"\nReaction Rates:")
     print(f"  Total Flux: {total_flux:.3e} n/(cm² · s)")
     print(f"  Total Fission Rate: {total_fission:.3e} fissions/s")
@@ -673,9 +673,9 @@ if __name__ == "__main__":
     # Show cross-section at 0° (along x-axis)
     plot_htgr_axial_crosssection(batch_number, 0, True)
     
-    # If wedge geometry, also show at 15° (middle of wedge)
+    # If wedge geometry, also show at 30° (middle of wedge)
     if IS_WEDGE_GEOMETRY:
-        plot_htgr_axial_crosssection(batch_number, 15, True)
+        plot_htgr_axial_crosssection(batch_number, 30, True)
     
     # Plot XY slices at different axial levels
     n_ax_zones = 50  # Match your params["n_ax_zones"]

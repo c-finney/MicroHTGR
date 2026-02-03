@@ -1,4 +1,3 @@
-
 import os
 import math
 import shutil
@@ -358,6 +357,7 @@ def run_simulation(params, run_dir):
 
     fuel_cyl = openmc.ZCylinder(r = params["compact_radius"])
     coolant_cyl = openmc.ZCylinder(r = params["coolant_radius"])
+    poison_cyl = openmc.ZCylinder(r = params["compact_radius"])  # Same size as fuel compact
 
     # Create a TRISO lattice for one axial section (copied into each axial zones)
     # Center the TRISO region on the origin so it fills lattice cells appropriately
@@ -408,6 +408,7 @@ def run_simulation(params, run_dir):
 
     axial_coords = np.linspace(reactor_bottom, reactor_top, params["n_ax_zones"] + 1)
     fuel_lattice_univs = []
+    poison_lattice_univs = []
 
     m_colors = {}
 
@@ -429,6 +430,13 @@ def run_simulation(params, run_dir):
         fuel_ch_matrix_cell = openmc.Cell(region=+fuel_cyl, fill=graphite)
         fuel_ch_matrix_cell.temperature = T_matrix
 
+        # Poison channel cells
+        poison_ch_cell = openmc.Cell(region=-poison_cyl, fill=b4c_poison)
+        poison_ch_cell.temperature = T_matrix
+
+        poison_ch_matrix_cell = openmc.Cell(region=+poison_cyl, fill=graphite)
+        poison_ch_matrix_cell.temperature = T_matrix
+
         # Graphite reflector cells
         graphite_cell = openmc.Cell(fill=graphite)
         graphite_cell.temperature = T_matrix
@@ -437,24 +445,22 @@ def run_simulation(params, run_dir):
         coolant_matrix_cell = openmc.Cell(region=+coolant_cyl, fill=graphite)
         coolant_matrix_cell.temperature = T_matrix
 
-        coolant_cell = openmc.Cell(region=-coolant_cyl, fill=helium)
-        coolant_materials = []
-        n_total_coolant_channels = params["n_fuel_assemblies_per_core"] * params["n_coolant_channels_per_block"]
-        for i in range(n_total_coolant_channels):
-            coolant_clone = helium.clone()
-            coolant_clone.temperature = T_coolant  # Set temp on actual material object
-            coolant_materials.append(coolant_clone)
-            m_colors[coolant_clone] = 'red'
+        # Create coolant cell with single material (not distributed)
+        coolant_helium = helium.clone()
+        coolant_helium.temperature = T_coolant
+        m_colors[coolant_helium] = 'red'
+        
+        coolant_cell = openmc.Cell(region=-coolant_cyl, fill=coolant_helium)
 
-        coolant_cell.fill = coolant_materials
-
-        # Define a universe for each type of channel (fuel, coolant, and graphite)
+        # Define a universe for each type of channel (fuel, coolant, poison, and graphite)
         f = openmc.Universe(cells=[fuel_ch_cell, fuel_ch_matrix_cell])
         c = openmc.Universe(cells=[coolant_cell, coolant_matrix_cell])
+        p = openmc.Universe(cells=[poison_ch_cell, poison_ch_matrix_cell])
         g = openmc.Universe(cells=[graphite_cell])
 
         d = [f] * 2
 
+        # Standard fuel assembly rings
         ring0 = [g]
         ring1 = [f] * 6
         ring2 = ([f] + [c]) * 6
@@ -463,13 +469,115 @@ def run_simulation(params, run_dir):
 
         fuel_lattice_univs.append([ring4, ring3, ring2, ring1, ring0])
 
+        # Poison assembly rings (outer 6 corners of ring4 replaced with poison)
+        ring4_poison = []
+        for i, univ in enumerate((d + [c] + [f]) * 6):
+            # Replace the outermost fuel channel in each sector (position 2 in each sector)
+            if i % 4 == 0:
+                ring4_poison.append(p)
+            else:
+                ring4_poison.append(univ)
+
+        poison_lattice_univs.append([ring4_poison, ring3, ring2, ring1, ring0])
+
     # ====================================================================================================
-    # 5. FUEL ASSEMBLY CREATION (Hexagonal Lattice of Fuel, Coolant, and Graphite Channels)
+    # 5. CONTROL ROD CREATION (FOR REFLECTOR ASSEMBLIES)
+    # ====================================================================================================
+
+    # Calculate control rod geometry
+    # Control rod consists of:
+    # - Inner B4C absorber
+    # - Incoloy sheath around the absorber
+    # - Incoloy guide tube that extends from top of B4C to top reflector
+    # - Helium inside guide tube when control rod is withdrawn
+
+    r_b4c = params["control_radius"] - params["sheath_thickness"]
+    r_sheath_outer = params["control_radius"]
+    r_guide_inner = r_sheath_outer
+    r_guide_outer = r_guide_inner + params["guide_tube_thickness"]
+
+    # Control rod insertion depth (fraction of core height)
+    control_insertion_depth = params["control_insertion"] * params["core_height"]
+
+    # Create control rod universes for each axial zone
+    control_rod_univs = []
+    
+    # Top of reactor (including top reflector)
+    top_reflector_top = reactor_top + params["reflector_thickness"]
+    
+    for idx, (z_min, z_max) in enumerate(zip(axial_coords[0:-1], axial_coords[1:])):
+        z_mid = 0.5 * (z_min + z_max)
+        T_matrix = T_matrix_z[idx]
+        T_coolant = T_coolant_z[idx]
+        
+        # Determine what's present at this axial position
+        # Control rod extends from top down by control_insertion_depth
+        control_bottom = reactor_top - control_insertion_depth
+        
+        control_cyl_b4c = openmc.ZCylinder(r=r_b4c)
+        control_cyl_sheath_outer = openmc.ZCylinder(r=r_sheath_outer)
+        control_cyl_guide_outer = openmc.ZCylinder(r=r_guide_outer)
+        
+        if z_mid >= control_bottom:
+            # Control rod is present here (B4C + sheath + guide tube)
+            b4c_cell = openmc.Cell(fill=b4c_control, region=-control_cyl_b4c)
+            b4c_cell.temperature = T_matrix
+            
+            sheath_cell = openmc.Cell(fill=incoloy800H, 
+                                     region=+control_cyl_b4c & -control_cyl_sheath_outer)
+            sheath_cell.temperature = T_matrix
+            
+            guide_tube_cell = openmc.Cell(fill=incoloy800H,
+                                         region=+control_cyl_sheath_outer & -control_cyl_guide_outer)
+            guide_tube_cell.temperature = T_matrix
+            
+            # Graphite outside guide tube
+            matrix_cell = openmc.Cell(fill=graphite, region=+control_cyl_guide_outer)
+            matrix_cell.temperature = T_matrix
+            
+            control_univ = openmc.Universe(cells=[b4c_cell, sheath_cell, guide_tube_cell, matrix_cell])
+        else:
+            # Guide tube only with helium inside (control rod withdrawn)
+            guide_helium = helium.clone()
+            guide_helium.temperature = T_coolant
+            m_colors[guide_helium] = 'red'
+            
+            guide_helium_cell = openmc.Cell(fill=guide_helium, region=-control_cyl_sheath_outer)
+            
+            guide_tube_cell = openmc.Cell(fill=incoloy800H,
+                                         region=+control_cyl_sheath_outer & -control_cyl_guide_outer)
+            guide_tube_cell.temperature = T_matrix
+            
+            # Graphite outside guide tube
+            matrix_cell = openmc.Cell(fill=graphite, region=+control_cyl_guide_outer)
+            matrix_cell.temperature = T_matrix
+            
+            control_univ = openmc.Universe(cells=[guide_helium_cell, guide_tube_cell, matrix_cell])
+        
+        control_rod_univs.append(control_univ)
+    
+    # ====================================================================================================
+    # 5B. FUEL ASSEMBLY CONTROL ROD PARAMETERS
+    # ====================================================================================================
+    
+    # For fuel assemblies, control rods are circular B4C cylinders in the center with sheath and guide tube.
+    # When withdrawn, the guide tube remains and helium coolant fills the inside.
+    # The inner rings (ring0, ring1, ring2) are replaced with graphite so the
+    # circular control rod doesn't overlap with fuel or coolant channels.
+    
+    # Calculate the radii for the fuel assembly control rod (same logic as reflector control rods)
+    r_b4c_fuel = params["fuel_assembly_control_radius"] - params["sheath_thickness"]
+    r_sheath_outer_fuel = params["fuel_assembly_control_radius"]
+    r_guide_inner_fuel = r_sheath_outer_fuel
+    r_guide_outer_fuel = r_guide_inner_fuel + params["guide_tube_thickness"]
+
+    # ====================================================================================================
+    # 6. FUEL ASSEMBLY CREATION (Four Types)
     # ====================================================================================================
 
     bundle_pitch = 5 * params["fuel_to_coolant_distance"] * math.sqrt(3.0)
 
-    # This creates ONE assembly (hexagonal arrangement of fuel pins)
+    # ----- 6.1 Standard Fuel Assembly -----
     fuel_assembly_lat = openmc.HexLattice(name = "Fuel Lattice")
     fuel_assembly_lat.orientation = 'x'
     fuel_assembly_lat.center = (0.0, 0.0, 0.5 * (reactor_bottom + reactor_top))
@@ -487,33 +595,220 @@ def run_simulation(params, run_dir):
     fuel_assembly_cell = openmc.Cell(fill=fuel_assembly_lat, region=hex_prism_fuel & +min_z & -max_z)
     fuel_assembly_univ = openmc.Universe(cells=[fuel_assembly_cell])
 
+    # ----- 6.2 Fuel Assembly with Poison Rods -----
+    fuel_assembly_poison_lat = openmc.HexLattice(name="Fuel Lattice with Poison")
+    fuel_assembly_poison_lat.orientation = 'x'
+    fuel_assembly_poison_lat.center = (0.0, 0.0, 0.5 * (reactor_bottom + reactor_top))
+    fuel_assembly_poison_lat.pitch = (params["fuel_to_coolant_distance"], axial_section_height)
+    fuel_assembly_poison_lat.universes = poison_lattice_univs
+    fuel_assembly_poison_lat.outer = inf_graphite_universe
+
+    fuel_assembly_poison_cell = openmc.Cell(fill=fuel_assembly_poison_lat, 
+                                           region=hex_prism_fuel & +min_z & -max_z)
+    fuel_assembly_poison_univ = openmc.Universe(cells=[fuel_assembly_poison_cell])
+
+    # ----- 6.3 Fuel Assembly with Central CIRCULAR Control Rod (FIXED) -----
+    # Create the assembly with ring0, ring1, ring2 replaced by graphite
+    # Then overlay a cylindrical control rod region on the graphite center
+    # Control rod includes B4C absorber, Incoloy sheath, and guide tube (same as reflector)
+    
+    # Create modified lattice universes with graphite in inner rings
+    fuel_control_lattice_univs = []
+    
+    for idx, (z_min, z_max) in enumerate(zip(axial_coords[0:-1], axial_coords[1:])):
+        T_matrix = T_matrix_z[idx]
+        T_coolant = T_coolant_z[idx]
+        T_compact = T_compact_z[idx]
+        
+        # Get the outer rings from the standard fuel lattice
+        base_univs = fuel_lattice_univs[idx]
+        ring4 = base_univs[0]  # Outermost ring
+        ring3 = base_univs[1]
+        
+        # Create graphite universe for inner rings (ring0, ring1, ring2)
+        graphite_inner_cell = openmc.Cell(fill=graphite)
+        graphite_inner_cell.temperature = T_matrix
+        g_inner = openmc.Universe(cells=[graphite_inner_cell])
+        
+        # Replace ring0, ring1, ring2 with graphite
+        ring2_graphite = [g_inner] * 12
+        ring1_graphite = [g_inner] * 6
+        ring0_graphite = [g_inner]
+        
+        control_assembly_univs = [ring4, ring3, ring2_graphite, ring1_graphite, ring0_graphite]
+        fuel_control_lattice_univs.append(control_assembly_univs)
+    
+    # Create a new hex lattice for the controlled fuel assembly with graphite inner rings
+    fuel_assembly_control_lat = openmc.HexLattice(name="Fuel Lattice for Control Assembly")
+    fuel_assembly_control_lat.orientation = 'x'
+    fuel_assembly_control_lat.center = (0.0, 0.0, 0.5 * (reactor_bottom + reactor_top))
+    fuel_assembly_control_lat.pitch = (params["fuel_to_coolant_distance"], axial_section_height)
+    fuel_assembly_control_lat.universes = fuel_control_lattice_univs
+    fuel_assembly_control_lat.outer = inf_graphite_universe
+    
+    # Create the cylindrical control rod surfaces for fuel assemblies
+    fuel_control_cyl_b4c = openmc.ZCylinder(r=r_b4c_fuel)
+    fuel_control_cyl_sheath_outer = openmc.ZCylinder(r=r_sheath_outer_fuel)
+    fuel_control_cyl_guide_outer = openmc.ZCylinder(r=r_guide_outer_fuel)
+    
+    # Create axially-segmented cells for the control rod region
+    fuel_assembly_control_cells = []
+    
+    for idx, (z_min, z_max) in enumerate(zip(axial_coords[0:-1], axial_coords[1:])):
+        z_mid = 0.5 * (z_min + z_max)
+        T_matrix = T_matrix_z[idx]
+        T_coolant = T_coolant_z[idx]
+        
+        min_z_plane = openmc.ZPlane(z0=z_min)
+        max_z_plane = openmc.ZPlane(z0=z_max)
+        
+        # Determine if control rod is inserted at this axial position
+        control_bottom = reactor_top - control_insertion_depth
+        
+        # Region for this axial slice
+        axial_region = +min_z_plane & -max_z_plane
+        
+        if z_mid >= control_bottom:
+            # Control rod INSERTED - B4C + sheath + guide tube
+            b4c_cell = openmc.Cell(fill=b4c_control, 
+                                  region=-fuel_control_cyl_b4c & axial_region & hex_prism_fuel)
+            b4c_cell.temperature = T_matrix
+            
+            sheath_cell = openmc.Cell(fill=incoloy800H,
+                                     region=+fuel_control_cyl_b4c & -fuel_control_cyl_sheath_outer & axial_region & hex_prism_fuel)
+            sheath_cell.temperature = T_matrix
+            
+            guide_tube_cell = openmc.Cell(fill=incoloy800H,
+                                         region=+fuel_control_cyl_sheath_outer & -fuel_control_cyl_guide_outer & axial_region & hex_prism_fuel)
+            guide_tube_cell.temperature = T_matrix
+            
+            fuel_assembly_control_cells.extend([b4c_cell, sheath_cell, guide_tube_cell])
+        else:
+            # Control rod WITHDRAWN - Guide tube with helium inside
+            control_helium = helium.clone()
+            control_helium.temperature = T_coolant
+            m_colors[control_helium] = 'red'
+            
+            helium_cell = openmc.Cell(fill=control_helium, 
+                                     region=-fuel_control_cyl_sheath_outer & axial_region & hex_prism_fuel)
+            
+            guide_tube_cell = openmc.Cell(fill=incoloy800H,
+                                         region=+fuel_control_cyl_sheath_outer & -fuel_control_cyl_guide_outer & axial_region & hex_prism_fuel)
+            guide_tube_cell.temperature = T_matrix
+            
+            fuel_assembly_control_cells.extend([helium_cell, guide_tube_cell])
+    
+    # Create the hex lattice cell (outside the control rod guide tube)
+    fuel_lattice_cell = openmc.Cell(fill=fuel_assembly_control_lat, 
+                                   region=+fuel_control_cyl_guide_outer & hex_prism_fuel & +min_z & -max_z)
+    
+    # Combine all cells into the fuel assembly with control rod universe
+    all_control_assembly_cells = fuel_assembly_control_cells + [fuel_lattice_cell]
+    fuel_assembly_control_univ = openmc.Universe(cells=all_control_assembly_cells)
+
+    # ----- 6.4 Fuel Assembly with Poison Rods AND Central CIRCULAR Control Rod (FIXED) -----
+    # Similar to 6.3 but using the poison lattice for outer rings
+    # Control rod includes B4C absorber, Incoloy sheath, and guide tube (same as reflector)
+    
+    # Create modified lattice universes with graphite in inner rings and poison in outer ring
+    fuel_control_poison_lattice_univs = []
+    
+    for idx, (z_min, z_max) in enumerate(zip(axial_coords[0:-1], axial_coords[1:])):
+        T_matrix = T_matrix_z[idx]
+        
+        # Get the outer rings from the poison lattice
+        poison_univs = poison_lattice_univs[idx]
+        ring4_poison = poison_univs[0]  # Outermost ring with poison
+        ring3 = poison_univs[1]
+        
+        # Create graphite universe for inner rings (ring0, ring1, ring2)
+        graphite_inner_cell = openmc.Cell(fill=graphite)
+        graphite_inner_cell.temperature = T_matrix
+        g_inner = openmc.Universe(cells=[graphite_inner_cell])
+        
+        # Replace ring0, ring1, ring2 with graphite
+        ring2_graphite = [g_inner] * 12
+        ring1_graphite = [g_inner] * 6
+        ring0_graphite = [g_inner]
+        
+        control_poison_assembly_univs = [ring4_poison, ring3, ring2_graphite, ring1_graphite, ring0_graphite]
+        fuel_control_poison_lattice_univs.append(control_poison_assembly_univs)
+    
+    fuel_assembly_control_poison_lat = openmc.HexLattice(name="Fuel Lattice with Poison for Control Assembly")
+    fuel_assembly_control_poison_lat.orientation = 'x'
+    fuel_assembly_control_poison_lat.center = (0.0, 0.0, 0.5 * (reactor_bottom + reactor_top))
+    fuel_assembly_control_poison_lat.pitch = (params["fuel_to_coolant_distance"], axial_section_height)
+    fuel_assembly_control_poison_lat.universes = fuel_control_poison_lattice_univs
+    fuel_assembly_control_poison_lat.outer = inf_graphite_universe
+    
+    # Create axially-segmented cells for the control rod region (with poison lattice)
+    fuel_assembly_control_poison_cells = []
+    
+    for idx, (z_min, z_max) in enumerate(zip(axial_coords[0:-1], axial_coords[1:])):
+        z_mid = 0.5 * (z_min + z_max)
+        T_matrix = T_matrix_z[idx]
+        T_coolant = T_coolant_z[idx]
+        
+        min_z_plane = openmc.ZPlane(z0=z_min)
+        max_z_plane = openmc.ZPlane(z0=z_max)
+        
+        control_bottom = reactor_top - control_insertion_depth
+        axial_region = +min_z_plane & -max_z_plane
+        
+        if z_mid >= control_bottom:
+            # Control rod INSERTED - B4C + sheath + guide tube
+            b4c_cell = openmc.Cell(fill=b4c_control, 
+                                  region=-fuel_control_cyl_b4c & axial_region & hex_prism_fuel)
+            b4c_cell.temperature = T_matrix
+            
+            sheath_cell = openmc.Cell(fill=incoloy800H,
+                                     region=+fuel_control_cyl_b4c & -fuel_control_cyl_sheath_outer & axial_region & hex_prism_fuel)
+            sheath_cell.temperature = T_matrix
+            
+            guide_tube_cell = openmc.Cell(fill=incoloy800H,
+                                         region=+fuel_control_cyl_sheath_outer & -fuel_control_cyl_guide_outer & axial_region & hex_prism_fuel)
+            guide_tube_cell.temperature = T_matrix
+            
+            fuel_assembly_control_poison_cells.extend([b4c_cell, sheath_cell, guide_tube_cell])
+        else:
+            # Control rod WITHDRAWN - Guide tube with helium inside
+            control_helium = helium.clone()
+            control_helium.temperature = T_coolant
+            m_colors[control_helium] = 'red'
+            
+            helium_cell = openmc.Cell(fill=control_helium, 
+                                     region=-fuel_control_cyl_sheath_outer & axial_region & hex_prism_fuel)
+            
+            guide_tube_cell = openmc.Cell(fill=incoloy800H,
+                                         region=+fuel_control_cyl_sheath_outer & -fuel_control_cyl_guide_outer & axial_region & hex_prism_fuel)
+            guide_tube_cell.temperature = T_matrix
+            
+            fuel_assembly_control_poison_cells.extend([helium_cell, guide_tube_cell])
+    
+    # Create the poison hex lattice cell (outside the control rod guide tube)
+    poison_lattice_cell = openmc.Cell(fill=fuel_assembly_control_poison_lat, 
+                                     region=+fuel_control_cyl_guide_outer & hex_prism_fuel & +min_z & -max_z)
+    
+    # Combine all cells
+    all_control_poison_assembly_cells = fuel_assembly_control_poison_cells + [poison_lattice_cell]
+    fuel_assembly_control_poison_univ = openmc.Universe(cells=all_control_poison_assembly_cells)
+
     # ====================================================================================================
-    # 6. REFLECTOR ASSEMBLY CREATION (UPDATED WITH AXIAL TEMPERATURE ZONES)
+    # 7. REFLECTOR ASSEMBLY CREATION (WITH CENTRAL CONTROL ROD)
     # ====================================================================================================
 
     hex_prism_refl = openmc.model.hexagonal_prism(bundle_pitch / math.sqrt(3.0), 'x')
 
     # Create reflector assembly with same axial zones as fuel assemblies
+    # Plus additional zones for top reflector where guide tubes extend
     reflector_lattice_univs = []
 
+    # Main core region - control rods with sheath and guide tube
     for idx, (z_min, z_max) in enumerate(zip(axial_coords[0:-1], axial_coords[1:])):
-        min_z_plane = openmc.ZPlane(z0=z_min)
-        max_z_plane = openmc.ZPlane(z0=z_max)
-        
-        # Get temperature for this axial zone
-        T_reflector = T_reflector_z[idx]
-        
-        # Create graphite cell with temperature
-        reflector_cell = openmc.Cell(fill=graphite)
-        reflector_cell.temperature = T_reflector
-        
-        # Create universe for this axial zone
-        r_univ = openmc.Universe(cells=[reflector_cell])
-        
-        reflector_lattice_univs.append([[r_univ]])  # Single universe in a 1x1 lattice
+        reflector_lattice_univs.append([[control_rod_univs[idx]]])
 
-    # Create reflector assembly lattice (similar structure to fuel assembly)
-    reflector_assembly_lat = openmc.HexLattice(name="Reflector Lattice")
+    # Create reflector assembly lattice (similar structure to fuel assemblies)
+    reflector_assembly_lat = openmc.HexLattice(name="Reflector Lattice with Control")
     reflector_assembly_lat.orientation = 'x'
     reflector_assembly_lat.center = (0.0, 0.0, 0.5 * (reactor_bottom + reactor_top))
     reflector_assembly_lat.pitch = (bundle_pitch, axial_section_height)
@@ -533,15 +828,18 @@ def run_simulation(params, run_dir):
     reflector_assembly_univ = openmc.Universe(cells=[reflector_assembly_cell])
 
     # ====================================================================================================
-    # 7. CORE LATTICE CREATION
+    # 8. CORE LATTICE CREATION
     # ====================================================================================================
 
     f = fuel_assembly_univ
     r = reflector_assembly_univ
+    fp = fuel_assembly_poison_univ
+    fc = fuel_assembly_control_univ
+    fcp = fuel_assembly_control_poison_univ
 
-    ring0 = [f]
-    ring1 = [f] * 6
-    ring2 = [f] * 12
+    ring0 = [fcp]
+    ring1 = [fp] * 6
+    ring2 = ([f] + [f]) * 6
     # ring3 = [f] * 18
     ring3 = ([r] + [f] + [f]) * 6
     # ring4 = ([r] + [f] + [f] + [f]) * 6
@@ -557,7 +855,7 @@ def run_simulation(params, run_dir):
     core_lattice.universes = core_lattice_univs
 
     # ====================================================================================================
-    # 8. FULL CORE AND OUTER PERMANENT REFLECTOR CREATION (UPDATED WITH TEMPERATURE ZONES)
+    # 9. FULL CORE AND OUTER PERMANENT REFLECTOR CREATION (UPDATED WITH TEMPERATURE ZONES)
     # ====================================================================================================
 
     # The outer permanent reflector (region outside core lattice but inside core_cyl)
@@ -671,7 +969,7 @@ def run_simulation(params, run_dir):
         model.geometry = geometry
 
     # ====================================================================================================
-    # 9. GEOMETRY PLOT GENERATION
+    # 10. GEOMETRY PLOT GENERATION
     # ====================================================================================================
 
     m_colors[fuel] = 'palegreen'
@@ -679,18 +977,21 @@ def run_simulation(params, run_dir):
     m_colors[pyc] = 'orange'
     m_colors[sic] = 'yellow'
     m_colors[graphite] = 'darkblue'
+    m_colors[b4c_poison] = 'purple'
+    m_colors[b4c_control] = 'black'
+    m_colors[incoloy800H] = 'gray'
 
     plot1 = openmc.Plot()
-    plot1.filename = 'Core_XZ_Material'
+    plot1.filename = 'Core_YZ_Material'
     plot1.width = (2 * params["core_radius"], 2 * params["core_height"])
-    plot1.basis = 'xz'
+    plot1.basis = 'yz'
     plot1.origin = (0.0, 0.0, params["core_height"] / 2.0)
     plot1.pixels = (800, 1200)
     plot1.color_by = 'material'
     plot1.colors = m_colors
 
     plot2 = openmc.Plot()
-    plot2.filename = 'Core_XZ_Cell'
+    plot2.filename = 'Core_YZ_Cell'
     plot2.width = plot1.width
     plot2.basis = plot1.basis
     plot2.origin = plot1.origin
@@ -698,16 +999,16 @@ def run_simulation(params, run_dir):
     plot2.color_by = 'cell'
 
     plot3 = openmc.Plot()
-    plot3.filename = 'Bundle_XY_Material'
-    plot3.width = (bundle_pitch, bundle_pitch)
-    plot3.basis = 'xy'
-    plot3.origin = (0.0, 0.0, axial_section_height / 4.0)
-    plot3.pixels = (2000, 2000)
+    plot3.filename = 'Core_XZ_Material'
+    plot3.width = (2 * params["core_radius"], 2 * params["core_height"])
+    plot3.basis = 'xz'
+    plot3.origin = (0.0, 0.0, params["core_height"] / 2.0)
+    plot3.pixels = (800, 1200)
     plot3.color_by = 'material'
     plot3.colors = m_colors
-
+    
     plot4 = openmc.Plot()
-    plot4.filename = 'Bundle_XY_Cell'
+    plot4.filename = 'Core_XZ_Cell'
     plot4.width = plot3.width
     plot4.basis = plot3.basis
     plot4.origin = plot3.origin
@@ -715,26 +1016,43 @@ def run_simulation(params, run_dir):
     plot4.color_by = 'cell'
 
     plot5 = openmc.Plot()
-    plot5.filename = 'Core_XY_Material'
-    plot5.width = (2 * params["core_radius"], 2 * params["core_radius"])
+    plot5.filename = 'Bundle_XY_Material'
+    plot5.width = (bundle_pitch, bundle_pitch)
     plot5.basis = 'xy'
     plot5.origin = (0.0, 0.0, axial_section_height / 4.0)
-    plot5.pixels = (1000, 1000)
+    plot5.pixels = (2000, 2000)
     plot5.color_by = 'material'
     plot5.colors = m_colors
 
     plot6 = openmc.Plot()
-    plot6.filename = 'Core_XY_Cell'
+    plot6.filename = 'Bundle_XY_Cell'
     plot6.width = plot5.width
     plot6.basis = plot5.basis
     plot6.origin = plot5.origin
     plot6.pixels = plot5.pixels
     plot6.color_by = 'cell'
 
-    model.plots = openmc.Plots([plot1, plot2, plot3, plot4, plot5, plot6])
+    plot7 = openmc.Plot()
+    plot7.filename = 'Core_XY_Material'
+    plot7.width = (2 * params["core_radius"], 2 * params["core_radius"])
+    plot7.basis = 'xy'
+    plot7.origin = (0.0, 0.0, axial_section_height / 4.0)
+    plot7.pixels = (1000, 1000)
+    plot7.color_by = 'material'
+    plot7.colors = m_colors
+
+    plot8 = openmc.Plot()
+    plot8.filename = 'Core_XY_Cell'
+    plot8.width = plot7.width
+    plot8.basis = plot7.basis
+    plot8.origin = plot7.origin
+    plot8.pixels = plot7.pixels
+    plot8.color_by = 'cell'
+
+    model.plots = openmc.Plots([plot1, plot2, plot3, plot4, plot5, plot6, plot7, plot8])
 
     # ====================================================================================================
-    # 10. TALLY CREATION
+    # 11. TALLY CREATION
     # ====================================================================================================
 
     tallies = openmc.Tallies()
@@ -798,13 +1116,13 @@ def run_simulation(params, run_dir):
     model.tallies = tallies
 
     # ====================================================================================================
-    # 11. MONTE CARLO SETTINGS
+    # 12. MONTE CARLO SETTINGS
     # ====================================================================================================
 
     settings = openmc.Settings()
     settings.run_mode = "eigenvalue"
-    settings.batches = 300
-    settings.inactive = 50
+    settings.batches = 50
+    settings.inactive = 10
     settings.particles = 100_000
     settings.temperature = {
         'method': 'interpolation',
@@ -826,7 +1144,7 @@ def run_simulation(params, run_dir):
     model.settings = settings
 
     # ====================================================================================================
-    # 12. RUN OPENMC
+    # 13. RUN OPENMC
     # ====================================================================================================
 
     model.export_to_xml()
@@ -840,45 +1158,6 @@ def run_simulation(params, run_dir):
     )
 
     return n_trisos
-
-    # # ====================================================================================================
-    # # CONTROL ROD UNIVERSE (Axially Inserted)
-    # # ====================================================================================================
-
-    # # Creates model of control rods that are axially inserted from above
-
-    # control_cyl = openmc.ZCylinder(r = params["control_radius"])
-
-    # control_top = openmc.ZPlane(z0 = params["core_height"] * 0.5)  # Top of core
-    # control_bottom = openmc.ZPlane(z0 = params["core_height"] * (0.5 - params["control_insertion"]))  # Insertion depth
-
-    # control_region = -control_cyl & -control_top & +control_bottom
-
-    # # Helium region is the coolant channel where control rod is NOT present
-    # helium_region = -control_cyl & ~control_region & -top & +bottom
-
-    # control_cell = openmc.Cell(fill=control, region=control_region)
-    # helium_cell = openmc.Cell(fill=helium, region=helium_region)
-
-    # control_rod = openmc.Universe(cells=[control_cell, helium_cell])
-
-    # # ====================================================================================================
-    # # DEPLETION
-    # # ====================================================================================================
-
-    # operator = openmc.deplete.Operator(
-    #     geometry=geometry,
-    #     settings=settings,
-    #     chain_file="chain_casl.xml"
-    # )
-
-    # timesteps = [30.0] * 12
-
-    # integrator = openmc.deplete.PredictorIntegrator(
-    #     operator,
-    #     timesteps,
-    #     power=settings.power
-    # )
 
 # ====================================================================================================
 # GLOBAL PARAMETERS (Most Major Design Variables Live Here)
@@ -917,7 +1196,6 @@ params = {
     "matrix_density": 1850,
 
     # ----- Hexagonal Lattice -----
-    # "fuel_to_coolant_distance": 1.88,
     "fuel_to_coolant_distance": 2.5,
     "n_fuel_assemblies_per_core": 31,
 
@@ -934,10 +1212,11 @@ params = {
     "B4C_density_poison": 2380,
 
     # ----- Control Rods -----
-    "control_radius": 5.08,
+    "control_radius": 5.08,                    # Radius for reflector assembly control rods
+    "fuel_assembly_control_radius": 5.08,      # Radius for circular control rods in fuel assemblies
     "sheath_thickness": 0.3, 
     "guide_tube_thickness": 0.5,  
-    "control_insertion": 0.50,                 # Fractional control rod insertion (0-1.0)
+    "control_insertion": 1.0,                  # Fractional control rod insertion (0-1.0)
     "B10_enrichment_control": 0.6,
     "B10_wt_percent_control": 0.001,
     "B4C_density_control": 2380,
@@ -1059,4 +1338,3 @@ if __name__ == "__main__":
         print("SIMULATION COMPLETE")
         print(f"Results Directory: {BASE_DIR}")
         print(f"{'='*80}\n")
-

@@ -5,7 +5,7 @@ import pandas as pd
 import re
 
 # Main parametric study directory
-PARAMETRIC_DIR = '/home/cade/Desktop/OpenMC/SeniorDesign/MicroHTGR_Output/htgr_run_01.27.2026_20.54.15_ParametricStudy_triso_pf'
+PARAMETRIC_DIR = '/home/cade/Desktop/OpenMC/SeniorDesign/MicroHTGR_Output/htgr_run_02.01.2026_11.55.45_ParametricStudy_triso_pf'
 batch_number = 50
 
 # ============================================================
