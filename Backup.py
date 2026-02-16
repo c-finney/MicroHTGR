@@ -5,6 +5,8 @@ import openmc
 import numpy as np
 import openmc.deplete
 from datetime import datetime
+import config as cfg
+import materials as mats
 
 cross_sections_path = '/home/cade/Desktop/OpenMC/CrossSections/cross_sections.xml'
 os.environ['OPENMC_CROSS_SECTIONS'] = cross_sections_path
@@ -176,114 +178,7 @@ def run_simulation(params, run_dir):
     shutil.copy2(cross_sections_path, os.path.join(run_dir, 'cross_sections.xml'))
 
     model = openmc.model.Model()
-
-    # ====================================================================================================
-    # 2. MATERIAL DEFINITIONS (Material Constants And Compositions)
-    # ====================================================================================================
-
-    materials = openmc.Materials()
-
-    # ----- Fuel Kernel -----
-    fuel = openmc.Material(name="Fuel")
-    fuel.add_nuclide("U235", params["enrichment"])
-    fuel.add_nuclide("U238", 1.0 - params["enrichment"])
-    fuel.add_element("C", 1.0)
-    fuel.add_element('O', 0.50)
-    fuel.set_density("kg/m3", params["kernel_density"])
-    fuel.depletable = True
-
-    # ----- TRISO Layers -----
-    buffer = openmc.Material(name="Buffer") # Carbon buffer layer
-    buffer.add_element("C", 1.0)
-    buffer.set_density("kg/m3", params["buffer_density"])
-
-    pyc = openmc.Material(name="PyC") # Pyrolytic carbon layer (inner and outer)
-    pyc.add_element("C", 1.0)
-    pyc.set_density("kg/m3", params["pyc_density"])
-
-    sic = openmc.Material(name="SiC") # Silicon carbide layer
-    sic.add_element("Si", 1.0)
-    sic.add_element("C", 1.0)
-    sic.set_density("kg/m3", params["sic_density"])
-
-    # ----- Moderator/Reflector -----
-    graphite = openmc.Material(name="Graphite")
-    boron_mass_fraction = params["boron_ppm"] / 1e6
-    A_carbon = 12.011
-    A_boron = 10.811
-    boron_atom_fraction = boron_mass_fraction * A_carbon / A_boron
-    graphite.add_element("C", 1.0 - boron_atom_fraction)
-    graphite.add_element("B", boron_atom_fraction)
-    graphite.set_density("kg/m3", params["matrix_density"])
-
-    # ----- Helium Coolant -----
-    helium = openmc.Material(name="Helium")
-    helium.add_nuclide("He4", 1.0)
-    helium.set_density("kg/m3", params["coolant_density"])
-
-    # ----- Boron Carbide Burnable Poison -----
-    b4c_poison = openmc.Material(name="B4C_Poison")
-    enrichment_10_poison = params["B10_enrichment_poison"]
-    mass_10 = openmc.data.atomic_mass('B10')
-    mass_11 = openmc.data.atomic_mass('B11')
-
-    # number of atoms in one gram of boron mixture
-    n_10_poison = enrichment_10_poison / mass_10
-    n_11_poison = (1.0 - enrichment_10_poison) / mass_11
-    total_n_poison = n_10_poison + n_11_poison
-    grams_10_poison = n_10_poison / total_n_poison
-    grams_11_poison = n_11_poison / total_n_poison
-
-    # now, figure out how much carbon needs to be in the poison to get
-    # an overall specified B10 weight percent
-    total_b10_weight_percent_poison = params["B10_wt_percent_poison"]
-    total_mass_poison = grams_10_poison / total_b10_weight_percent_poison
-    carbon_mass_poison = total_mass_poison - grams_10_poison - grams_11_poison
-
-    b4c_poison.add_nuclide('B10', grams_10_poison / total_mass_poison, 'wo')
-    b4c_poison.add_nuclide('B11', grams_11_poison / total_mass_poison, 'wo')
-    b4c_poison.add_element('C', carbon_mass_poison / total_mass_poison, 'wo')
-    b4c_poison.set_density('kg/m3', params["B4C_density_poison"])
-
-    # ----- Boron Carbide Control Rod -----
-    b4c_control = openmc.Material(name="B4C_Control")
-    enrichment_10_control = params["B10_enrichment_control"]
-
-    # number of atoms in one gram of boron mixture
-    n_10_control = enrichment_10_control / mass_10
-    n_11_control = (1.0 - enrichment_10_control) / mass_11
-    total_n_control = n_10_control + n_11_control
-    grams_10_control = n_10_control / total_n_control
-    grams_11_control = n_11_control / total_n_control
-
-    # now, figure out how much carbon needs to be in the control rod to get
-    # an overall specified B10 weight percent
-    total_b10_weight_percent_control = params["B10_wt_percent_control"]
-    total_mass_control = grams_10_control / total_b10_weight_percent_control
-    carbon_mass_control = total_mass_control - grams_10_control - grams_11_control
-
-    b4c_control.add_nuclide('B10', grams_10_control / total_mass_control, 'wo')
-    b4c_control.add_nuclide('B11', grams_11_control / total_mass_control, 'wo')
-    b4c_control.add_element('C', carbon_mass_control / total_mass_control, 'wo')
-    b4c_control.set_density('kg/m3', params["B4C_density_control"])
-
-    # ----- Incoloy 800H -----
-    incoloy800H = openmc.Material(name='Incoloy 800H')
-    incoloy800H.set_density('kg/m3', params["Incoloy800H_density"])
-    incoloy800H.add_element('Ni', 32.5, 'wo')
-    incoloy800H.add_element('Cr', 21.0, 'wo')
-    incoloy800H.add_element('Al', 0.40, 'wo')
-    incoloy800H.add_element('Ti', 0.40, 'wo')
-    incoloy800H.add_element('C', 0.08, 'wo')
-    incoloy800H.add_element('Mn', 1.0, 'wo')
-    incoloy800H.add_element('Si', 0.50, 'wo')
-    incoloy800H.add_element('S', 0.015, 'wo')
-    incoloy800H.add_element('Cu', 0.50, 'wo')
-    incoloy800H.add_element('Fe', 43.605, 'wo')
-
-    materials += [fuel, buffer, pyc, sic, graphite, helium, b4c_poison, b4c_control, incoloy800H]
-    materials.export_to_xml()
-
+    
     # ----- Initialize Temperature Profiles -----
 
     # Helper function for cosine temperature distribution
@@ -333,12 +228,12 @@ def run_simulation(params, run_dir):
     s_sic    = openmc.Sphere(r = r_sic)
     s_opyc   = openmc.Sphere(r = r_opyc)
 
-    c_triso_fuel   = openmc.Cell(name = 'c_triso_fuel'     , fill = fuel,     region = -s_fuel)
-    c_triso_buffer = openmc.Cell(name = 'c_triso_c_buffer' , fill = buffer,   region = +s_fuel & -s_buffer)
-    c_triso_ipyc   = openmc.Cell(name = 'c_triso_pyc_inner', fill = pyc,      region = +s_buffer & -s_ipyc)
-    c_triso_sic    = openmc.Cell(name = 'c_triso_sic'      , fill = sic,      region = +s_ipyc & -s_sic)
-    c_triso_opyc   = openmc.Cell(name = 'c_triso_pyc_outer', fill = pyc,      region = +s_sic & -s_opyc)
-    c_triso_matrix = openmc.Cell(name = 'c_triso_matrix'   , fill = graphite, region = +s_opyc)
+    c_triso_fuel   = openmc.Cell(name = 'c_triso_fuel'     , fill = mats.fuel,     region = -s_fuel)
+    c_triso_buffer = openmc.Cell(name = 'c_triso_c_buffer' , fill = mats.buffer,   region = +s_fuel & -s_buffer)
+    c_triso_ipyc   = openmc.Cell(name = 'c_triso_pyc_inner', fill = mats.pyc,      region = +s_buffer & -s_ipyc)
+    c_triso_sic    = openmc.Cell(name = 'c_triso_sic'      , fill = mats.sic,      region = +s_ipyc & -s_sic)
+    c_triso_opyc   = openmc.Cell(name = 'c_triso_pyc_outer', fill = mats.pyc,      region = +s_sic & -s_opyc)
+    c_triso_matrix = openmc.Cell(name = 'c_triso_matrix'   , fill = mats.graphite, region = +s_opyc)
 
     triso_universe = openmc.Universe(cells=[c_triso_fuel, c_triso_buffer, c_triso_ipyc, c_triso_sic, c_triso_opyc, c_triso_matrix])
 
@@ -403,7 +298,7 @@ def run_simulation(params, run_dir):
 
     # Insert TRISOs into a lattice to accelerate point location queries
     pitch = (urc - llc) / triso_lattice_shape
-    triso_lattice = openmc.model.create_triso_lattice(random_trisos, llc, pitch, triso_lattice_shape, graphite)
+    triso_lattice = openmc.model.create_triso_lattice(random_trisos, llc, pitch, triso_lattice_shape, mats.graphite)
 
     axial_coords = np.linspace(reactor_bottom, reactor_top, params["n_ax_zones"] + 1)
     fuel_lattice_univs = []
@@ -427,26 +322,26 @@ def run_simulation(params, run_dir):
         fuel_ch_cell = openmc.Cell(region=-fuel_cyl, fill=triso_lattice)
         fuel_ch_cell.temperature = T_compact
 
-        fuel_ch_matrix_cell = openmc.Cell(region=+fuel_cyl, fill=graphite)
+        fuel_ch_matrix_cell = openmc.Cell(region=+fuel_cyl, fill=mats.graphite)
         fuel_ch_matrix_cell.temperature = T_matrix
 
         # Poison channel cells
-        poison_ch_cell = openmc.Cell(region=-poison_cyl, fill=b4c_poison)
+        poison_ch_cell = openmc.Cell(region=-poison_cyl, fill=mats.b4c_poison)
         poison_ch_cell.temperature = T_matrix
 
-        poison_ch_matrix_cell = openmc.Cell(region=+poison_cyl, fill=graphite)
+        poison_ch_matrix_cell = openmc.Cell(region=+poison_cyl, fill=mats.graphite)
         poison_ch_matrix_cell.temperature = T_matrix
 
         # Graphite reflector cells
-        graphite_cell = openmc.Cell(fill=graphite)
+        graphite_cell = openmc.Cell(fill=mats.graphite)
         graphite_cell.temperature = T_matrix
 
         # Create fluid cells and clone the material to set unique densities (for TH coupling)
-        coolant_matrix_cell = openmc.Cell(region=+coolant_cyl, fill=graphite)
+        coolant_matrix_cell = openmc.Cell(region=+coolant_cyl, fill=mats.graphite)
         coolant_matrix_cell.temperature = T_matrix
 
         # Create coolant cell with single material (not distributed)
-        coolant_helium = helium.clone()
+        coolant_helium = mats.helium.clone()
         coolant_helium.temperature = T_coolant
         m_colors[coolant_helium] = 'red'
         
@@ -521,36 +416,36 @@ def run_simulation(params, run_dir):
         
         if z_mid >= control_bottom:
             # Control rod is present here (B4C + sheath + guide tube)
-            b4c_cell = openmc.Cell(fill=b4c_control, region=-control_cyl_b4c)
+            b4c_cell = openmc.Cell(fill=mats.b4c_control, region=-control_cyl_b4c)
             b4c_cell.temperature = T_matrix
             
-            sheath_cell = openmc.Cell(fill=incoloy800H, 
+            sheath_cell = openmc.Cell(fill=mats.incoloy800H, 
                                      region=+control_cyl_b4c & -control_cyl_sheath_outer)
             sheath_cell.temperature = T_matrix
             
-            guide_tube_cell = openmc.Cell(fill=incoloy800H,
+            guide_tube_cell = openmc.Cell(fill=mats.incoloy800H,
                                          region=+control_cyl_sheath_outer & -control_cyl_guide_outer)
             guide_tube_cell.temperature = T_matrix
             
             # Graphite outside guide tube
-            matrix_cell = openmc.Cell(fill=graphite, region=+control_cyl_guide_outer)
+            matrix_cell = openmc.Cell(fill=mats.graphite, region=+control_cyl_guide_outer)
             matrix_cell.temperature = T_matrix
             
             control_univ = openmc.Universe(cells=[b4c_cell, sheath_cell, guide_tube_cell, matrix_cell])
         else:
             # Guide tube only with helium inside (control rod withdrawn)
-            guide_helium = helium.clone()
+            guide_helium = mats.helium.clone()
             guide_helium.temperature = T_coolant
             m_colors[guide_helium] = 'red'
             
             guide_helium_cell = openmc.Cell(fill=guide_helium, region=-control_cyl_sheath_outer)
             
-            guide_tube_cell = openmc.Cell(fill=incoloy800H,
+            guide_tube_cell = openmc.Cell(fill=mats.incoloy800H,
                                          region=+control_cyl_sheath_outer & -control_cyl_guide_outer)
             guide_tube_cell.temperature = T_matrix
             
             # Graphite outside guide tube
-            matrix_cell = openmc.Cell(fill=graphite, region=+control_cyl_guide_outer)
+            matrix_cell = openmc.Cell(fill=mats.graphite, region=+control_cyl_guide_outer)
             matrix_cell.temperature = T_matrix
             
             control_univ = openmc.Universe(cells=[guide_helium_cell, guide_tube_cell, matrix_cell])
@@ -585,7 +480,7 @@ def run_simulation(params, run_dir):
     fuel_assembly_lat.pitch = (params["fuel_to_coolant_distance"], axial_section_height)
     fuel_assembly_lat.universes = fuel_lattice_univs
 
-    graphite_outer_cell = openmc.Cell(fill=graphite)
+    graphite_outer_cell = openmc.Cell(fill=mats.graphite)
     inf_graphite_universe = openmc.Universe(cells=[graphite_outer_cell])
     fuel_assembly_lat.outer = inf_graphite_universe
 
@@ -639,7 +534,7 @@ def run_simulation(params, run_dir):
         ring3 = base_univs[1]
         
         # Create graphite universe for inner rings (ring0, ring1, ring2)
-        graphite_inner_cell = openmc.Cell(fill=graphite)
+        graphite_inner_cell = openmc.Cell(fill=mats.graphite)
         graphite_inner_cell.temperature = T_matrix
         g_inner = openmc.Universe(cells=[graphite_inner_cell])
         
@@ -683,29 +578,29 @@ def run_simulation(params, run_dir):
         
         if z_mid >= control_bottom:
             # Control rod INSERTED - B4C + sheath + guide tube
-            b4c_cell = openmc.Cell(fill=b4c_control, 
+            b4c_cell = openmc.Cell(fill=mats.b4c_control, 
                                   region=-fuel_control_cyl_b4c & axial_region & hex_prism_fuel)
             b4c_cell.temperature = T_matrix
             
-            sheath_cell = openmc.Cell(fill=incoloy800H,
+            sheath_cell = openmc.Cell(fill=mats.incoloy800H,
                                      region=+fuel_control_cyl_b4c & -fuel_control_cyl_sheath_outer & axial_region & hex_prism_fuel)
             sheath_cell.temperature = T_matrix
             
-            guide_tube_cell = openmc.Cell(fill=incoloy800H,
+            guide_tube_cell = openmc.Cell(fill=mats.incoloy800H,
                                          region=+fuel_control_cyl_sheath_outer & -fuel_control_cyl_guide_outer & axial_region & hex_prism_fuel)
             guide_tube_cell.temperature = T_matrix
             
             fuel_assembly_control_cells.extend([b4c_cell, sheath_cell, guide_tube_cell])
         else:
             # Control rod WITHDRAWN - Guide tube with helium inside
-            control_helium = helium.clone()
+            control_helium = mats.helium.clone()
             control_helium.temperature = T_coolant
             m_colors[control_helium] = 'red'
             
             helium_cell = openmc.Cell(fill=control_helium, 
                                      region=-fuel_control_cyl_sheath_outer & axial_region & hex_prism_fuel)
             
-            guide_tube_cell = openmc.Cell(fill=incoloy800H,
+            guide_tube_cell = openmc.Cell(fill=mats.incoloy800H,
                                          region=+fuel_control_cyl_sheath_outer & -fuel_control_cyl_guide_outer & axial_region & hex_prism_fuel)
             guide_tube_cell.temperature = T_matrix
             
@@ -735,7 +630,7 @@ def run_simulation(params, run_dir):
         ring3 = poison_univs[1]
         
         # Create graphite universe for inner rings (ring0, ring1, ring2)
-        graphite_inner_cell = openmc.Cell(fill=graphite)
+        graphite_inner_cell = openmc.Cell(fill=mats.graphite)
         graphite_inner_cell.temperature = T_matrix
         g_inner = openmc.Universe(cells=[graphite_inner_cell])
         
@@ -770,29 +665,29 @@ def run_simulation(params, run_dir):
         
         if z_mid >= control_bottom:
             # Control rod INSERTED - B4C + sheath + guide tube
-            b4c_cell = openmc.Cell(fill=b4c_control, 
+            b4c_cell = openmc.Cell(fill=mats.b4c_control, 
                                   region=-fuel_control_cyl_b4c & axial_region & hex_prism_fuel)
             b4c_cell.temperature = T_matrix
             
-            sheath_cell = openmc.Cell(fill=incoloy800H,
+            sheath_cell = openmc.Cell(fill=mats.incoloy800H,
                                      region=+fuel_control_cyl_b4c & -fuel_control_cyl_sheath_outer & axial_region & hex_prism_fuel)
             sheath_cell.temperature = T_matrix
             
-            guide_tube_cell = openmc.Cell(fill=incoloy800H,
+            guide_tube_cell = openmc.Cell(fill=mats.incoloy800H,
                                          region=+fuel_control_cyl_sheath_outer & -fuel_control_cyl_guide_outer & axial_region & hex_prism_fuel)
             guide_tube_cell.temperature = T_matrix
             
             fuel_assembly_control_poison_cells.extend([b4c_cell, sheath_cell, guide_tube_cell])
         else:
             # Control rod WITHDRAWN - Guide tube with helium inside
-            control_helium = helium.clone()
+            control_helium = mats.helium.clone()
             control_helium.temperature = T_coolant
             m_colors[control_helium] = 'red'
             
             helium_cell = openmc.Cell(fill=control_helium, 
                                      region=-fuel_control_cyl_sheath_outer & axial_region & hex_prism_fuel)
             
-            guide_tube_cell = openmc.Cell(fill=incoloy800H,
+            guide_tube_cell = openmc.Cell(fill=mats.incoloy800H,
                                          region=+fuel_control_cyl_sheath_outer & -fuel_control_cyl_guide_outer & axial_region & hex_prism_fuel)
             guide_tube_cell.temperature = T_matrix
             
@@ -828,7 +723,7 @@ def run_simulation(params, run_dir):
     reflector_assembly_lat.universes = reflector_lattice_univs
 
     # Outer universe for reflector lattice
-    graphite_outer_refl = openmc.Cell(fill=graphite)
+    graphite_outer_refl = openmc.Cell(fill=mats.graphite)
     graphite_outer_refl.temperature = params["reflector_min"]
     inf_graphite_refl_universe = openmc.Universe(cells=[graphite_outer_refl])
     reflector_assembly_lat.outer = inf_graphite_refl_universe
@@ -886,7 +781,7 @@ def run_simulation(params, run_dir):
         T_reflector = T_reflector_z[idx]
         
         # Clone graphite material and set temperature
-        graphite_clone = graphite.clone()
+        graphite_clone = mats.graphite.clone()
         m_colors[graphite_clone] = 'darkblue'
         graphite_clone.temperature = T_reflector
         
@@ -936,11 +831,11 @@ def run_simulation(params, run_dir):
         bottom_refl = openmc.ZPlane(z0=bottom_refl_z, boundary_type='vacuum')
 
         # Clone graphite for top/bottom reflectors and set temperature
-        graphite_top = graphite.clone()
+        graphite_top = mats.graphite.clone()
         m_colors[graphite_top] = 'darkblue'
         graphite_top.temperature = T_reflector_axial
         
-        graphite_bottom = graphite.clone()
+        graphite_bottom = mats.graphite.clone()
         m_colors[graphite_bottom] = 'darkblue'
         graphite_bottom.temperature = T_reflector_axial
 
@@ -967,11 +862,11 @@ def run_simulation(params, run_dir):
         bottom_refl = openmc.ZPlane(z0=bottom_refl_z, boundary_type='vacuum')
 
         # Clone graphite for top/bottom reflectors and set temperature
-        graphite_top = graphite.clone()
+        graphite_top = mats.graphite.clone()
         m_colors[graphite_top] = 'darkblue'
         graphite_top.temperature = T_reflector_axial
         
-        graphite_bottom = graphite.clone()
+        graphite_bottom = mats.graphite.clone()
         m_colors[graphite_bottom] = 'darkblue'
         graphite_bottom.temperature = T_reflector_axial
 
@@ -986,14 +881,14 @@ def run_simulation(params, run_dir):
     # 10. GEOMETRY PLOT GENERATION
     # ====================================================================================================
 
-    m_colors[fuel] = 'palegreen'
-    m_colors[buffer] = 'sandybrown'
-    m_colors[pyc] = 'orange'
-    m_colors[sic] = 'yellow'
-    m_colors[graphite] = 'darkblue'
-    m_colors[b4c_poison] = 'purple'
-    m_colors[b4c_control] = 'black'
-    m_colors[incoloy800H] = 'gray'
+    m_colors[mats.fuel] = 'palegreen'
+    m_colors[mats.buffer] = 'sandybrown'
+    m_colors[mats.pyc] = 'orange'
+    m_colors[mats.sic] = 'yellow'
+    m_colors[mats.graphite] = 'darkblue'
+    m_colors[mats.b4c_poison] = 'purple'
+    m_colors[mats.b4c_control] = 'black'
+    m_colors[mats.incoloy800H] = 'gray'
 
     plot1 = openmc.Plot()
     plot1.filename = 'Core_YZ_Material'
@@ -1073,7 +968,7 @@ def run_simulation(params, run_dir):
 
     # ----- Energy Spectrum Tallies -----
     # Create filter for fuel and energy bins
-    fuel_filter = openmc.MaterialFilter(fuel)
+    fuel_filter = openmc.MaterialFilter(mats.fuel)
     energy_bins = np.logspace(-9, 7, 200)
     energy_filter = openmc.EnergyFilter(energy_bins)
 
@@ -1161,6 +1056,8 @@ def run_simulation(params, run_dir):
     # 13. RUN OPENMC
     # ====================================================================================================
 
+    all_mats = model.geometry.get_all_materials()
+    model.materials = openmc.Materials(all_mats.values())
     model.export_to_xml()
 
     openmc.plot_geometry(output=False, cwd=run_dir)
@@ -1172,110 +1069,6 @@ def run_simulation(params, run_dir):
     )
 
     return n_trisos
-
-# ====================================================================================================
-# GLOBAL PARAMETERS (Most Major Design Variables Live Here)
-# ====================================================================================================
-
-# Unless otherwise stated all length dimensions are in cm and densities in kg/m3
-
-params = {
-    # ----- Fuel Kernel -----
-    "fuel_type": "UCO",
-    "enrichment": 0.1975,                      # U-235 atom fraction
-    "kernel_radius": 0.021485,
-    "kernel_density": 10820, 
-
-    # ----- TRISO Layers -----
-    "buffer_thickness": 0.01,
-    "ipyc_thickness": 0.004,
-    "sic_thickness": 0.0035,
-    "opyc_thickness": 0.004,
-    "buffer_density": 1050,
-    "pyc_density": 1900,
-    "sic_density": 3203,
-
-    # ----- Fuel Compact  -----
-    "compact_radius": 0.635,
-    "compact_height": 4.93,
-    "triso_pf": 0.30,                          # Packing fraction of triso particles in fuel compact
-
-    # ----- Coolant Channel -----
-    "n_coolant_channels_per_block": 18,        # Number of coolant channels per assembly
-    "coolant_radius": 0.8,
-    "coolant_density": 2.873, 
-
-    # ----- Graphite Moderator/Reflector -----
-    "boron_ppm": 1.1,
-    "matrix_density": 1850,
-
-    # ----- Hexagonal Lattice -----
-    "fuel_to_coolant_distance": 2.5,
-    "n_fuel_assemblies_per_core": 31,
-
-    # ----- Core Dimensions -----
-    "core_radius": 90.0,
-    "core_height": 237.9,
-    "reflector_thickness": 79.3, 
-    "n_ax_zones": 50,
-    "use_1/6_geometry": False,
-
-    # ----- Burnable Poison -----
-    "B10_enrichment_poison": 0.3,
-    "B10_wt_percent_poison": 0.001,
-    "B4C_density_poison": 2380,
-
-    # ----- Control Rods -----
-    "control_radius": 2.54,                    # Radius for reflector assembly control rods
-    "fuel_assembly_control_radius": 2.54,      # Radius for circular control rods in fuel assemblies
-    "sheath_thickness": 0.1, 
-    "guide_tube_thickness": 0.2,  
-    "control_insertion": 0.0,                  # Fractional control rod insertion (0-1.0)
-    "B10_enrichment_control": 0.6,
-    "B10_wt_percent_control": 0.001,
-    "B4C_density_control": 2380,
-    "Incoloy800H_density": 7940,
-
-    # ----- Temperatures in Kelvin -----
-    "coolant_inlet": 573.15,
-    "coolant_outlet": 1023.15,
-    "compact_min": 973.15,
-    "compact_max": 1173.15,
-    "matrix_min": 903.15,
-    "matrix_max": 1083.15,
-    "reflector_min": 903.15,
-    "reflector_max": 968.15
-}
-
-# ====================================================================================================
-# SINGLE PARAMETRIC STUDY CONNFIGURATION
-# ====================================================================================================
-
-parametric_param = None
-parametric_values = None
-
-# parametric_param = "triso_pf"
-# parametric_values = [0.15, 0.175, 0.2, 0.225, 0.25, 0.275, 0.3]
-
-# parametric_param = "fuel_to_coolant_distance"
-# parametric_values = [1.8, 1.9, 2.0, 2.1, 2.2, 2.3, 2.4]
-# parametric_values = [2.5, 2.6, 2.7, 2.8, 2.9, 3.0]
-
-# parametric_param = "enrichment"
-# parametric_values = [0.075, 0.10, 0.125, 0.15, 0.175, 0.1975]
-
-# parametric_param = "boron_ppm"
-# parametric_values = [0.005, 0.01, 0.02, 0.03, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0]
-
-# ====================================================================================================
-# GRID SEARCH STUDY CONNFIGURATION
-# ====================================================================================================
-
-# parametric_param_1 = "triso_pf"
-# parametric_values_1 = [0.15, 0.16, 0.17, 0.18, 0.19, 0.2, 0.21, 0.22, 0.23, 0.24, 0.25, 0.26, 0.27, 0.28, 0.29, 0.3]
-
-# parametric_param_2 = "bundle_pitch"
-# parametric_values_2 = [16, 17, 18, 19, 20, 21, 22, 23, 24]
 
 # ====================================================================================================
 # STUDY EXECUTION 
@@ -1294,38 +1087,38 @@ if __name__ == "__main__":
     
     BASE_DIR = os.path.join(OUTPUT_BASE, run_name)
 
-    run_parametric_study = parametric_param is not None and len(parametric_values) > 0
+    run_parametric_study = cfg.parametric_param is not None and len(cfg.parametric_values) > 0
     
     # ----- Run Parametric Study -----
     if run_parametric_study:
         # Add "_ParametricStudy" suffix to base run folder
-        BASE_DIR = os.path.join(OUTPUT_BASE, run_name + "_ParametricStudy" + f"_{parametric_param}")
+        BASE_DIR = os.path.join(OUTPUT_BASE, run_name + "_ParametricStudy" + f"_{cfg.parametric_param}")
         os.makedirs(BASE_DIR, exist_ok=True)
 
         print(f"\n{'='*80}")
-        print(f"PARAMETRIC STUDY: {parametric_param}")
-        print(f"Values: {parametric_values}")
+        print(f"PARAMETRIC STUDY: {cfg.parametric_param}")
+        print(f"Values: {cfg.parametric_values}")
         print(f"Base Directory: {BASE_DIR}")
         print(f"{'='*80}")
         
         # Iteratively run simulation for values in parametric study
-        for i, val in enumerate(parametric_values):
+        for i, val in enumerate(cfg.parametric_values):
             caseNum = i + 1
-            caseNumFormatted = f"{caseNum:0{len(str(len(parametric_values)))+1}d}"
+            caseNumFormatted = f"{caseNum:0{len(str(len(cfg.parametric_values)))+1}d}"
 
-            runName = f"{parametric_param}_Case_{caseNumFormatted}_{val}"
+            runName = f"{cfg.parametric_param}_Case_{caseNumFormatted}_{val}"
             
             # Create run-specific directory for current value
             run_dir = os.path.join(BASE_DIR, runName)
 
             print(f"\n{'='*80}")
-            print(f"Runing Case {caseNumFormatted}: {parametric_param} = {val}")
+            print(f"Runing Case {caseNumFormatted}: {cfg.parametric_param} = {val}")
             print(f"Run Directory: {run_dir}")
             print(f"{'='*80}\n")
 
             # Create temporary copy of params and modify the current specified parameter
-            params_copy = params.copy()
-            params_copy[parametric_param] = val
+            params_copy = cfg.params.copy()
+            params_copy[cfg.parametric_param] = val
 
             run_simulation(params_copy, run_dir)
         
@@ -1344,9 +1137,9 @@ if __name__ == "__main__":
         print(f"Run directory: {BASE_DIR}")
         print(f"{'='*80}\n")
         
-        n_trisos = run_simulation(params, BASE_DIR)
+        n_trisos = run_simulation(cfg.params, BASE_DIR)
 
-        estimate_fuel_cycle_length(params, n_trisos, BASE_DIR, 160_000)
+        estimate_fuel_cycle_length(cfg.params, n_trisos, BASE_DIR, 160_000)
         
         print(f"\n{'='*80}")
         print("SIMULATION COMPLETE")

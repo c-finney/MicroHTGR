@@ -4,8 +4,8 @@ import matplotlib.pyplot as plt
 import os
 
 # Set path to your run directory
-BASE_DIR = '/home/cade/Desktop/OpenMC/SeniorDesign/MicroHTGR_Output/htgr_run_02.01.2026_13.41.45_SingleRun'
-batch_number = 50
+BASE_DIR = '/home/cade/Desktop/OpenMC/SeniorDesign/MicroHTGR_Output/htgr_run_02.03.2026_23.31.58_SingleRun'
+batch_number = 100
 target_power_MW = 15.0  # Target reactor power
 IS_WEDGE_GEOMETRY = False  # Set to True if using 1/6 geometry
 
@@ -258,119 +258,6 @@ def plot_htgr_xyslice(batch, z_index, reconstruct=False):
     plt.savefig(save_path, bbox_inches='tight')
     plt.close()
     print(f"Saved fission plot: {save_path}")
-
-# def plot_htgr_axial_crosssection(batch, angle_deg=0):
-#     """
-#     Plot axial cross-section (RZ slice) through the core
-#     Shows full height and radial distribution
-    
-#     Parameters:
-#     -----------
-#     batch : int
-#         Batch number for statepoint file
-#     angle_deg : float
-#         Angle (degrees) for cross-section plane (0 = along x-axis)
-#     """
-    
-#     sp_path = os.path.join(BASE_DIR, f'statepoint.{batch}.h5')
-#     sp = openmc.StatePoint(sp_path)
-    
-#     # Get normalization factor
-#     source_per_sec = get_normalization_factor(sp_path)
-    
-#     # Get mesh tally
-#     tally = sp.get_tally(name='mesh_rates')
-#     mesh = tally.find_filter(openmc.MeshFilter).mesh
-    
-#     nx, ny, nz = mesh.dimension
-#     scores = tally.scores
-    
-#     flux_idx = scores.index('flux')
-#     fission_idx = scores.index('fission')
-    
-#     mean = tally.mean[:, 0, :]
-#     flux_per_source = mean[:, flux_idx]
-#     fission_per_source = mean[:, fission_idx]
-    
-#     # APPLY MANUAL NORMALIZATION
-#     flux = flux_per_source * source_per_sec
-#     fission = fission_per_source * source_per_sec
-    
-#     # Reshape to 3D
-#     flux_3d = flux.reshape((nx, ny, nz), order='F')
-#     fission_3d = fission.reshape((nx, ny, nz), order='F')
-    
-#     # Create coordinate arrays
-#     x_edges = np.linspace(mesh.lower_left[0], mesh.upper_right[0], nx + 1)
-#     y_edges = np.linspace(mesh.lower_left[1], mesh.upper_right[1], ny + 1)
-#     z_edges = np.linspace(mesh.lower_left[2], mesh.upper_right[2], nz + 1)
-    
-#     x_centers = (x_edges[:-1] + x_edges[1:]) / 2
-#     y_centers = (y_edges[:-1] + y_edges[1:]) / 2
-#     z_centers = (z_edges[:-1] + z_edges[1:]) / 2
-    
-#     # Extract data along the specified angle
-#     angle_rad = np.radians(angle_deg)
-#     cos_a = np.cos(angle_rad)
-#     sin_a = np.sin(angle_rad)
-    
-#     # Create RZ slice
-#     n_r = nx
-#     r_max = max(abs(mesh.lower_left[0]), abs(mesh.upper_right[0]))
-#     r_points = np.linspace(-r_max, r_max, n_r)
-    
-#     flux_rz = np.zeros((len(r_points), nz))
-#     fission_rz = np.zeros((len(r_points), nz))
-    
-#     for i, r in enumerate(r_points):
-#         x_point = r * cos_a
-#         y_point = r * sin_a
-        
-#         # Find nearest mesh indices
-#         if mesh.lower_left[0] <= x_point <= mesh.upper_right[0] and \
-#            mesh.lower_left[1] <= y_point <= mesh.upper_right[1]:
-#             i_x = np.argmin(np.abs(x_centers - x_point))
-#             i_y = np.argmin(np.abs(y_centers - y_point))
-            
-#             flux_rz[i, :] = flux_3d[i_x, i_y, :]
-#             fission_rz[i, :] = fission_3d[i_x, i_y, :]
-    
-#     # Create meshgrid for plotting
-#     R, Z = np.meshgrid(r_points, z_centers, indexing='ij')
-    
-#     # Plot flux cross-section
-#     fig, ax = plt.subplots(figsize=(10, 6), dpi=150)
-#     pcm = ax.pcolormesh(R, Z, flux_rz, shading='auto', cmap='hot')
-#     cbar = plt.colorbar(pcm, ax=ax, label='Flux [n/(cm² · s)]')
-#     cbar.formatter.set_powerlimits((0, 0))
-#     cbar.update_ticks()
-#     ax.set_xlabel('Radial Position [cm]')
-#     ax.set_ylabel('Axial Position [cm]')
-#     ax.set_title(f'Neutron Flux - Axial Cross-Section at {angle_deg}° (Batch {batch})\n{target_power_MW} MW')
-#     ax.set_aspect('equal')
-#     ax.axvline(x=0, color='white', linestyle='--', linewidth=1, alpha=0.5)
-    
-#     save_path = os.path.join(BASE_DIR, f'batch{batch}_flux_rz_angle{angle_deg}_normalized.png')
-#     plt.savefig(save_path, bbox_inches='tight')
-#     plt.close()
-#     print(f"Saved flux RZ plot: {save_path}")
-    
-#     # Plot fission cross-section
-#     fig, ax = plt.subplots(figsize=(10, 6), dpi=150)
-#     pcm = ax.pcolormesh(R, Z, fission_rz, shading='auto', cmap='hot')
-#     cbar = plt.colorbar(pcm, ax=ax, label='Fission Rate [fissions/s]')
-#     cbar.formatter.set_powerlimits((0, 0))
-#     cbar.update_ticks()
-#     ax.set_xlabel('Radial Position [cm]')
-#     ax.set_ylabel('Axial Position [cm]')
-#     ax.set_title(f'Fission Rate - Axial Cross-Section at {angle_deg}° (Batch {batch})\n{target_power_MW} MW')
-#     ax.set_aspect('equal')
-#     ax.axvline(x=0, color='white', linestyle='--', linewidth=1, alpha=0.5)
-    
-#     save_path = os.path.join(BASE_DIR, f'batch{batch}_fission_rz_angle{angle_deg}_normalized.png')
-#     plt.savefig(save_path, bbox_inches='tight')
-#     plt.close()
-#     print(f"Saved fission RZ plot: {save_path}")
 
 def plot_htgr_axial_crosssection(batch, angle_deg=0, use_full_mesh=True):
     """
@@ -679,7 +566,7 @@ if __name__ == "__main__":
     
     # Plot XY slices at different axial levels
     n_ax_zones = 50  # Match your params["n_ax_zones"]
-    z_indices = [0, n_ax_zones//4, n_ax_zones//2, 3*n_ax_zones//4, n_ax_zones-1]
+    z_indices = [0, 6, n_ax_zones//4, n_ax_zones//2, 3*n_ax_zones//4, n_ax_zones-1]
     
     for z_idx in z_indices:
         # Plot wedge view
