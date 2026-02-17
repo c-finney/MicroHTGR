@@ -1,7 +1,21 @@
 import openmc
 import numpy as np
 
-def create_triso_lattice(params, mats, axial_section_height):    
+def create_triso_lattice(params, mats, axial_section_height):
+    """
+    Create TRISO particle lattice for fuel compacts.
+    
+    Args:
+        params: Dictionary of reactor parameters
+        mats: Materials module containing fuel, buffer, pyc, sic, graphite
+        axial_section_height: Height of one axial zone in cm
+    
+    Returns:
+        tuple: (triso_lattice, n_trisos)
+            - triso_lattice: OpenMC lattice containing TRISO particles
+            - n_trisos: Number of TRISO particles per axial zone (int)
+    """
+
     # ====================================================================================================
     # TRISO PARTICLE CREATION
     # ====================================================================================================
@@ -86,4 +100,4 @@ def create_triso_lattice(params, mats, axial_section_height):
 
     triso_lattice = openmc.model.create_triso_lattice(random_trisos, llc, pitch, triso_lattice_shape, mats.graphite)
 
-    return triso_lattice
+    return triso_lattice, n_trisos

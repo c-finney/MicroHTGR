@@ -5,169 +5,68 @@ import openmc
 import numpy as np
 import openmc.deplete
 from datetime import datetime
+import sys
+import subprocess
+
+# Add parent directory to path to find modules
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, SCRIPT_DIR)
+
 import config as cfg
 import materials as mats
 import assembly as asm
 import trisos
 
+# Add PostProcessingScripts to path
+POST_PROCESSING_DIR = os.path.join(SCRIPT_DIR, "PostProcessingScripts")
+if os.path.exists(POST_PROCESSING_DIR):
+    sys.path.insert(0, POST_PROCESSING_DIR)
+
 cross_sections_path = '/home/cade/Desktop/OpenMC/CrossSections/cross_sections.xml'
 os.environ['OPENMC_CROSS_SECTIONS'] = cross_sections_path
 
 # ====================================================================================================
-# FUEL CYCLE LENGTH ESTIMATION FUNCTION
+# PRE-PROCESSING FUNCTIONS
 # ====================================================================================================
 
-def estimate_fuel_cycle_length(params, n_trisos_per_zone, run_dir, burnup_limit):
+def save_params(run_dir, params):
     """
-    Estimate fuel cycle length based on core fuel inventory and burnup limit.
+    Save simulation parameters to JSON file at start of run.
     
     Args:
-        params: Dictionary of reactor parameters
-        n_trisos_per_zone: Number of TRISO particles per axial zone
-        run_dir: Directory where results will be saved
-    
-    Returns:
-        cycle_length_days: Estimated fuel cycle length in days
-        total_HM_mass_kg: Total heavy metal mass in kg
+        run_dir: Directory to save to
+        params: Simulation parameters dictionary
     """
+    import json
     
-    print(f"\n{'='*80}")
-    print("FUEL CYCLE LENGTH ESTIMATION")
-    print(f"{'='*80}")
+    # Filter to JSON-serializable types
+    params_serializable = {}
+    for k, v in params.items():
+        if isinstance(v, (int, float, bool, str, list)):
+            params_serializable[k] = v
+        elif isinstance(v, np.ndarray):
+            params_serializable[k] = v.tolist()
+        elif v is None:
+            params_serializable[k] = None
     
-    # ----- 1. Calculate volume and mass of one fuel kernel -----
+    params_path = os.path.join(run_dir, 'run_params.json')
+    with open(params_path, 'w') as f:
+        json.dump(params_serializable, f, indent=2)
     
-    V_kernel_cm3 = (4/3) * np.pi * params["kernel_radius"]**3
-    
-    # Mass of UCO in one kernel (grams)
-    # Density is in kg/m³, convert to g/cm³
-    rho_UCO_g_cm3 = params["kernel_density"] / 1000
-    m_UCO_per_kernel_g = V_kernel_cm3 * rho_UCO_g_cm3
-    
-    # UCO composition: approximately U₁C₀.₅O₁.₅
-    # Molecular weights: U=238, C=12, O=16
-    # MW_UCO ≈ 238 + 0.5*12 + 1.5*16 = 268 g/mol
-    # Mass fraction of U in UCO ≈ 238/268 ≈ 0.888
-    
-    U_mass_fraction = 238.0 / 268.0
-    m_U_per_kernel_g = m_UCO_per_kernel_g * U_mass_fraction
-    
-    print(f"\nKernel Properties:")
-    print(f"  Kernel radius: {params['kernel_radius']*1e4:.1f} μm")
-    print(f"  Kernel volume: {V_kernel_cm3:.2e} cm³")
-    print(f"  UCO density: {rho_UCO_g_cm3:.2f} g/cm³")
-    print(f"  UCO mass per kernel: {m_UCO_per_kernel_g*1e6:.2f} μg")
-    print(f"  U mass fraction in UCO: {U_mass_fraction:.3f}")
-    print(f"  U mass per kernel: {m_U_per_kernel_g*1e6:.2f} μg")
-    
-    # ----- 2. Count fuel channels in core -----
-    
-    # From the lattice definition in your code:
-    # ring0 = [f] (center assembly with fuel)
-    # ring1 = [f] * 6
-    # ring2 = [f] * 12
-    # ring3 = [f] * 18
-    # Total assemblies = 1 + 6 + 12 + 18 = 37
-    
-    n_assemblies = params["n_fuel_assemblies_per_core"]
-    
-    # Count fuel channels per assembly from your lattice definition
-    # ring4 = (d + [c] + [f]) * 6, where d = [f]*2  → (2f + c + f)*6 = 18f + 6c
-    # ring3 = ([c] + d) * 6 = (c + 2f)*6 = 12f + 6c
-    # ring2 = ([f] + [c]) * 6 = 6f + 6c
-    # ring1 = [f] * 6 = 6f
-    # Total per assembly: 18f + 12f + 6f + 6f = 42 fuel channels
-    
-    fuel_channels_per_assembly = 42
-    
-    # ----- 3. Calculate total TRISO and HM mass -----
-    
-    total_fuel_channels = n_assemblies * fuel_channels_per_assembly
-    total_trisos = n_trisos_per_zone * params["n_ax_zones"] * total_fuel_channels
-    
-    total_U_mass_g = total_trisos * m_U_per_kernel_g
-    total_HM_mass_kg = total_U_mass_g / 1000
-    
-    print(f"\nCore Inventory:")
-    print(f"  Number of fuel assemblies: {n_assemblies}")
-    print(f"  Fuel channels per assembly: {fuel_channels_per_assembly}")
-    print(f"  Total fuel channels: {total_fuel_channels:,}")
-    print(f"  TRISOs per axial zone: {n_trisos_per_zone:,}")
-    print(f"  Number of axial zones: {params['n_ax_zones']}")
-    print(f"  Total TRISO particles: {total_trisos:,}")
-    print(f"  Total uranium mass: {total_HM_mass_kg:.2f} kg")
-    
-    # ----- 4. Calculate fuel cycle length -----
-    
-    max_burnup_MWd_per_MtU = burnup_limit  # TRISO damage limit
-    thermal_power_MW = 15  # Your reactor thermal power
-    
-    # Total energy available from fuel (MWd)
-    total_energy_MWd = (total_HM_mass_kg / 1000) * max_burnup_MWd_per_MtU
-    
-    # Theoretical fuel cycle length (days) at 100% capacity factor
-    cycle_length_days_100pct = total_energy_MWd / thermal_power_MW
-    cycle_length_years_100pct = cycle_length_days_100pct / 365.25
-    
-    # Realistic cycle length with 90% capacity factor
-    capacity_factor = 0.90
-    cycle_length_days_90pct = cycle_length_days_100pct * capacity_factor
-    cycle_length_years_90pct = cycle_length_days_90pct / 365.25
-    
-    print(f"\nFuel Cycle Length Estimate:")
-    print(f"  Maximum TRISO burnup limit: {max_burnup_MWd_per_MtU:,} MWd/MtU")
-    print(f"  Reactor thermal power: {thermal_power_MW} MWth")
-    print(f"  Total available energy: {total_energy_MWd:.1f} MWd")
-    print(f"  ")
-    print(f"  Cycle length (100% capacity factor):")
-    print(f"    {cycle_length_days_100pct:.1f} days ({cycle_length_years_100pct:.2f} years)")
-    print(f"  ")
-    print(f"  Cycle length (90% capacity factor):")
-    print(f"    {cycle_length_days_90pct:.1f} days ({cycle_length_years_90pct:.2f} years)")
-    
-    # ----- 5. Specific power density -----
-    
-    specific_power_kW_per_kgU = (thermal_power_MW * 1000) / total_HM_mass_kg
-    
-    print(f"\nSpecific Power:")
-    print(f"  {specific_power_kW_per_kgU:.1f} kW/kgU")
-    
-    print(f"{'='*80}\n")
-    
-    # ----- 6. Save results to file -----
-    
-    results_file = os.path.join(run_dir, 'fuel_cycle_estimate.txt')
-    with open(results_file, 'w') as f:
-        f.write("="*80 + "\n")
-        f.write("FUEL CYCLE LENGTH ESTIMATION\n")
-        f.write("="*80 + "\n\n")
-        
-        f.write("Kernel Properties:\n")
-        f.write(f"  Kernel radius: {params['kernel_radius']*1e4:.1f} μm\n")
-        f.write(f"  U mass per kernel: {m_U_per_kernel_g*1e6:.2f} μg\n\n")
-        
-        f.write("Core Inventory:\n")
-        f.write(f"  Total TRISO particles: {total_trisos:,}\n")
-        f.write(f"  Total uranium mass: {total_HM_mass_kg:.2f} kg\n\n")
-        
-        f.write("Fuel Cycle Length Estimate:\n")
-        f.write(f"  Maximum burnup limit: {max_burnup_MWd_per_MtU:,} MWd/MtU\n")
-        f.write(f"  Thermal power: {thermal_power_MW} MWth\n")
-        f.write(f"  Total energy: {total_energy_MWd:.1f} MWd\n\n")
-        
-        f.write(f"  100% capacity factor: {cycle_length_days_100pct:.1f} days ({cycle_length_years_100pct:.2f} years)\n")
-        f.write(f"  90% capacity factor: {cycle_length_days_90pct:.1f} days ({cycle_length_years_90pct:.2f} years)\n\n")
-        
-        f.write(f"Specific Power: {specific_power_kW_per_kgU:.1f} kW/kgU\n")
-        f.write("="*80 + "\n")
-    
-    return cycle_length_days_90pct, total_HM_mass_kg
+    print(f"Saved parameters to: {params_path}")
 
 # ====================================================================================================
 # MAIN SIMULATION FUNCTION
 # ====================================================================================================
 
 def run_simulation(params, core_rings, run_dir):
+    """
+    Run the OpenMC simulation.
+    
+    Returns:
+        n_trisos: Number of TRISO particles per axial zone
+    """
+
     # ====================================================================================================
     # CREATE RUN DIRECTORY AND INITIALIZE MODEL
     # ====================================================================================================
@@ -175,8 +74,10 @@ def run_simulation(params, core_rings, run_dir):
     os.makedirs(run_dir, exist_ok=True)
     os.chdir(run_dir)
 
-    # Saves cross_sections.xml file to run directory
-    # Useful to ensure used cross sections are correct for each simulation
+    # Save params to run directory for post-processing
+    save_params(run_dir, params)
+
+    # Save cross_sections.xml file to run directory
     shutil.copy2(cross_sections_path, os.path.join(run_dir, 'cross_sections.xml'))
 
     model = openmc.model.Model()
@@ -228,7 +129,7 @@ def run_simulation(params, core_rings, run_dir):
     # CREATE TRISO LATTICE
     # ====================================================================================================
 
-    triso_lattice = trisos.create_triso_lattice(
+    triso_lattice, n_trisos = trisos.create_triso_lattice(
         params = params,
         mats = mats,
         axial_section_height = axial_section_height
@@ -263,9 +164,6 @@ def run_simulation(params, core_rings, run_dir):
     # ====================================================================================================
     # FULL CORE AND OUTER PERMANENT REFLECTOR CREATION
     # ====================================================================================================
-
-    # The outer permanent reflector (region outside core lattice but inside core_cyl)
-    # needs axial temperature zones matching the reflector temperature profile
 
     # Create axially-segmented outer reflector cells
     outer_refl_cells = []
@@ -324,61 +222,39 @@ def run_simulation(params, core_rings, run_dir):
 
         core_cell = openmc.Cell(fill=core_lattice, region=wedge_region)
 
-        # Top and bottom reflectors with uniform temperature
-        top_refl_z = reactor_top + params["reflector_thickness"]
-        bottom_refl_z = reactor_bottom - params["reflector_thickness"]
-        top_refl = openmc.ZPlane(z0=top_refl_z, boundary_type='vacuum')
-        bottom_refl = openmc.ZPlane(z0=bottom_refl_z, boundary_type='vacuum')
-
-        # Clone graphite for top/bottom reflectors and set temperature
-        graphite_top = mats.graphite.clone()
-        m_colors[graphite_top] = 'darkblue'
-        graphite_top.temperature = T_reflector_axial
-        
-        graphite_bottom = mats.graphite.clone()
-        m_colors[graphite_bottom] = 'darkblue'
-        graphite_bottom.temperature = T_reflector_axial
-
-        top_refl_cell = openmc.Cell(
-            fill=graphite_top, 
-            region=-core_cyl & +max_z & -top_refl & +plane_1 & -plane_2
-        )
-
-        bottom_refl_cell = openmc.Cell(
-            fill=graphite_bottom, 
-            region=-core_cyl & +bottom_refl & -min_z & +plane_1 & -plane_2
-        )
-
-        geometry = openmc.Geometry([core_cell, top_refl_cell, bottom_refl_cell])
-        model.geometry = geometry
-    
     else:
         core_cell = openmc.Cell(fill=core_lattice, region=-core_cyl & +min_z & -max_z)
 
-        # Top and bottom reflectors with uniform temperature
-        top_refl_z = reactor_top + params["reflector_thickness"]
-        bottom_refl_z = reactor_bottom - params["reflector_thickness"]
-        top_refl = openmc.ZPlane(z0=top_refl_z, boundary_type='vacuum')
-        bottom_refl = openmc.ZPlane(z0=bottom_refl_z, boundary_type='vacuum')
+    # Top and bottom reflectors with uniform temperature
+    top_refl_z = reactor_top + params["reflector_thickness"]
+    bottom_refl_z = reactor_bottom - params["reflector_thickness"]
+    top_refl = openmc.ZPlane(z0=top_refl_z, boundary_type='vacuum')
+    bottom_refl = openmc.ZPlane(z0=bottom_refl_z, boundary_type='vacuum')
 
-        # Clone graphite for top/bottom reflectors and set temperature
-        graphite_top = mats.graphite.clone()
-        m_colors[graphite_top] = 'darkblue'
-        graphite_top.temperature = T_reflector_axial
-        
-        graphite_bottom = mats.graphite.clone()
-        m_colors[graphite_bottom] = 'darkblue'
-        graphite_bottom.temperature = T_reflector_axial
+    # Clone graphite for top/bottom reflectors and set temperature
+    graphite_top = mats.graphite.clone()
+    m_colors[graphite_top] = 'darkblue'
+    graphite_top.temperature = T_reflector_axial
+    
+    graphite_bottom = mats.graphite.clone()
+    m_colors[graphite_bottom] = 'darkblue'
+    graphite_bottom.temperature = T_reflector_axial
 
-        top_refl_cell = openmc.Cell(fill=graphite_top, region=-core_cyl & +max_z & -top_refl)
+    top_refl_cell = openmc.Cell(
+        fill=graphite_top, 
+        region=-core_cyl & +max_z & -top_refl & +plane_1 & -plane_2
+    )
 
-        bottom_refl_cell = openmc.Cell(fill=graphite_bottom, region=-core_cyl & +bottom_refl & -min_z)
+    bottom_refl_cell = openmc.Cell(
+        fill=graphite_bottom, 
+        region=-core_cyl & +bottom_refl & -min_z & +plane_1 & -plane_2
+    )
 
-        geometry = openmc.Geometry([core_cell, top_refl_cell, bottom_refl_cell])
-        model.geometry = geometry
+    geometry = openmc.Geometry([core_cell, top_refl_cell, bottom_refl_cell])
+    model.geometry = geometry
 
     # ====================================================================================================
-    # 10. GEOMETRY PLOT GENERATION
+    # GEOMETRY PLOT GENERATION
     # ====================================================================================================
 
     m_colors[mats.fuel] = 'palegreen'
@@ -387,14 +263,45 @@ def run_simulation(params, core_rings, run_dir):
     m_colors[mats.sic] = 'yellow'
     m_colors[mats.graphite] = 'darkblue'
     m_colors[mats.b4c_poison] = 'purple'
-    m_colors[mats.b4c_control] = 'black'
+    if params["control_insertion"] > 0:
+        m_colors[mats.b4c_control] = 'black'
     m_colors[mats.incoloy800H] = 'gray'
+
+    sin60 = np.sin(np.radians(60))
+
+    if params["use_1/6_geometry"]:
+        plot1_y_width = params["core_radius"] * sin60
+        plot1_x_origin = params["core_radius"] / 2
+        plot1_y_origin = params["core_radius"] * sin60 / 2
+
+        plot3_x_width = params["core_radius"]
+        plot3_x_origin = params["core_radius"] / 2
+
+        plot5_x_width = params["core_radius"]
+        plot5_y_width = sin60 * params["core_radius"]
+        plot5_x_origin = params["core_radius"] / 2
+        plot5_y_origin = params["core_radius"] * sin60 / 2
+        plot5_y_pixels = 866
+
+    else:
+        plot1_y_width = 2 * params["core_radius"]
+        plot1_x_origin = 0.0
+        plot1_y_origin = 0.0
+
+        plot3_x_width = 2 * params["core_radius"]
+        plot3_x_origin = 0.0
+
+        plot5_x_width = 2 * params["core_radius"]
+        plot5_y_width = 2 * params["core_radius"]
+        plot5_x_origin = 0.0
+        plot5_y_origin = 0.0
+        plot5_y_pixels = 1000
 
     plot1 = openmc.Plot()
     plot1.filename = 'Core_YZ_Material'
-    plot1.width = (2 * params["core_radius"], 2 * params["core_height"])
+    plot1.width = (plot1_y_width, params["core_height"] + 2 * params["reflector_thickness"])
     plot1.basis = 'yz'
-    plot1.origin = (0.0, 0.0, params["core_height"] / 2.0)
+    plot1.origin = (plot1_x_origin, plot1_y_origin, params["core_height"] / 2)
     plot1.pixels = (800, 1200)
     plot1.color_by = 'material'
     plot1.colors = m_colors
@@ -409,9 +316,9 @@ def run_simulation(params, core_rings, run_dir):
 
     plot3 = openmc.Plot()
     plot3.filename = 'Core_XZ_Material'
-    plot3.width = (2 * params["core_radius"], 2 * params["core_height"])
+    plot3.width = (plot3_x_width, params["core_height"] + 2 * params["reflector_thickness"])
     plot3.basis = 'xz'
-    plot3.origin = (0.0, 0.0, params["core_height"] / 2.0)
+    plot3.origin = (plot3_x_origin, 0.0, params["core_height"] / 2.0)
     plot3.pixels = (800, 1200)
     plot3.color_by = 'material'
     plot3.colors = m_colors
@@ -425,43 +332,26 @@ def run_simulation(params, core_rings, run_dir):
     plot4.color_by = 'cell'
 
     plot5 = openmc.Plot()
-    plot5.filename = 'Bundle_XY_Material'
-    plot5.width = (bundle_pitch, bundle_pitch)
+    plot5.filename = 'Core_XY_Material'
+    plot5.width = (plot5_x_width, plot5_y_width)
     plot5.basis = 'xy'
-    plot5.origin = (0.0, 0.0, axial_section_height / 4.0)
-    plot5.pixels = (2000, 2000)
+    plot5.origin = (plot5_x_origin, plot5_y_origin, (params["core_height"] / 2) + (axial_section_height / 2))
+    plot5.pixels = (1000, plot5_y_pixels)
     plot5.color_by = 'material'
     plot5.colors = m_colors
 
     plot6 = openmc.Plot()
-    plot6.filename = 'Bundle_XY_Cell'
+    plot6.filename = 'Core_XY_Cell'
     plot6.width = plot5.width
     plot6.basis = plot5.basis
     plot6.origin = plot5.origin
     plot6.pixels = plot5.pixels
     plot6.color_by = 'cell'
 
-    plot7 = openmc.Plot()
-    plot7.filename = 'Core_XY_Material'
-    plot7.width = (2 * params["core_radius"], 2 * params["core_radius"])
-    plot7.basis = 'xy'
-    plot7.origin = (0.0, 0.0, axial_section_height / 4.0)
-    plot7.pixels = (1000, 1000)
-    plot7.color_by = 'material'
-    plot7.colors = m_colors
-
-    plot8 = openmc.Plot()
-    plot8.filename = 'Core_XY_Cell'
-    plot8.width = plot7.width
-    plot8.basis = plot7.basis
-    plot8.origin = plot7.origin
-    plot8.pixels = plot7.pixels
-    plot8.color_by = 'cell'
-
-    model.plots = openmc.Plots([plot1, plot2, plot3, plot4, plot5, plot6, plot7, plot8])
+    model.plots = openmc.Plots([plot1, plot2, plot3, plot4, plot5, plot6])
 
     # ====================================================================================================
-    # 11. TALLY CREATION
+    # TALLY CREATION
     # ====================================================================================================
 
     tallies = openmc.Tallies()
@@ -484,32 +374,49 @@ def run_simulation(params, core_rings, run_dir):
 
     tallies += [flux_spectrum_tally, fission_tally, heating_tally]
 
-    # ----- Active Core Region Spatial Mesh Tallies -----
-    # Create a cylindrical mesh for active core region using Cartesian mesh that covers the cylindrical active core region
+    # ----- Spatial Mesh Tallies -----
+    
+    if params["use_1/6_geometry"]:
+        mesh_x_min = 0.0
+        mesh_x_max = params["core_radius"]
+        mesh_nx = 250
+
+        mesh_y_min = 0.0
+        mesh_y_max = params["core_radius"] * sin60 
+        mesh_ny = 217
+
+    else:
+        mesh_x_min = -params["core_radius"]
+        mesh_x_max = params["core_radius"]
+        mesh_nx = 500
+
+        mesh_y_min = -params["core_radius"]
+        mesh_y_max = params["core_radius"]
+        mesh_ny = 500
+
+    # Active Core Region Mesh
     mesh = openmc.RegularMesh()
-    mesh.dimension = [500, 500, params["n_ax_zones"]]
-    mesh.lower_left = [-params["core_radius"], -params["core_radius"], reactor_bottom]
-    mesh.upper_right = [params["core_radius"], params["core_radius"], reactor_top]
+    mesh.dimension = [mesh_nx, mesh_ny, params["n_ax_zones"]]
+    mesh.lower_left = [mesh_x_min, mesh_y_min, reactor_bottom]
+    mesh.upper_right = [mesh_x_max, mesh_y_max, reactor_top]
     mesh_filter = openmc.MeshFilter(mesh)
 
-    # Mesh tally for spatial distributions
     mesh_tally_active = openmc.Tally(name='mesh_rates')
     mesh_tally_active.filters = [mesh_filter]
     mesh_tally_active.scores = ['flux', 'fission', 'nu-fission']
 
-    # ----- Full Core Spatial Mesh Tallies -----
-    # Use coarser axial resolution for reflectors
-    n_reflector_zones = 33  # Zones in each reflector
+    # Full Core Mesh (including reflectors)
+    n_reflector_zones = 33
     n_total_zones = n_reflector_zones + params["n_ax_zones"] + n_reflector_zones
 
     mesh_full = openmc.RegularMesh()
-    mesh_full.dimension = [500, 500, n_total_zones]
+    mesh_full.dimension = [mesh_nx, mesh_ny, n_total_zones]
 
     mesh_bottom = reactor_bottom - params["reflector_thickness"]
     mesh_top = reactor_top + params["reflector_thickness"]
 
-    mesh_full.lower_left = [-params["core_radius"], -params["core_radius"], mesh_bottom]
-    mesh_full.upper_right = [params["core_radius"], params["core_radius"], mesh_top]
+    mesh_full.lower_left = [mesh_x_min, mesh_y_min, mesh_bottom]
+    mesh_full.upper_right = [mesh_x_max, mesh_y_max, mesh_top]
     mesh_full_filter = openmc.MeshFilter(mesh_full)
 
     mesh_tally_full = openmc.Tally(name='mesh_rates_full')
@@ -525,22 +432,25 @@ def run_simulation(params, core_rings, run_dir):
     model.tallies = tallies
 
     # ====================================================================================================
-    # 12. MONTE CARLO SETTINGS
+    # MONTE CARLO SETTINGS
     # ====================================================================================================
 
     settings = openmc.Settings()
     settings.run_mode = "eigenvalue"
-    settings.batches = 50
-    settings.inactive = 10
-    settings.particles = 100_000
+    settings.batches = params.get("total_batches", 300)
+    settings.inactive = params.get("inactive_batches", 50)
+    settings.particles = params.get("particles", 100_000)
     settings.temperature = {
         'method': 'interpolation',
         'range': (293.0, 1800.0),
         'tolerance': 100.0
     }
 
+    if params["use_1/6_geometry"]:
+        phi_dist = openmc.stats.Uniform(a = 0.0, b = np.pi / 2)
+    else:
+        phi_dist = openmc.stats.Uniform(a = 0.0, b = 2 * np.pi)
     r_dist = openmc.stats.Uniform(a = 0.0, b = params["core_radius"])
-    phi_dist = openmc.stats.Uniform(a = 0.0, b = 2*np.pi)
     z_dist = openmc.stats.Uniform(a = reactor_bottom, b = reactor_top)
     source = openmc.IndependentSource()
     source.space = openmc.stats.CylindricalIndependent(
@@ -550,11 +460,25 @@ def run_simulation(params, core_rings, run_dir):
         origin = (0.0, 0.0, 0.0)  # center of the cylinder
     )
     settings.source = source
-    model.settings = settings
 
     # ====================================================================================================
-    # 13. RUN OPENMC
+    # STOCHASTIC VOLUME CALCULATION SETTINGS
     # ====================================================================================================
+    
+    if params["calculate_fuel_volume"]:        
+        vol_calc = openmc.VolumeCalculation(
+            domains=[mats.fuel],
+            samples=params.get("volume_samples", 1_000_000),
+            lower_left=[mesh_x_min, mesh_y_min, reactor_bottom],
+            upper_right=[mesh_x_max, mesh_y_max, reactor_top]
+        )
+        settings.volume_calculations = [vol_calc]
+
+    # ====================================================================================================
+    # RUN OPENMC
+    # ====================================================================================================
+
+    model.settings = settings
 
     all_mats = model.geometry.get_all_materials()
     model.materials = openmc.Materials(all_mats.values())
@@ -562,13 +486,148 @@ def run_simulation(params, core_rings, run_dir):
 
     openmc.plot_geometry(output=False, cwd=run_dir)
 
-    openmc.run(
-        cwd=run_dir,
-        threads=24,
-        output=True
-    )
+    if params["calculate_fuel_volume"]:
+        print("\nRunning stochastic volume calculation for fuel...\n")
+        
+        # Run the volume calculation
+        openmc.calculate_volumes(
+            cwd = run_dir,
+            threads = 24,
+            output = True
+        )
+        
+        # Load results and print
+        vol_calc_results = openmc.VolumeCalculation.from_hdf5(
+            os.path.join(run_dir, 'volume_1.h5')
+        )
+        
+        for domain_id, vol_var in vol_calc_results.volumes.items():
+            # Extract nominal value and standard deviation from Variable object
+            vol = vol_var.nominal_value
+                        
+            # Calculate and print mass estimate for fuel
+            # Account for 1/6 geometry
+            geometry_factor = 6 if params["use_1/6_geometry"] else 1
+            total_vol = vol * geometry_factor
+            
+            # UCO: density ~10.97 g/cm³, U mass fraction ~0.888
+            uco_density = params["kernel_density"] / 1000  # g/cm³
+            u_mass_fraction = 238.0 / 268.0
+            total_u_mass_kg = (total_vol * uco_density * u_mass_fraction) / 1000
+            
+            print(f"\nTotal fuel volume (full core): {total_vol:.4f} cm³")
+            print(f"Estimated uranium mass: {total_u_mass_kg:.2f} kg\n")
+    
+    else:
+        print("\nSkipping volume calculation.\n")
 
+    openmc_output_file = os.path.join(run_dir, 'openmc_output.txt')
+
+    with open(openmc_output_file, 'w', buffering=1) as outf:
+        process = subprocess.Popen(
+            ['openmc'],
+            cwd=run_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            universal_newlines=True,
+            bufsize=1,
+            env={**os.environ, 'OMP_NUM_THREADS': '24'}
+        )
+        
+        # Read and display output line-by-line in real-time
+        for line in process.stdout:
+            print(line, end='')
+            sys.stdout.flush()
+            outf.write(line)
+            outf.flush()
+        
+        return_code = process.wait()
+
+    if return_code != 0:
+        raise RuntimeError(f"OpenMC failed with return code {return_code}")
+    
     return n_trisos
+
+# ====================================================================================================
+# POST-PROCESSING FUNCTIONS
+# ====================================================================================================
+
+def update_run_info(run_dir, n_trisos):
+    """
+    Update run_params.json with n_trisos after TRISO creation.
+    
+    Args:
+        run_dir: Directory containing run_params.json
+        n_trisos: Number of TRISO particles per axial zone
+    """
+    import json
+    
+    params_path = os.path.join(run_dir, 'run_params.json')
+    
+    if os.path.exists(params_path):
+        with open(params_path, 'r') as f:
+            data = json.load(f)
+    else:
+        data = {}
+    
+    data['n_trisos'] = n_trisos
+    
+    with open(params_path, 'w') as f:
+        json.dump(data, f, indent=2)
+
+def run_post_processing(run_dir, params, n_trisos):
+    """
+    Run all post-processing scripts for a completed simulation.
+    
+    Args:
+        run_dir: Directory containing simulation results
+        params: Simulation parameters
+        n_trisos: Number of TRISO particles per axial zone
+    """
+    print(f"{'='*80}")
+    print("RUNNING POST-PROCESSING")
+    print(f"{'='*80}\n")
+    
+    # Update run_params.json with n_trisos
+    update_run_info(run_dir, n_trisos)
+    
+    # Try to import post-processing modules
+    try:
+        from burnup_estimation import run_burnup_estimation
+        print("Running burnup estimation...")
+        run_burnup_estimation(run_dir, params, n_trisos)
+    except ImportError as e:
+        print(f"Warning: Could not import burnup_estimation: {e}")
+    except Exception as e:
+        print(f"Warning: Burnup estimation failed: {e}")
+    
+    try:
+        from tally_plotter import run_tally_plots
+        print("Running tally plotting...")
+        run_tally_plots(run_dir, params)
+    except ImportError as e:
+        print(f"Warning: Could not import tally_plotter: {e}")
+    except Exception as e:
+        print(f"Warning: Tally plotting failed: {e}")
+    
+    print(f"\n{'='*80}")
+    print("POST-PROCESSING COMPLETE")
+    print(f"{'='*80}")
+
+def run_parametric_post_processing(parametric_dir):
+    """
+    Run parametric study post-processing.
+    
+    Args:
+        parametric_dir: Directory containing all parametric study cases
+    """
+    try:
+        from parametric_postprocessing import run_parametric_postprocessing
+        run_parametric_postprocessing(parametric_dir)
+    except ImportError as e:
+        print(f"Warning: Could not import parametric_postprocessing: {e}")
+    except Exception as e:
+        print(f"Warning: Parametric post-processing failed: {e}")
 
 # ====================================================================================================
 # STUDY EXECUTION 
@@ -579,9 +638,7 @@ if __name__ == "__main__":
     now = datetime.now()
     run_name = f"htgr_run_{now.strftime('%m.%d.%Y_%H.%M.%S')}"
     
-    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
     PARENT_DIR = os.path.dirname(SCRIPT_DIR)
-    
     OUTPUT_BASE = os.path.join(PARENT_DIR, "MicroHTGR_Output")
     os.makedirs(OUTPUT_BASE, exist_ok=True)
     
@@ -620,8 +677,12 @@ if __name__ == "__main__":
             params_copy = cfg.params.copy()
             params_copy[cfg.parametric_param] = val
 
-            run_simulation(params_copy, cfg.core_rings, run_dir)
+            n_trisos = run_simulation(params_copy, cfg.core_rings, run_dir)
+
+            run_post_processing(run_dir, params_copy, n_trisos)
         
+        run_parametric_post_processing(BASE_DIR)
+
         print(f"\n{'='*80}")
         print("PARAMETRIC STUDY COMPLETE")
         print(f"Results Directory: {BASE_DIR}")
@@ -639,7 +700,7 @@ if __name__ == "__main__":
         
         n_trisos = run_simulation(cfg.params, cfg.core_rings, BASE_DIR)
 
-        estimate_fuel_cycle_length(cfg.params, n_trisos, BASE_DIR, 160_000)
+        run_post_processing(BASE_DIR, cfg.params, n_trisos)
         
         print(f"\n{'='*80}")
         print("SIMULATION COMPLETE")

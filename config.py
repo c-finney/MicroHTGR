@@ -36,14 +36,13 @@ params = {
 
     # ----- Hexagonal Lattice -----
     "fuel_to_coolant_distance": 2.5,
-    "n_fuel_assemblies_per_core": 31,
 
     # ----- Core Dimensions -----
     "core_radius": 90.0,
     "core_height": 237.9,
     "reflector_thickness": 79.3, 
     "n_ax_zones": 50,
-    "use_1/6_geometry": False,
+    "use_1/6_geometry": True,
 
     # ----- Burnable Poison -----
     "B10_enrichment_poison": 0.3,
@@ -69,7 +68,16 @@ params = {
     "matrix_min": 903.15,
     "matrix_max": 1083.15,
     "reflector_min": 903.15,
-    "reflector_max": 968.15
+    "reflector_max": 968.15,
+
+    # ----- OpenMC Settings -----
+    "total_batches": 10,
+    "inactive_batches": 2,
+    "particles": 100_000,
+
+    # ----- Stochastic Volume Calculation Settings -----
+    "calculate_fuel_volume": True,
+    "volume_samples": 1_000_000_000
 }
 
 core_rings = [

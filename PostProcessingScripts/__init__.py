@@ -1,0 +1,18 @@
+"""
+Post-Processing Scripts Package
+
+This package contains scripts for post-processing OpenMC simulation results:
+- burnup_estimation: Calculates fuel cycle length, k_eff, and leakage
+- tally_plotter: Generates flux and fission rate plots
+- parametric_postprocessing: Summarizes parametric study results
+"""
+
+from .burnup_estimation import run_burnup_estimation
+from .tally_plotter import run_tally_plots
+from .parametric_postprocessing import run_parametric_postprocessing
+
+__all__ = [
+    'run_burnup_estimation',
+    'run_tally_plots', 
+    'run_parametric_postprocessing'
+]
