@@ -610,6 +610,15 @@ def run_post_processing(run_dir, params, n_trisos):
     except Exception as e:
         print(f"Warning: Tally plotting failed: {e}")
     
+    try:
+        from spectrum_thermalization import run_spectrum_analysis
+        print("Running spectrum & thermalization analysis...")
+        run_spectrum_analysis(run_dir, params)
+    except ImportError as e:
+        print(f"Warning: Could not import spectrum_thermalization: {e}")
+    except Exception as e:
+        print(f"Warning: Spectrum analysis failed: {e}")
+
     print(f"{'='*80}")
     print("POST-PROCESSING COMPLETE")
     print(f"{'='*80}")
@@ -647,7 +656,7 @@ if __name__ == "__main__":
     run_parametric_study = cfg.parametric_param is not None and len(cfg.parametric_values) > 0
     
     # ----- Run Parametric Study -----
-    if run_parametric_study:
+    if cfg.params["study_execution_mode"] == "ParametricStudy":
         # Add "_ParametricStudy" suffix to base run folder
         BASE_DIR = os.path.join(OUTPUT_BASE, run_name + "_ParametricStudy" + f"_{cfg.parametric_param}")
         os.makedirs(BASE_DIR, exist_ok=True)
@@ -687,9 +696,27 @@ if __name__ == "__main__":
         print("PARAMETRIC STUDY COMPLETE")
         print(f"Results Directory: {BASE_DIR}")
         print(f"{'='*80}\n")
-     
-    # ----- Run Single Study -----   
-    else:
+    
+    # ----- Run Reactivity Study -----
+    elif cfg.params["study_execution_mode"] == "Reactivity Study":
+        from reactivity_coefficients import run_reactivity_coefficients
+
+        BASE_DIR_RC = os.path.join(OUTPUT_BASE, run_name + "_ReactivityCoeffs")
+        os.makedirs(BASE_DIR_RC, exist_ok=True)
+
+        run_reactivity_coefficients(
+            params = cfg.params,
+            core_rings = cfg.core_rings,
+            base_run_dir = BASE_DIR,
+            output_base_dir = BASE_DIR_RC,
+            delta_T_values = [50.0, 100.0, 150.0],
+            coefficients = ["FTC", "MTC", "ITC"],
+            run_simulation_fn = run_simulation,
+            run_post_processing_fn = run_post_processing,
+        )
+
+    # ----- Run Single Run -----   
+    elif cfg.params["study_execution_mode"] == "SingleRun":
         # Add "_SingleRun" suffix to base run folder
         BASE_DIR = os.path.join(OUTPUT_BASE, run_name + "_SingleRun")
         

@@ -1,8 +1,8 @@
 # ====================================================================================================
-# GLOBAL PARAMETERS (Most Major Design Variables Live Here)
+# GLOBAL PARAMETERS
 # ====================================================================================================
 
-# Unless otherwise stated all length dimensions are in cm and densities in kg/m3
+# Unless otherwise stated all lengths are in cm, densities in kg/m3, and temperatures in Kelvin
 
 params = {
     # ----- Fuel Kernel -----
@@ -34,7 +34,7 @@ params = {
     "boron_ppm": 1.1,
     "matrix_density": 1850,
 
-    # ----- Hexagonal Lattice -----
+    # ----- Fuel Lattice -----
     "fuel_to_coolant_distance": 2.5,
 
     # ----- Core Dimensions -----
@@ -60,7 +60,7 @@ params = {
     "B4C_density_control": 2380,
     "Incoloy800H_density": 7940,
 
-    # ----- Temperatures in Kelvin -----
+    # ----- Temperature Profile -----
     "coolant_inlet": 573.15,
     "coolant_outlet": 1023.15,
     "compact_min": 973.15,
@@ -70,14 +70,17 @@ params = {
     "reflector_min": 903.15,
     "reflector_max": 968.15,
 
-    # ----- OpenMC Settings -----
+    # ----- OpenMC Monte Carlo Settings -----
     "total_batches": 10,
     "inactive_batches": 2,
     "particles": 100_000,
 
     # ----- Stochastic Volume Calculation Settings -----
     "calculate_fuel_volume": True,
-    "volume_samples": 1_000_000_000
+    "volume_samples": 1_000_000_000,
+
+    # ----- Study Execution Mode -----
+    "study_execution_mode": "SingleRun"
 }
 
 core_rings = [
@@ -106,6 +109,13 @@ parametric_values = None
 
 # parametric_param = "boron_ppm"
 # parametric_values = [0.005, 0.01, 0.02, 0.03, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0]
+
+# ====================================================================================================
+# REACTIVITY COEFFICIENT STUDY CONFIGURATION
+# ====================================================================================================
+
+reactivity_delta_T_values = [50.0, 100.0, 150.0]
+reactivity_coefficients = ["FTC", "MTC", "ITC"]
 
 # ====================================================================================================
 # GRID SEARCH STUDY CONNFIGURATION

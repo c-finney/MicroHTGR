@@ -10,9 +10,11 @@ This package contains scripts for post-processing OpenMC simulation results:
 from .burnup_estimation import run_burnup_estimation
 from .tally_plotter import run_tally_plots
 from .parametric_postprocessing import run_parametric_postprocessing
+from .spectrum_thermalization import run_spectrum_analysis
 
 __all__ = [
     'run_burnup_estimation',
     'run_tally_plots', 
-    'run_parametric_postprocessing'
+    'run_parametric_postprocessing',
+    'run_spectrum_analysis'
 ]
