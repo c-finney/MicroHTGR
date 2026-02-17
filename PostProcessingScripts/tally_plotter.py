@@ -517,7 +517,7 @@ def print_global_rates(run_dir, batch, is_wedge=False, target_power_MW=15.0):
     geometry_label = "1/6 WEDGE GEOMETRY" if is_wedge else "FULL CORE GEOMETRY"
     
     output = []
-    output.append("\n" + '='*80)
+    output.append('='*80)
     output.append(f"GLOBAL REACTION RATES (Batch {batch}) - {geometry_label}")
     output.append('='*80)
     output.append(f"k-effective: {sp.keff.nominal_value:.5f} ± {sp.keff.std_dev:.5f}")
@@ -585,7 +585,7 @@ def run_tally_plots(run_dir, params, batch=None):
     print(f"{'='*80}")
     
     # Print global rates
-    print("\nGenerating global rates...")
+    print("\nGenerating global rates...\n")
     print_global_rates(run_dir, batch, is_wedge, target_power)
     
     # Plot axial profiles

@@ -610,7 +610,7 @@ def run_post_processing(run_dir, params, n_trisos):
     except Exception as e:
         print(f"Warning: Tally plotting failed: {e}")
     
-    print(f"\n{'='*80}")
+    print(f"{'='*80}")
     print("POST-PROCESSING COMPLETE")
     print(f"{'='*80}")
 
