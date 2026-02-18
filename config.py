@@ -71,16 +71,17 @@ params = {
     "reflector_max": 968.15,
 
     # ----- OpenMC Monte Carlo Settings -----
-    "total_batches": 10,
-    "inactive_batches": 2,
+    "total_batches": 50,
+    "inactive_batches": 10,
     "particles": 100_000,
 
     # ----- Stochastic Volume Calculation Settings -----
-    "calculate_fuel_volume": True,
+    "calculate_fuel_volume": False,
     "volume_samples": 1_000_000_000,
 
     # ----- Study Execution Mode -----
-    "study_execution_mode": "SingleRun"
+    "study_execution_mode": "ReactivityStudy",
+    "run_post_processing": False
 }
 
 core_rings = [
@@ -115,7 +116,7 @@ parametric_values = None
 # ====================================================================================================
 
 reactivity_delta_T_values = [50.0, 100.0, 150.0]
-reactivity_coefficients = ["FTC", "MTC", "ITC"]
+reactivity_coefficients = ["FTC", "MTF", "ITC"]
 
 # ====================================================================================================
 # GRID SEARCH STUDY CONNFIGURATION

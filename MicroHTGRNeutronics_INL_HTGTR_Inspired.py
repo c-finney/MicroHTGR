@@ -688,7 +688,8 @@ if __name__ == "__main__":
 
             n_trisos = run_simulation(params_copy, cfg.core_rings, run_dir)
 
-            run_post_processing(run_dir, params_copy, n_trisos)
+            if cfg.params["run_post_processing"]:
+                run_post_processing(run_dir, params_copy, n_trisos)
         
         run_parametric_post_processing(BASE_DIR)
 
@@ -698,7 +699,7 @@ if __name__ == "__main__":
         print(f"{'='*80}\n")
     
     # ----- Run Reactivity Study -----
-    elif cfg.params["study_execution_mode"] == "Reactivity Study":
+    elif cfg.params["study_execution_mode"] == "ReactivityStudy":
         from reactivity_coefficients import run_reactivity_coefficients
 
         BASE_DIR_RC = os.path.join(OUTPUT_BASE, run_name + "_ReactivityCoeffs")
@@ -727,7 +728,8 @@ if __name__ == "__main__":
         
         n_trisos = run_simulation(cfg.params, cfg.core_rings, BASE_DIR)
 
-        run_post_processing(BASE_DIR, cfg.params, n_trisos)
+        if cfg.params["run_post_processing"]:
+            run_post_processing(BASE_DIR, cfg.params, n_trisos)
         
         print(f"\n{'='*80}")
         print("SIMULATION COMPLETE")

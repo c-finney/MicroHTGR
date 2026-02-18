@@ -35,7 +35,7 @@ import matplotlib.ticker as ticker
 # ===========================================================================
 # ENERGY GROUP BOUNDARIES (eV)
 # ===========================================================================
-E_THERMAL_UPPER = 0.625          # Cadmium cutoff
+E_THERMAL_UPPER = 0.55          # Cadmium cutoff
 E_EPITHERMAL_UPPER = 1.0e5      # 100 keV
 E_FAST_UPPER = 2.0e7            # 20 MeV (upper limit of most libraries)
 
@@ -46,7 +46,7 @@ E_RESONANCE_HIGH = 1.0e3         # 1 keV  (dominant U-238 resonances)
 # Additional energy landmarks
 E_FISSION_PEAK = 2.0e6           # ~2 MeV typical fission spectrum peak
 E_1EV = 1.0
-E_CADMIUM = 0.5                  # Approximate Cd cutoff
+E_CADMIUM = 0.55                 # Approximate Cd cutoff
 
 # ===========================================================================
 # MAIN ANALYSIS FUNCTION
@@ -212,14 +212,14 @@ def plot_flux_spectrum(E_center, flux_per_lethargy, flux_per_bin, metrics, run_d
     ax.plot(E_center, flux_per_lethargy, "k-", linewidth=1.0, alpha=0.8)
 
     # Mark energy boundaries
-    for E_bound, lbl in [(E_THERMAL_UPPER, "0.625 eV"), (E_EPITHERMAL_UPPER, "100 keV")]:
+    for E_bound, lbl in [(E_THERMAL_UPPER, "0.55 eV"), (E_EPITHERMAL_UPPER, "100 keV")]:
         ax.axvline(E_bound, color="gray", linewidth=0.8, linestyle="--", alpha=0.6)
         ax.text(E_bound * 1.2, ax.get_ylim()[1] * 0.9, lbl, fontsize=8, color="gray", rotation=90, va="top")
 
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.set_xlabel("Neutron Energy (eV)", fontsize=12)
-    ax.set_ylabel("Flux per Unit Lethargy (arb. units)", fontsize=12)
+    ax.set_ylabel("Flux per Unit Lethargy", fontsize=12)
     ax.set_title(f"Neutron Energy Spectrum{batch_label}", fontsize=14)
     ax.legend(fontsize=10, loc="upper left")
     ax.grid(True, which="major", alpha=0.3)
@@ -271,7 +271,7 @@ def plot_flux_spectrum(E_center, flux_per_lethargy, flux_per_bin, metrics, run_d
                          alpha=0.2, color=colors["thermal"])
 
         ax.axvline(E_THERMAL_UPPER, color="red", linestyle="--", linewidth=1, alpha=0.7,
-                   label="Cd cutoff (0.625 eV)")
+                   label="Cd cutoff (0.55 eV)")
 
         if metrics["T_neutron_thermal_K"] > 0:
             ax.set_title(
@@ -284,7 +284,7 @@ def plot_flux_spectrum(E_center, flux_per_lethargy, flux_per_bin, metrics, run_d
 
         ax.set_xscale("log")
         ax.set_xlabel("Neutron Energy (eV)", fontsize=12)
-        ax.set_ylabel("Flux per Unit Lethargy (arb. units)", fontsize=12)
+        ax.set_ylabel("Flux per Unit Lethargy", fontsize=12)
         ax.legend(fontsize=10)
         ax.grid(True, alpha=0.3)
 

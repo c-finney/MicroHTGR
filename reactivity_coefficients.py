@@ -231,7 +231,7 @@ def run_reactivity_coefficients(
         print(f"\nNo valid reference run found ({e}).  Running nominal case…")
         ref_dir = os.path.join(output_base_dir, "reference_nominal")
         n_trisos = run_simulation_fn(params, core_rings, ref_dir)
-        if run_post_processing_fn:
+        if params["run_post_processing"]:
             run_post_processing_fn(ref_dir, params, n_trisos)
         k_ref, k_ref_std = _extract_keff(ref_dir)
         base_run_dir = ref_dir
@@ -273,7 +273,7 @@ def run_reactivity_coefficients(
                 except Exception:
                     print(f"  [{case_label}] Running ΔT = {actual_dT:+.0f} K …")
                     n_trisos = run_simulation_fn(perturbed_params, core_rings, case_dir)
-                    if run_post_processing_fn:
+                    if params["run_post_processing"]:
                         run_post_processing_fn(case_dir, perturbed_params, n_trisos)
                     k_pert, k_pert_std = _extract_keff(case_dir)
                     print(f"  [{case_label}] k = {k_pert:.5f} ± {k_pert_std:.5f}")
