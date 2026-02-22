@@ -39,7 +39,7 @@ def get_normalization_factor(sp_path, target_power_MW=15.0):
     # Calculate source rate
     power_watts = target_power_MW * 1e6
     source_per_sec = power_watts / heating_rate_j
-    
+
     return source_per_sec
 
 
@@ -176,8 +176,9 @@ def plot_xy_slice(run_dir, batch, z_index, is_wedge=False, reconstruct=False,
     mean = tally.mean[:, 0, :]
     
     # Extract and normalize
-    flux = mean[:, flux_idx] * source_per_sec
-    fission = mean[:, fission_idx] * source_per_sec
+    symmetry_factor = 6 if is_wedge else 1
+    flux = mean[:, flux_idx] * source_per_sec / symmetry_factor
+    fission = mean[:, fission_idx] * source_per_sec / symmetry_factor
     
     # Reshape to 3D grid
     flux_3d = flux.reshape((nx, ny, nz), order='F')
@@ -294,8 +295,9 @@ def plot_axial_profile(run_dir, batch, is_wedge=False, target_power_MW=15.0):
     fission_idx = scores.index('fission')
     
     mean = tally.mean[:, 0, :]
-    flux = mean[:, flux_idx] * source_per_sec
-    fission = mean[:, fission_idx] * source_per_sec
+    symmetry_factor = 6 if is_wedge else 1
+    flux = mean[:, flux_idx] * source_per_sec / symmetry_factor
+    fission = mean[:, fission_idx] * source_per_sec / symmetry_factor
     
     # Reshape to 3D
     flux_3d = flux.reshape((nx, ny, nz), order='F')
@@ -383,8 +385,9 @@ def plot_rz_crosssection(run_dir, batch, angle_deg=0, is_wedge=False,
     fission_idx = scores.index('fission')
     
     mean = tally.mean[:, 0, :]
-    flux = mean[:, flux_idx] * source_per_sec
-    fission = mean[:, fission_idx] * source_per_sec
+    symmetry_factor = 6 if is_wedge else 1
+    flux = mean[:, flux_idx] * source_per_sec / symmetry_factor
+    fission = mean[:, fission_idx] * source_per_sec / symmetry_factor
     
     # Reshape to 3D
     flux_3d = flux.reshape((nx, ny, nz), order='F')

@@ -65,7 +65,7 @@ def create_triso_lattice(params, mats, axial_section_height):
 
     rand_spheres = openmc.model.pack_spheres(radius=r_opyc, region=triso_region, pf=params["triso_pf"])
 
-    print(f"Number of TRISOs created per axial zone: {len(rand_spheres)}")
+    print(f"\nNumber of TRISOs created per axial zone: {len(rand_spheres)}")
 
     # Hard boundary filter (critical at high PF)
     # CURRENTLY NOT WORKING (at high PF (0.35+) this filter will not remove all unsafe TRISOs, some remain outside the lattice)

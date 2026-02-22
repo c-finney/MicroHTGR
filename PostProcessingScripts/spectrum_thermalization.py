@@ -32,10 +32,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 
+
 # ===========================================================================
-# ENERGY GROUP BOUNDARIES (eV)
+# Energy group boundaries (eV)
 # ===========================================================================
-E_THERMAL_UPPER = 0.55          # Cadmium cutoff
+E_THERMAL_UPPER = 0.625          # Cadmium cutoff
 E_EPITHERMAL_UPPER = 1.0e5      # 100 keV
 E_FAST_UPPER = 2.0e7            # 20 MeV (upper limit of most libraries)
 
@@ -46,10 +47,11 @@ E_RESONANCE_HIGH = 1.0e3         # 1 keV  (dominant U-238 resonances)
 # Additional energy landmarks
 E_FISSION_PEAK = 2.0e6           # ~2 MeV typical fission spectrum peak
 E_1EV = 1.0
-E_CADMIUM = 0.55                 # Approximate Cd cutoff
+E_CADMIUM = 0.5                  # Approximate Cd cutoff
+
 
 # ===========================================================================
-# MAIN ANALYSIS FUNCTION
+# Core analysis function
 # ===========================================================================
 
 def analyze_spectrum(energy_edges, flux_per_bin):
@@ -85,7 +87,9 @@ def analyze_spectrum(energy_edges, flux_per_bin):
     # Flux per unit lethargy  (the standard way to display reactor spectra)
     flux_per_lethargy = flux_per_bin / delta_u
 
-    # ----- Group-integrated fluxes -----
+    # -------------------------------------------------------------------
+    # Group-integrated fluxes
+    # -------------------------------------------------------------------
     thermal_mask = E_center <= E_THERMAL_UPPER
     epithermal_mask = (E_center > E_THERMAL_UPPER) & (E_center <= E_EPITHERMAL_UPPER)
     fast_mask = E_center > E_EPITHERMAL_UPPER
@@ -104,7 +108,9 @@ def analyze_spectrum(energy_edges, flux_per_bin):
     f_epithermal = phi_epithermal / phi_total
     f_fast = phi_fast / phi_total
 
-    # ----- Average and median energies -----
+    # -------------------------------------------------------------------
+    # Average and median energies
+    # -------------------------------------------------------------------
     E_avg = np.sum(E_center * flux_per_bin) / phi_total
 
     # Median: energy below which 50 % of flux resides
@@ -116,27 +122,33 @@ def analyze_spectrum(energy_edges, flux_per_bin):
     idx_peak = np.argmax(flux_per_lethargy)
     E_peak = E_center[idx_peak]
 
-    # ----- Ratios -----
+    # -------------------------------------------------------------------
+    # Ratios
+    # -------------------------------------------------------------------
     thermal_to_fast = phi_thermal / phi_fast if phi_fast > 0 else np.inf
     spectral_index = phi_epithermal / phi_thermal if phi_thermal > 0 else np.inf
 
     # Cadmium ratio estimate  CR ≈ φ_total / φ_epithermal  (simplified)
     cadmium_ratio = phi_total / phi_epithermal if phi_epithermal > 0 else np.inf
 
-    # ----- Resonance-region flux fraction (1 eV – 1 keV) -----
+    # -------------------------------------------------------------------
+    # Resonance-region flux fraction (1 eV – 1 keV)
+    # -------------------------------------------------------------------
     resonance_mask = (E_center >= E_RESONANCE_LOW) & (E_center <= E_RESONANCE_HIGH)
     phi_resonance = np.sum(flux_per_bin[resonance_mask])
     f_resonance = phi_resonance / phi_total
 
-
-    # ----- Thermalization Ratio -----
-    # Ratio of flux below 0.1 eV to total (measures how well the spectrum reaches full Maxwellian equilibrium)
+    # -------------------------------------------------------------------
+    # Thermalization ratio: ratio of flux below 0.1 eV to total
+    # (measures how well the spectrum reaches full Maxwellian equilibrium)
+    # -------------------------------------------------------------------
     sub_thermal_mask = E_center <= 0.1
     phi_sub_thermal = np.sum(flux_per_bin[sub_thermal_mask])
     f_sub_thermal = phi_sub_thermal / phi_total
 
-    # ----- Effective Neutorn Temperature -----
-    # Fit Maxwellian to thermal region
+    # -------------------------------------------------------------------
+    # Effective neutron temperature (fit Maxwellian to thermal region)
+    # -------------------------------------------------------------------
     kB_eV = 8.617333e-5  # Boltzmann constant in eV/K
     T_neutron = E_avg / (1.5 * kB_eV) if E_avg < 1.0 else None  # only meaningful if thermal
 
@@ -185,7 +197,7 @@ def analyze_spectrum(energy_edges, flux_per_bin):
 
 
 # ===========================================================================
-# PLOTTING
+# Plotting
 # ===========================================================================
 
 def plot_flux_spectrum(E_center, flux_per_lethargy, flux_per_bin, metrics, run_dir, batch=None):
@@ -194,7 +206,9 @@ def plot_flux_spectrum(E_center, flux_per_lethargy, flux_per_bin, metrics, run_d
     batch_label = f" (Batch {batch})" if batch else ""
     colors = {"thermal": "#2196F3", "epithermal": "#FF9800", "fast": "#F44336"}
 
-    # ----- Flux per unit lethargy vs energy (classic spectrum plot) -----
+    # -------------------------------------------------------------------
+    # 1. Flux per unit lethargy vs energy (classic spectrum plot)
+    # -------------------------------------------------------------------
     fig, ax = plt.subplots(figsize=(12, 6), dpi=150)
 
     # Shade energy regions
@@ -212,14 +226,14 @@ def plot_flux_spectrum(E_center, flux_per_lethargy, flux_per_bin, metrics, run_d
     ax.plot(E_center, flux_per_lethargy, "k-", linewidth=1.0, alpha=0.8)
 
     # Mark energy boundaries
-    for E_bound, lbl in [(E_THERMAL_UPPER, "0.55 eV"), (E_EPITHERMAL_UPPER, "100 keV")]:
+    for E_bound, lbl in [(E_THERMAL_UPPER, "0.625 eV"), (E_EPITHERMAL_UPPER, "100 keV")]:
         ax.axvline(E_bound, color="gray", linewidth=0.8, linestyle="--", alpha=0.6)
         ax.text(E_bound * 1.2, ax.get_ylim()[1] * 0.9, lbl, fontsize=8, color="gray", rotation=90, va="top")
 
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.set_xlabel("Neutron Energy (eV)", fontsize=12)
-    ax.set_ylabel("Flux per Unit Lethargy", fontsize=12)
+    ax.set_ylabel("Flux per Unit Lethargy (arb. units)", fontsize=12)
     ax.set_title(f"Neutron Energy Spectrum{batch_label}", fontsize=14)
     ax.legend(fontsize=10, loc="upper left")
     ax.grid(True, which="major", alpha=0.3)
@@ -231,8 +245,9 @@ def plot_flux_spectrum(E_center, flux_per_lethargy, flux_per_bin, metrics, run_d
     plt.close()
     print(f"  Saved: {save_path}")
 
-
-    # ----- Cumulative Flux Fraction -----
+    # -------------------------------------------------------------------
+    # 2. Cumulative flux fraction
+    # -------------------------------------------------------------------
     cumulative = np.cumsum(flux_per_bin) / metrics["phi_total"]
 
     fig, ax = plt.subplots(figsize=(10, 5), dpi=150)
@@ -259,9 +274,9 @@ def plot_flux_spectrum(E_center, flux_per_lethargy, flux_per_bin, metrics, run_d
     plt.close()
     print(f"  Saved: {save_path}")
 
-
-    # ----- Thermal Region Zoom -----
-    # Linear y-scale, shows Maxwellian peak)
+    # -------------------------------------------------------------------
+    # 3. Thermal region zoom (linear y-scale, shows Maxwellian peak)
+    # -------------------------------------------------------------------
     zoom_mask = E_center <= 2.0  # up to 2 eV
 
     if np.any(zoom_mask) and np.any(flux_per_lethargy[zoom_mask] > 0):
@@ -271,7 +286,7 @@ def plot_flux_spectrum(E_center, flux_per_lethargy, flux_per_bin, metrics, run_d
                          alpha=0.2, color=colors["thermal"])
 
         ax.axvline(E_THERMAL_UPPER, color="red", linestyle="--", linewidth=1, alpha=0.7,
-                   label="Cd cutoff (0.55 eV)")
+                   label="Cd cutoff (0.625 eV)")
 
         if metrics["T_neutron_thermal_K"] > 0:
             ax.set_title(
@@ -284,7 +299,7 @@ def plot_flux_spectrum(E_center, flux_per_lethargy, flux_per_bin, metrics, run_d
 
         ax.set_xscale("log")
         ax.set_xlabel("Neutron Energy (eV)", fontsize=12)
-        ax.set_ylabel("Flux per Unit Lethargy", fontsize=12)
+        ax.set_ylabel("Flux per Unit Lethargy (arb. units)", fontsize=12)
         ax.legend(fontsize=10)
         ax.grid(True, alpha=0.3)
 
@@ -293,7 +308,9 @@ def plot_flux_spectrum(E_center, flux_per_lethargy, flux_per_bin, metrics, run_d
         plt.close()
         print(f"  Saved: {save_path}")
 
-    # ----- Metrics Summary Card -----
+    # -------------------------------------------------------------------
+    # 4. Metrics summary card (saved as figure)
+    # -------------------------------------------------------------------
     fig, ax = plt.subplots(figsize=(8, 6), dpi=150)
     ax.axis("off")
 
@@ -327,6 +344,7 @@ def plot_flux_spectrum(E_center, flux_per_lethargy, flux_per_bin, metrics, run_d
     plt.close()
     print(f"  Saved: {save_path}")
 
+
 def _format_energy(E_eV):
     """Format energy value with appropriate units."""
     if E_eV < 1e-3:
@@ -340,8 +358,9 @@ def _format_energy(E_eV):
     else:
         return f"{E_eV/1e6:.2f} MeV"
 
+
 # ===========================================================================
-# POST-PROCESSING CODE FUNCTIONALITY
+# Main entry point
 # ===========================================================================
 
 def run_spectrum_analysis(run_dir, params, batch=None):
@@ -368,7 +387,9 @@ def run_spectrum_analysis(run_dir, params, batch=None):
     print(f"{'=' * 80}")
     print(f"Run directory: {run_dir}")
 
-    # ----- Find Statepoint -----
+    # ------------------------------------------------------------------
+    # Find statepoint
+    # ------------------------------------------------------------------
     if batch is None:
         for f in os.listdir(run_dir):
             if f.startswith("statepoint") and f.endswith(".h5"):
@@ -384,7 +405,9 @@ def run_spectrum_analysis(run_dir, params, batch=None):
 
     sp = openmc.StatePoint(sp_path)
 
-    # ----- Extract Flux Energy Spectrum Tally -----
+    # ------------------------------------------------------------------
+    # Extract flux energy spectrum tally
+    # ------------------------------------------------------------------
     try:
         spectrum_tally = sp.get_tally(name="flux_energy_spectrum")
     except Exception:
@@ -407,10 +430,14 @@ def run_spectrum_analysis(run_dir, params, batch=None):
     print(f"Energy bins: {n_bins}")
     print(f"Energy range: {_format_energy(energy_edges_unique[0])} → {_format_energy(energy_edges_unique[-1])}")
 
-    # ----- Run analysis -----
+    # ------------------------------------------------------------------
+    # Run analysis
+    # ------------------------------------------------------------------
     metrics, flux_per_lethargy, E_center = analyze_spectrum(energy_edges_unique, flux_per_bin)
 
-    # ----- Print Summary -----
+    # ------------------------------------------------------------------
+    # Print summary
+    # ------------------------------------------------------------------
     print(f"\n{'─' * 60}")
     print("  THERMALIZATION METRICS SUMMARY")
     print(f"{'─' * 60}")
@@ -430,11 +457,16 @@ def run_spectrum_analysis(run_dir, params, batch=None):
     print(f"  Eff. thermal neutron T:    {metrics['T_neutron_thermal_K']:.0f} K")
     print(f"{'─' * 60}")
 
-    # ----- Generate Plots
+    # ------------------------------------------------------------------
+    # Generate plots
+    # ------------------------------------------------------------------
     print("\nGenerating spectrum plots...")
     plot_flux_spectrum(E_center, flux_per_lethargy, flux_per_bin, metrics, run_dir, batch)
 
-    # ----- Save Results -----
+    # ------------------------------------------------------------------
+    # Save results
+    # ------------------------------------------------------------------
+    # JSON
     json_path = os.path.join(run_dir, "thermalization_metrics.json")
     # Convert numpy types for JSON serialization
     metrics_json = {k: float(v) if isinstance(v, (np.floating, np.integer)) else v
@@ -491,8 +523,9 @@ def run_spectrum_analysis(run_dir, params, batch=None):
 
     return metrics
 
+
 # ===========================================================================
-# STANDALONE CODE FUNCTIONALITY
+# Standalone entry point
 # ===========================================================================
 
 if __name__ == "__main__":

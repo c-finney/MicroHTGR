@@ -6,7 +6,7 @@
 
 params = {
     # ----- Fuel Kernel -----
-    "fuel_type": "UCO",
+    "fuel_type": "UCO",                        # No other fuel forms currently modeled yet
     "enrichment": 0.1975,                      # U-235 atom fraction
     "kernel_radius": 0.021485,
     "kernel_density": 10820, 
@@ -71,18 +71,39 @@ params = {
     "reflector_max": 968.15,
 
     # ----- OpenMC Monte Carlo Settings -----
-    "total_batches": 50,
-    "inactive_batches": 10,
+    "total_batches": 100,
+    "inactive_batches": 50,
     "particles": 100_000,
 
     # ----- Stochastic Volume Calculation Settings -----
-    "calculate_fuel_volume": False,
+    "calculate_fuel_volume": True,
     "volume_samples": 1_000_000_000,
 
+    # ----- Depletion Settings -----
+    "thermal_power_MW": 15.0,
+    "depletion_chain_file": "/home/cade/Desktop/OpenMC/CrossSections/chain_endfb81_thermal.xml",
+    "use_reduced_chain_file": True,
+    "depletion_timesteps_days": [10, 10, 10, 30, 30, 30, 60, 60, 60, 120, 120, 120, 120, 120, 120, 180, 180, 180],
+    "depletion_integrator": "PredictorIntegrator",
+    # Integrator options:
+    #    "PredictorIntegrator" — simplest, one transport solve per step
+    #    "CECMIntegrator"      — CE/CM predictor-corrector (more accurate, 2× cost)
+    #    "CF4Integrator"       — 4th order (most accurate, 4× cost)
+    #    "LEQIIntegrator"      — LE/QI (good accuracy, 2× cost)
+
     # ----- Study Execution Mode -----
-    "study_execution_mode": "ReactivityStudy",
-    "run_post_processing": False
+    "run_post_processing": True,
+    "study_execution_mode": "DepletionRun"
+    # Options:
+    #    "SingleRun"       — Singular steady state monte carlo simulation of specified core layout 
+    #    "ParametricStudy" — Creates multiple steady state monte carlo simulations varying a single core parameter
+    #    "ReactivityStudy" — Calculates reactivity coefficients via multiple steady state monte carlo simulations and specified temperature perturbations
+    #    "DepletionRun"    — Performs depletion run on specified core layout using specified depletion timesteps
 }
+
+# ====================================================================================================
+# DEPLETION NUCLIDE TRACKING
+# ====================================================================================================
 
 core_rings = [
     ["r", "f", "f"] * 6,
@@ -92,7 +113,48 @@ core_rings = [
 ]
 
 # ====================================================================================================
-# SINGLE PARAMETRIC STUDY CONNFIGURATION
+# DEPLETION NUCLIDE TRACKING
+# ====================================================================================================
+# A reduced chain containing only these nuclides is generated automatically before the first
+# depletion run (see run_depletion_simulation in run.py). The reduced chain file is written to
+# the path specified by "depletion_chain_reduced_file" above and reused on subsequent runs.
+#
+# Metastable states use the OpenMC _m1 suffix (e.g. Xe135_m1).
+# Carbon is tracked as C0 (natural carbon) as it appears in the chain file.
+
+tracked_nuclides = [
+    # --- Actinides ---
+    "U234",  "U235",  "U236",  "U238",
+    "Np237", "Np239",
+    "Pu238", "Pu239", "Pu240", "Pu241", "Pu242",
+    "Am241", "Am243",
+    "Cm242", "Cm243", "Cm244", "Cm245", "Cm246",
+
+    # --- Fission Products ---
+    "Kr83",
+    "Sr90",
+    "Mo95",
+    "Tc99",
+    "Rh103", "Rh105",
+    "Pd107",
+    "I135",
+    "Xe131", "Xe135", "Xe135_m1",
+    "Cs133", "Cs134", "Cs137",
+    "Nd143", "Nd145", "Nd147",
+    "Pm147", "Pm149",
+    "Sm149", "Sm151", "Sm152",
+    "Eu153", "Eu154", "Eu155",
+
+    # --- Structural / Moderator ---
+    "O16",
+    "Si28", "Si29", "Si30",
+
+    # --- Burnable Poison ---
+    "B10",
+]
+
+# ====================================================================================================
+# SINGLE PARAMETRIC STUDY CONFIGURATION
 # ====================================================================================================
 
 parametric_param = None
@@ -116,10 +178,10 @@ parametric_values = None
 # ====================================================================================================
 
 reactivity_delta_T_values = [50.0, 100.0, 150.0]
-reactivity_coefficients = ["FTC", "MTF", "ITC"]
+reactivity_coefficients = ["FTC", "MTC", "ITC"]
 
 # ====================================================================================================
-# GRID SEARCH STUDY CONNFIGURATION
+# GRID SEARCH STUDY CONFIGURATION
 # ====================================================================================================
 
 # parametric_param_1 = "triso_pf"
