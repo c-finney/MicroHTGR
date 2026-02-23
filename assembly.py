@@ -2,8 +2,11 @@ import math
 import openmc
 import numpy as np
 
+# ====================================================================================================
+# ASSEMBLY UNIVERSES BUILDER FUNCTIONS
+# ====================================================================================================
 
-def _build_bank_assemblies(
+def build_bank_assemblies(
     bank_id, control_insertion_depth,
     params, mats, T_coolant_z, T_matrix_z,
     axial_coords, reactor_bottom, reactor_top,
@@ -29,9 +32,9 @@ def _build_bank_assemblies(
 
     control_bottom = reactor_top - control_insertion_depth
 
-    # =========================================================================
-    # REFLECTOR ASSEMBLY WITH CONTROL ROD
-    # =========================================================================
+    # ==================================================================
+    # REFLECTOR ASSEMBLY WITH CONTROL ROD (r)
+    # ==================================================================
 
     control_rod_univs = []
 
@@ -97,9 +100,9 @@ def _build_bank_assemblies(
         fill=reflector_assembly_lat, region=hex_prism_refl & +min_z & -max_z)
     reflector_assembly_univ = openmc.Universe(cells=[reflector_assembly_cell])
 
-    # =========================================================================
-    # REFLECTOR ASSEMBLY WITH 6 CONTROL RODS IN HEX RING
-    # =========================================================================
+    # ==================================================================
+    # REFLECTOR ASSEMBLY WITH 6 CONTROL RODS IN HEX RING (ra)
+    # ==================================================================
 
     graphite_center_cell = openmc.Cell(fill=mats.graphite)
     graphite_center_cell.temperature = params["reflector_min"]
@@ -123,12 +126,12 @@ def _build_bank_assemblies(
         fill=reflector_alt_assembly_lat, region=hex_prism_refl & +min_z & -max_z)
     reflector_alt_assembly_univ = openmc.Universe(cells=[reflector_alt_assembly_cell])
 
-    # =========================================================================
-    # Helper: build the inner-ring graphite substitution lattice universes
+    # ==================================================================
+    # HELPER: build the inner-ring graphite substitution lattice universes
     # (shared between fc and fcp, differing only in ring4)
-    # =========================================================================
+    # ==================================================================
 
-    def _make_control_lattice_univs(source_lattice_univs, lat_name):
+    def make_control_lattice_univs(source_lattice_univs, lat_name):
         result = []
         for idx in range(len(axial_coords) - 1):
             T_matrix = T_matrix_z[idx]
@@ -142,11 +145,11 @@ def _build_bank_assemblies(
             result.append([ring4, ring3, ring2, [g_inner] * 6, [g_inner]])
         return result
 
-    # =========================================================================
-    # Helper: build axial control-rod cells for fuel assemblies
-    # =========================================================================
+    # ==================================================================
+    # HELPER: build axial control-rod cells for fuel assemblies
+    # ==================================================================
 
-    def _make_fuel_control_cells(hex_region_with_outer_cyl):
+    def make_fuel_control_cells(hex_region_with_outer_cyl):
         cells = []
         for idx, (z_min, z_max) in enumerate(zip(axial_coords[:-1], axial_coords[1:])):
             z_mid = 0.5 * (z_min + z_max)
@@ -192,11 +195,11 @@ def _build_bank_assemblies(
 
         return cells
 
-    # =========================================================================
+    # ==================================================================
     # FUEL ASSEMBLY WITH CENTRAL CONTROL ROD  (fc)
-    # =========================================================================
+    # ==================================================================
 
-    fc_lattice_univs = _make_control_lattice_univs(
+    fc_lattice_univs = make_control_lattice_univs(
         fuel_lattice_univs, f"Fuel Lattice for Control Assembly Bank {bank_id}")
 
     fc_lat = openmc.HexLattice(name=f"Fuel Lattice for Control Assembly Bank {bank_id}")
@@ -209,14 +212,14 @@ def _build_bank_assemblies(
     hex_inner = +fuel_control_cyl_guide_outer & hex_prism_fuel & +min_z & -max_z
     fc_lattice_cell = openmc.Cell(fill=fc_lat, region=hex_inner)
 
-    fc_control_cells = _make_fuel_control_cells(hex_prism_fuel)
+    fc_control_cells = make_fuel_control_cells(hex_prism_fuel)
     fc_univ = openmc.Universe(cells=fc_control_cells + [fc_lattice_cell])
 
-    # =========================================================================
+    # ==================================================================
     # FUEL ASSEMBLY WITH CONTROL ROD AND POISON RODS  (fcp)
-    # =========================================================================
+    # ==================================================================
 
-    fcp_lattice_univs = _make_control_lattice_univs(
+    fcp_lattice_univs = make_control_lattice_univs(
         poison_lattice_univs, f"Fuel Lattice with Poison for Control Assembly Bank {bank_id}")
 
     fcp_lat = openmc.HexLattice(
@@ -229,7 +232,7 @@ def _build_bank_assemblies(
 
     fcp_lattice_cell = openmc.Cell(fill=fcp_lat, region=hex_inner)
 
-    fcp_control_cells = _make_fuel_control_cells(hex_prism_fuel)
+    fcp_control_cells = make_fuel_control_cells(hex_prism_fuel)
     fcp_univ = openmc.Universe(cells=fcp_control_cells + [fcp_lattice_cell])
 
     return {
@@ -238,7 +241,6 @@ def _build_bank_assemblies(
         "fc": fc_univ,
         "fcp": fcp_univ,
     }
-
 
 def create_assembly_univs(params, mats, T_coolant_z, T_compact_z, T_matrix_z,
                           triso_lattice, axial_coords, reactor_bottom, reactor_top):
@@ -258,9 +260,9 @@ def create_assembly_univs(params, mats, T_coolant_z, T_compact_z, T_matrix_z,
     axial_section_height = params["core_height"] / params["n_ax_zones"]
     bundle_pitch = 5 * params["fuel_to_coolant_distance"] * math.sqrt(3.0)
 
-    # =========================================================================
+    # ==================================================================
     # SHARED SURFACES
-    # =========================================================================
+    # ==================================================================
 
     fuel_cyl = openmc.ZCylinder(r=params["compact_radius"])
     coolant_cyl = openmc.ZCylinder(r=params["coolant_radius"])
@@ -281,9 +283,9 @@ def create_assembly_univs(params, mats, T_coolant_z, T_compact_z, T_matrix_z,
     fuel_control_cyl_sheath_outer = openmc.ZCylinder(r=r_sheath_outer_fuel)
     fuel_control_cyl_guide_outer = openmc.ZCylinder(r=r_guide_outer_fuel)
 
-    # =========================================================================
+    # ==================================================================
     # AXIAL ZONE UNIVERSES  (bank-independent)
-    # =========================================================================
+    # ==================================================================
 
     fuel_lattice_univs = []
     poison_lattice_univs = []
@@ -339,9 +341,9 @@ def create_assembly_univs(params, mats, T_coolant_z, T_compact_z, T_matrix_z,
         poison_lattice_univs.append([ring4_poison, ring3, ring2, ring1, ring0])
         poison_lattice_univs_alt.append([ring4, ring3, ring2, ring1, [p]])
 
-    # =========================================================================
+    # ==================================================================
     # BANK-INDEPENDENT OUTER UNIVERSES
-    # =========================================================================
+    # ==================================================================
 
     graphite_outer_cell = openmc.Cell(fill=mats.graphite)
     inf_graphite_universe = openmc.Universe(cells=[graphite_outer_cell])
@@ -386,9 +388,9 @@ def create_assembly_univs(params, mats, T_coolant_z, T_compact_z, T_matrix_z,
         fill=fuel_assembly_poison_lat_alt, region=hex_prism_fuel & +min_z & -max_z)
     fuel_assembly_poison_univ_alt = openmc.Universe(cells=[fuel_assembly_poison_cell_alt])
 
-    # =========================================================================
+    # ==================================================================
     # BANK-DEPENDENT ASSEMBLIES  (r, fc, fcp) × 3 banks
-    # =========================================================================
+    # ==================================================================
 
     bank_keys = [
         ("bank_1_insertion", 1),
@@ -405,7 +407,7 @@ def create_assembly_univs(params, mats, T_coolant_z, T_compact_z, T_matrix_z,
     for param_key, bank_id in bank_keys:
         insertion_depth = params[param_key] * params["core_height"]
 
-        bank_assemblies = _build_bank_assemblies(
+        bank_assemblies = build_bank_assemblies(
             bank_id=bank_id,
             control_insertion_depth=insertion_depth,
             params=params,
@@ -437,6 +439,9 @@ def create_assembly_univs(params, mats, T_coolant_z, T_compact_z, T_matrix_z,
 
     return assemblies, m_colors, bundle_pitch
 
+# ====================================================================================================
+# CORE LATTICE BUILDER FUNCTION
+# ====================================================================================================
 
 def build_core_lattice(assemblies, core_rings, bundle_pitch):
     """

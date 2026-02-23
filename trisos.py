@@ -1,6 +1,10 @@
 import openmc
 import numpy as np
 
+# ====================================================================================================
+# TRISO LATTICE BUILDER FUNCTION
+# ====================================================================================================
+
 def create_triso_lattice(params, mats, axial_section_height):
     """
     Create TRISO particle lattice for fuel compacts.
@@ -16,9 +20,9 @@ def create_triso_lattice(params, mats, axial_section_height):
             - n_trisos: Number of TRISO particles per axial zone (int)
     """
 
-    # ====================================================================================================
+    # ==================================================================
     # TRISO PARTICLE CREATION
-    # ====================================================================================================
+    # ==================================================================
 
     # Creates model of TRISO fuel particle in the following order:
     # Fuel Kernel > Carbon Buffer Layer > Inner PyC Layer > SiC Layer > Outer PyC Layer
@@ -44,9 +48,9 @@ def create_triso_lattice(params, mats, axial_section_height):
 
     triso_universe = openmc.Universe(cells=[c_triso_fuel, c_triso_buffer, c_triso_ipyc, c_triso_sic, c_triso_opyc, c_triso_matrix])
 
-    # ====================================================================================================
+    # ==================================================================
     # FUEL COMPACT LATTICE CREATION
-    # ====================================================================================================
+    # ==================================================================
 
     # Superimposed TRISO search lattice
     triso_lattice_shape = (4, 4, int(axial_section_height / 0.5))

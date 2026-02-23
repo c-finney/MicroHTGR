@@ -33,10 +33,9 @@ import copy
 import numpy as np
 from datetime import datetime
 
-
-# ---------------------------------------------------------------------------
-# Helper utilities
-# ---------------------------------------------------------------------------
+# ====================================================================================================
+# HELPER FUNCTIONS
+# ====================================================================================================
 
 def keff_to_reactivity_pcm(k):
     """Convert k-effective to reactivity in pcm."""
@@ -60,10 +59,9 @@ def extract_keff(run_dir):
         print(f"  ERROR extracting k-eff from {run_dir}: {e}")
     return None, None
 
-
-# ---------------------------------------------------------------------------
-# Temperature perturbation functions
-# ---------------------------------------------------------------------------
+# ====================================================================================================
+# TEMPERATURE PERTURBATION FUNCTIONS
+# ====================================================================================================
 
 def perturb_fuel_temperatures(params, delta_T):
     """
@@ -76,7 +74,6 @@ def perturb_fuel_temperatures(params, delta_T):
     p["compact_min"] += delta_T
     p["compact_max"] += delta_T
     return p
-
 
 def perturb_moderator_temperatures(params, delta_T):
     """
@@ -91,7 +88,6 @@ def perturb_moderator_temperatures(params, delta_T):
     p["reflector_min"] += delta_T
     p["reflector_max"] += delta_T
     return p
-
 
 def perturb_isothermal_temperatures(params, delta_T):
     """
@@ -108,7 +104,6 @@ def perturb_isothermal_temperatures(params, delta_T):
     p["reflector_min"] += delta_T
     p["reflector_max"] += delta_T
     return p
-
 
 # Map of coefficient type -> perturbation function and readable name
 COEFF_REGISTRY = {
@@ -129,10 +124,9 @@ COEFF_REGISTRY = {
     },
 }
 
-
-# ---------------------------------------------------------------------------
-# Core driver: set up and run the perturbation study
-# ---------------------------------------------------------------------------
+# ====================================================================================================
+# CONFIGURE PERTURBATION STUDY CASES
+# ====================================================================================================
 
 def setup_perturbation_cases(base_params, delta_T, base_dir,
                              coefficients=("FTC", "MTC", "ITC"),
@@ -147,7 +141,7 @@ def setup_perturbation_cases(base_params, delta_T, base_dir,
     Plus one shared baseline directory.
 
     Parameters
-    ----------
+    ------------
     base_params : dict
         Reference simulation parameters.
     delta_T : float
@@ -160,7 +154,7 @@ def setup_perturbation_cases(base_params, delta_T, base_dir,
         If True, include a shared baseline case.
 
     Returns
-    -------
+    --------
     list of dict
         Each dict describes a case:
         {"label", "coeff", "variant", "params", "run_dir", "delta_T"}
@@ -205,6 +199,9 @@ def setup_perturbation_cases(base_params, delta_T, base_dir,
 
     return cases
 
+# ====================================================================================================
+# RUN PERTURBTION STUDIES
+# ====================================================================================================
 
 def run_perturbation_study(base_params, delta_T, base_dir,
                            coefficients=("FTC", "MTC", "ITC"),
@@ -214,7 +211,7 @@ def run_perturbation_study(base_params, delta_T, base_dir,
     Run the full direct-perturbation reactivity coefficient study.
 
     Parameters
-    ----------
+    ------------
     base_params : dict
         Reference simulation parameters.
     delta_T : float
@@ -230,7 +227,7 @@ def run_perturbation_study(base_params, delta_T, base_dir,
         If True, skip cases where a statepoint file already exists.
 
     Returns
-    -------
+    --------
     dict : Mapping from coefficient key to result dict.
     """
     if run_simulation_fn is None:
@@ -242,7 +239,7 @@ def run_perturbation_study(base_params, delta_T, base_dir,
         coefficients=coefficients, run_baseline=True
     )
 
-    # ---- Run all cases ----
+    # ----- Run all cases -----
     n_cases = len(cases)
     print(f"\n{'='*80}")
     print(f"REACTIVITY COEFFICIENT STUDY - Direct Perturbation")
@@ -282,13 +279,12 @@ def run_perturbation_study(base_params, delta_T, base_dir,
         except Exception as e:
             print(f"  FAILED: {e}")
 
-    # ---- Extract results and compute coefficients ----
+    # ----- Extract results and compute coefficients -----
     return postprocess_perturbation_study(base_dir, delta_T, coefficients)
 
-
-# ---------------------------------------------------------------------------
-# Post-processing: extract k-eff values and compute coefficients
-# ---------------------------------------------------------------------------
+# ====================================================================================================
+# POST-PROCESSING: EXTRACT K-EFF VALUES AND COMPUTE COEFFICIENTS
+# ====================================================================================================
 
 def postprocess_perturbation_study(base_dir, delta_T, coefficients=("FTC", "MTC", "ITC")):
     """
@@ -297,7 +293,7 @@ def postprocess_perturbation_study(base_dir, delta_T, coefficients=("FTC", "MTC"
     Can be called standalone without re-running simulations.
 
     Parameters
-    ----------
+    ------------
     base_dir : str
         Root directory containing baseline/, FTC_plus_*/, FTC_minus_*/, etc.
     delta_T : float
@@ -306,7 +302,7 @@ def postprocess_perturbation_study(base_dir, delta_T, coefficients=("FTC", "MTC"
         Which coefficients to process.
 
     Returns
-    -------
+    --------
     dict : Mapping from coefficient key to result dict with:
         alpha_pcm_per_K, alpha_std_pcm_per_K, k_plus, k_minus, k_baseline, etc.
     """
@@ -404,17 +400,20 @@ def postprocess_perturbation_study(base_dir, delta_T, coefficients=("FTC", "MTC"
         else:
             print("  (NOTE: Significant cross-coupling effects present)")
 
-    # ---- Save results ----
+    # ----- Save results -----
     _save_results(results, base_dir, delta_T, k_base, k_base_std)
 
     print(f"\n{'='*80}\n")
     return results
 
+# ====================================================================================================
+# SAVE REACTIVITY COEFFICIENT CALCULATION RESULTS
+# ====================================================================================================
 
 def _save_results(results, base_dir, delta_T, k_base, k_base_std):
     """Save results to text report and JSON."""
 
-    # ---- Text report ----
+    # ----- Text report -----
     report_path = os.path.join(base_dir, "reactivity_coefficients.txt")
     with open(report_path, 'w') as f:
         f.write("=" * 80 + "\n")
@@ -446,7 +445,7 @@ def _save_results(results, base_dir, delta_T, k_base, k_base_std):
 
     print(f"\nReport saved: {report_path}")
 
-    # ---- JSON for programmatic access ----
+    # ----- JSON for programmatic access -----
     json_path = os.path.join(base_dir, "reactivity_coefficients.json")
     json_data = {
         "delta_T_K": delta_T,
@@ -463,10 +462,9 @@ def _save_results(results, base_dir, delta_T, k_base, k_base_std):
 
     print(f"JSON saved:   {json_path}")
 
-
-# ---------------------------------------------------------------------------
-# Plot helper
-# ---------------------------------------------------------------------------
+# ====================================================================================================
+# PLOTTING FUNCTIONS
+# ====================================================================================================
 
 def plot_reactivity_coefficients(results, base_dir):
     """Generate a bar chart comparing the three coefficients."""
@@ -516,10 +514,9 @@ def plot_reactivity_coefficients(results, base_dir):
     plt.close()
     print(f"Plot saved:   {save_path}")
 
-
-# ---------------------------------------------------------------------------
-# Standalone entry point
-# ---------------------------------------------------------------------------
+# ====================================================================================================
+# STANDALONE REACTIVITY COEFFICIENT CALCULATION
+# ====================================================================================================
 
 if __name__ == "__main__":
     """
