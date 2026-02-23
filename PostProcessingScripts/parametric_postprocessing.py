@@ -44,10 +44,6 @@ def extract_case_results(case_dir, batch_number=None):
     try:
         sp = openmc.StatePoint(sp_path)
         
-        # Get keff
-        keff = sp.keff.nominal_value
-        keff_std = sp.keff.std_dev
-        
         # Get heating tally
         heating_tally = sp.get_tally(name='heating')
         heating_rate_ev = heating_tally.mean[0, 0, 0]
@@ -66,13 +62,47 @@ def extract_case_results(case_dir, batch_number=None):
         fission_per_source = mean[fission_idx]
         nu_fission_per_source = mean[nu_fission_idx]
         
-        # Calculate leakage fraction
-        leakage_fraction = 1 - 1/keff if keff > 0 else 0
+        keff = None
+        keff_std = None
+        leakage_fraction = None
+        leakage_std = None
+
+        output_file = os.path.join(case_dir, 'openmc_output.txt')
+
+        if not os.path.exists(output_file):
+            print("ERROR: openmc_output.txt not found!")
+            return None
+
+        with open(output_file, 'r') as f:
+            content = f.read()
+
+        for line in content.split('\n'):
+            if 'k-effective (Collision)' in line and '=' in line:
+                parts = line.split('=')[1].strip().split('+/-')
+                keff = float(parts[0].strip())
+                if len(parts) > 1:
+                    keff_std = float(parts[1].strip())
+
+            if 'Leakage Fraction' in line and '=' in line:
+                parts = line.split('=')[1].strip().split('+/-')
+                leakage_fraction = float(parts[0].strip())
+                if len(parts) > 1:
+                    leakage_std = float(parts[1].strip())
+
+        if keff is None:
+            print("ERROR: Could not parse k-effective from openmc_output.txt")
+            return None
+
+        if leakage_fraction is None:
+            print("WARNING: Could not parse leakage fraction, defaulting to 0.0")
+            leakage_fraction = 0.0
+            leakage_std = 0.0
         
         return {
             'keff': keff,
             'keff_std': keff_std,
             'leakage_fraction': leakage_fraction,
+            'leakage_std': leakage_std,
             'flux_per_source': flux_per_source,
             'fission_per_source': fission_per_source,
             'nu_fission_per_source': nu_fission_per_source,
