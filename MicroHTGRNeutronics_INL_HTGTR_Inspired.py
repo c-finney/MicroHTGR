@@ -7,6 +7,7 @@ import openmc.deplete
 from datetime import datetime
 import sys
 import subprocess
+import json
 
 # Add parent directory to path to find modules
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -38,7 +39,6 @@ def save_params(run_dir, params):
         run_dir: Directory to save to
         params: Simulation parameters dictionary
     """
-    import json
     
     # Filter to JSON-serializable types
     params_serializable = {}
@@ -559,7 +559,6 @@ def run_simulation(params, run_dir):
         print(f"Estimated B-10 mass:                     {total_B10_mass_kg:.4f} kg\n")
 
         # Save to run_params.json
-        import json
         params_path = os.path.join(run_dir, 'run_params.json')
         if os.path.exists(params_path):
             with open(params_path, 'r') as f:
@@ -632,7 +631,6 @@ def run_depletion_simulation(params, run_dir):
     Returns:
         n_trisos: Number of TRISO particles per axial zone
     """
-    import json
 
     print(f"\n{'=' * 80}")
     print("DEPLETION SIMULATION")
@@ -850,7 +848,6 @@ def update_run_info(run_dir, n_trisos):
     """
     Update run_params.json with n_trisos after TRISO creation.
     """
-    import json
     
     params_path = os.path.join(run_dir, 'run_params.json')
     
@@ -874,11 +871,20 @@ def run_post_processing(run_dir, params, n_trisos):
     print(f"{'='*80}\n")
     
     update_run_info(run_dir, n_trisos)
+
+    params_path = os.path.join(run_dir, 'run_params.json')
+    if os.path.exists(params_path):
+        with open(params_path, 'r') as f:
+            saved_params = json.load(f)
+        merged_params = {**params, **saved_params}
+    else:
+        print("WARNING: run_params.json not found, post-processing may be missing runtime data")
+        merged_params = params
     
     try:
         from burnup_estimation import run_burnup_estimation
         print("Running burnup estimation...")
-        run_burnup_estimation(run_dir, params, n_trisos)
+        run_burnup_estimation(run_dir, merged_params, n_trisos)
     except ImportError as e:
         print(f"Warning: Could not import burnup_estimation: {e}")
     except Exception as e:
@@ -887,7 +893,7 @@ def run_post_processing(run_dir, params, n_trisos):
     try:
         from tally_plotter import run_tally_plots
         print("Running tally plotting...")
-        run_tally_plots(run_dir, params)
+        run_tally_plots(run_dir, merged_params)
     except ImportError as e:
         print(f"Warning: Could not import tally_plotter: {e}")
     except Exception as e:
@@ -896,7 +902,7 @@ def run_post_processing(run_dir, params, n_trisos):
     try:
         from spectrum_thermalization import run_spectrum_analysis
         print("Running spectrum & thermalization analysis...")
-        run_spectrum_analysis(run_dir, params)
+        run_spectrum_analysis(run_dir, merged_params)
     except ImportError as e:
         print(f"Warning: Could not import spectrum_thermalization: {e}")
     except Exception as e:
