@@ -460,6 +460,49 @@ def build_model(params, run_dir):
 
     tallies += [radial_current_tally, radial_flux_tally]
 
+    # ----- Axial Neutron Leakage Tallies -----
+
+    axial_leakage_mesh_top = openmc.CylindricalMesh(
+        r_grid   = np.linspace(0.0, params["core_radius"], 50),
+        z_grid   = [reactor_top  + params["reflector_thickness"] - 1.0,
+                    reactor_top  + params["reflector_thickness"]], # thin 1 cm slab at top reflector
+        phi_grid = [0.0, np.pi / 3] if params["use_1/6_geometry"] else [0.0, 2 * np.pi]
+    )
+
+    axial_leakage_mesh_bot = openmc.CylindricalMesh(
+        r_grid   = np.linspace(0.0, params["core_radius"], 50),
+        z_grid   = [reactor_bottom - params["reflector_thickness"],
+                    reactor_bottom - params["reflector_thickness"] + 1.0], # thin 1 cm slab at bottom reflector
+        phi_grid = [0.0, np.pi / 3] if params["use_1/6_geometry"] else [0.0, 2 * np.pi]
+    )
+
+    axial_leakage_energy_bins   = np.logspace(-9, 7, 500)
+    axial_leakage_energy_filter = openmc.EnergyFilter(axial_leakage_energy_bins)
+
+    axial_top_mesh_filter = openmc.MeshFilter(axial_leakage_mesh_top)
+    axial_bot_mesh_filter = openmc.MeshFilter(axial_leakage_mesh_bot)
+
+    # Current tallies — physically correct leakage measurement
+    axial_top_current_tally = openmc.Tally(name='axial_top_leakage_current')
+    axial_top_current_tally.filters = [axial_top_mesh_filter, axial_leakage_energy_filter]
+    axial_top_current_tally.scores  = ['current']
+
+    axial_bot_current_tally = openmc.Tally(name='axial_bot_leakage_current')
+    axial_bot_current_tally.filters = [axial_bot_mesh_filter, axial_leakage_energy_filter]
+    axial_bot_current_tally.scores  = ['current']
+
+    # Flux tallies in same slabs for spectral comparison
+    axial_top_flux_tally = openmc.Tally(name='axial_top_leakage_flux')
+    axial_top_flux_tally.filters = [axial_top_mesh_filter, axial_leakage_energy_filter]
+    axial_top_flux_tally.scores  = ['flux']
+
+    axial_bot_flux_tally = openmc.Tally(name='axial_bot_leakage_flux')
+    axial_bot_flux_tally.filters = [axial_bot_mesh_filter, axial_leakage_energy_filter]
+    axial_bot_flux_tally.scores  = ['flux']
+
+    tallies += [axial_top_current_tally, axial_bot_current_tally,
+                axial_top_flux_tally,    axial_bot_flux_tally]
+
     model.tallies = tallies
 
     # ==================================================================
@@ -939,13 +982,13 @@ def run_post_processing(run_dir, params, n_trisos):
         print(f"Warning: Spectrum analysis failed: {e}")
 
     try:
-        from radial_leakage_spectrum import run_radial_leakage_analysis
+        from leakage_spectrum import run_leakage_analysis
         print("Running radial leakage spectrum analysis...")
-        run_radial_leakage_analysis(run_dir, merged_params)
+        run_leakage_analysis(run_dir, merged_params)
     except ImportError as e:
-        print(f"Warning: Could not import radial_leakage_spectrum: {e}")
+        print(f"Warning: Could not import leakage_spectrum: {e}")
     except Exception as e:
-        print(f"Warning: Radial neutron leakage failed: {e}")
+        print(f"Warning: Leakage spectrum analysis failed: {e}")
 
     print(f"{'='*80}")
     print("POST-PROCESSING COMPLETE")
