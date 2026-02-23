@@ -206,7 +206,7 @@ def setup_perturbation_cases(base_params, delta_T, base_dir,
     return cases
 
 
-def run_perturbation_study(base_params, core_rings, delta_T, base_dir,
+def run_perturbation_study(base_params, delta_T, base_dir,
                            coefficients=("FTC", "MTC", "ITC"),
                            run_simulation_fn=None,
                            skip_existing=True):
@@ -217,8 +217,6 @@ def run_perturbation_study(base_params, core_rings, delta_T, base_dir,
     ----------
     base_params : dict
         Reference simulation parameters.
-    core_rings : list
-        Core ring definitions.
     delta_T : float
         Temperature perturbation in Kelvin (positive value).
     base_dir : str
@@ -226,7 +224,7 @@ def run_perturbation_study(base_params, core_rings, delta_T, base_dir,
     coefficients : tuple of str
         Which coefficients to compute.
     run_simulation_fn : callable
-        Function with signature run_simulation(params, core_rings, run_dir).
+        Function with signature run_simulation(params, run_dir).
         If None, imports from MicroHTGRNeutronics_INL_HTGTR_Inspired.
     skip_existing : bool
         If True, skip cases where a statepoint file already exists.
@@ -280,7 +278,7 @@ def run_perturbation_study(base_params, core_rings, delta_T, base_dir,
         print(f"  Reflector temps: {p['reflector_min']:.1f} - {p['reflector_max']:.1f} K")
 
         try:
-            run_simulation_fn(case["params"], core_rings, run_dir)
+            run_simulation_fn(case["params"], run_dir)
         except Exception as e:
             print(f"  FAILED: {e}")
 
@@ -567,7 +565,6 @@ if __name__ == "__main__":
 
         results = run_perturbation_study(
             base_params=cfg.params,
-            core_rings=cfg.core_rings,
             delta_T=delta_T,
             base_dir=base_dir,
             coefficients=coefficients,

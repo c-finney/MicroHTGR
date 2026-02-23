@@ -95,7 +95,7 @@ def build_reduced_chain(full_chain_file, reduced_chain_file, tracked_nuclides):
 # MODEL BUILDING FUNCTION
 # ====================================================================================================
 
-def build_model(params, core_rings, run_dir):
+def build_model(params, run_dir):
     """
     Build the complete OpenMC model (geometry, materials, tallies, settings).
 
@@ -104,7 +104,6 @@ def build_model(params, core_rings, run_dir):
 
     Args:
         params: Simulation parameters dictionary
-        core_rings: Core ring layout definition
         run_dir: Directory for output files
 
     Returns:
@@ -186,7 +185,7 @@ def build_model(params, core_rings, run_dir):
 
     core_lattice = asm.build_core_lattice(
         assemblies = assemblies,
-        core_rings = core_rings,
+        core_rings = params["core_rings"],
         bundle_pitch = bundle_pitch
     )
 
@@ -278,7 +277,7 @@ def build_model(params, core_rings, run_dir):
     m_colors[mats.sic] = 'yellow'
     m_colors[mats.graphite] = 'darkblue'
     m_colors[mats.b4c_poison] = 'purple'
-    if params["control_insertion"] > 0:
+    if params["bank_1_insertion"] > 0 or params["bank_2_insertion"] > 0 or params["bank_3_insertion"] > 0:
         m_colors[mats.b4c_control] = 'black'
     m_colors[mats.incoloy800H] = 'gray'
 
@@ -475,13 +474,21 @@ def build_model(params, core_rings, run_dir):
     all_mats = model.geometry.get_all_materials()
     model.materials = openmc.Materials(all_mats.values())
 
+    active_ids = set(all_mats.keys())
+    m_colors_active = {mat: color for mat, color in m_colors.items()
+                       if mat.id in active_ids}
+
+    for plot in model.plots:
+        if plot.color_by == 'material':
+            plot.colors = m_colors_active
+
     return model, n_trisos, m_colors
 
 # ====================================================================================================
 # MAIN SIMULATION FUNCTION (EIGENVALUE)
 # ====================================================================================================
 
-def run_simulation(params, core_rings, run_dir):
+def run_simulation(params, run_dir):
     """
     Build and run an eigenvalue OpenMC simulation.
     
@@ -489,7 +496,7 @@ def run_simulation(params, core_rings, run_dir):
         n_trisos: Number of TRISO particles per axial zone
     """
 
-    model, n_trisos, m_colors = build_model(params, core_rings, run_dir)
+    model, n_trisos, m_colors = build_model(params, run_dir)
     model.export_to_xml()
 
     openmc.plot_geometry(output=False, cwd=run_dir)
@@ -553,14 +560,14 @@ def run_simulation(params, core_rings, run_dir):
 # DEPLETION SIMULATION FUNCTION
 # ====================================================================================================
 
-def run_depletion_simulation(params, core_rings, run_dir):
+def run_depletion_simulation(params, run_dir):
     """
     Build model and run a coupled depletion simulation.
 
     Uses OpenMC's CoupledOperator with the specified integrator to
     deplete fuel over the configured timesteps at constant power.
 
-    A reduced depletion chain is generated from cfg.tracked_nuclides before
+    A reduced depletion chain is generated from params["tracked_nuclides"] before
     the first run and written to params["depletion_chain_reduced_file"].
     On subsequent runs the reduced chain is reused automatically.
 
@@ -577,7 +584,7 @@ def run_depletion_simulation(params, core_rings, run_dir):
     depletion_params = params.copy()
     depletion_params["calculate_fuel_volume"] = True
 
-    model, n_trisos, m_colors = build_model(depletion_params, core_rings, run_dir)
+    model, n_trisos, m_colors = build_model(depletion_params, run_dir)
 
     # ==================================================================
     # EXPORT MODEL AND RUN STOCHASTIC VOLUME CALCULATION
@@ -656,12 +663,12 @@ def run_depletion_simulation(params, core_rings, run_dir):
     # Always generate reduced chain into the run directory
     reduced_chain_file = os.path.join(run_dir, "chain_reduced.xml")
 
-    if params["use_reduced_chain_file"] and len(cfg.tracked_nuclides) > 0:
+    if params["use_reduced_chain_file"] and len(params["tracked_nuclides"]) > 0:
         # Build (or reuse) a reduced chain containing only the tracked nuclides
         chain_file = build_reduced_chain(
             full_chain_file    = full_chain_file,
             reduced_chain_file = reduced_chain_file,
-            tracked_nuclides   = cfg.tracked_nuclides
+            tracked_nuclides   = params["tracked_nuclides"]
         )
     else:
         print("\nUsing full depletion chain file.")
@@ -845,35 +852,33 @@ if __name__ == "__main__":
     os.makedirs(OUTPUT_BASE, exist_ok=True)
     
     BASE_DIR = os.path.join(OUTPUT_BASE, run_name)
-
-    run_parametric_study = cfg.parametric_param is not None and cfg.parametric_values is not None and len(cfg.parametric_values) > 0
     
     # ----- Run Parametric Study -----
     if cfg.params["study_execution_mode"] == "ParametricStudy":
-        BASE_DIR = os.path.join(OUTPUT_BASE, run_name + "_ParametricStudy" + f"_{cfg.parametric_param}")
+        BASE_DIR = os.path.join(OUTPUT_BASE, run_name + "_ParametricStudy" + f"_{cfg.params["parametric_param"]}")
         os.makedirs(BASE_DIR, exist_ok=True)
 
         print(f"\n{'='*80}")
-        print(f"PARAMETRIC STUDY: {cfg.parametric_param}")
-        print(f"Values: {cfg.parametric_values}")
+        print(f"PARAMETRIC STUDY: {cfg.params["parametric_param"]}")
+        print(f"Values: {cfg.params["parametric_values"]}")
         print(f"Base Directory: {BASE_DIR}")
         print(f"{'='*80}")
         
-        for i, val in enumerate(cfg.parametric_values):
+        for i, val in enumerate(cfg.params["parametric_values"]):
             caseNum = i + 1
-            caseNumFormatted = f"{caseNum:0{len(str(len(cfg.parametric_values)))+1}d}"
-            runName = f"{cfg.parametric_param}_Case_{caseNumFormatted}_{val}"
+            caseNumFormatted = f"{caseNum:0{len(str(len(cfg.params["parametric_values"])))+1}d}"
+            runName = f"{cfg.params["parametric_param"]}_Case_{caseNumFormatted}_{val}"
             run_dir = os.path.join(BASE_DIR, runName)
 
             print(f"\n{'='*80}")
-            print(f"Runing Case {caseNumFormatted}: {cfg.parametric_param} = {val}")
+            print(f"Runing Case {caseNumFormatted}: {cfg.params["parametric_param"]} = {val}")
             print(f"Run Directory: {run_dir}")
             print(f"{'='*80}\n")
 
             params_copy = cfg.params.copy()
-            params_copy[cfg.parametric_param] = val
+            params_copy[cfg.params["parametric_param"]] = val
 
-            n_trisos = run_simulation(params_copy, cfg.core_rings, run_dir)
+            n_trisos = run_simulation(params_copy, run_dir)
 
             if cfg.params["run_post_processing"]:
                 run_post_processing(run_dir, params_copy, n_trisos)
@@ -894,17 +899,16 @@ if __name__ == "__main__":
 
         run_reactivity_coefficients(
             params = cfg.params,
-            core_rings = cfg.core_rings,
             base_run_dir = BASE_DIR,
             output_base_dir = BASE_DIR_RC,
-            delta_T_values = cfg.reactivity_delta_T_values,
-            coefficients = cfg.reactivity_coefficients,
+            delta_T_values = cfg.params["reactivity_delta_T_values"],
+            coefficients = cfg.params["reactivity_coefficients"],
             run_simulation_fn = run_simulation,
             run_post_processing_fn = run_post_processing if cfg.params["run_post_processing"] else None,
         )
 
     # ----- Run Depletion -----
-    elif cfg.params["study_execution_mode"] == "DepletionRun":
+    elif cfg.params["study_execution_mode"] == "DepletionStudy":
         BASE_DIR = os.path.join(OUTPUT_BASE, run_name + "_Depletion")
 
         print(f"\n{'='*80}")
@@ -912,7 +916,7 @@ if __name__ == "__main__":
         print(f"Run directory: {BASE_DIR}")
         print(f"{'='*80}")
 
-        n_trisos = run_depletion_simulation(cfg.params, cfg.core_rings, BASE_DIR)
+        n_trisos = run_depletion_simulation(cfg.params, BASE_DIR)
 
         # Run depletion-specific post-processing
         run_depletion_post_processing(BASE_DIR, cfg.params)
@@ -923,15 +927,15 @@ if __name__ == "__main__":
         print(f"{'='*80}")
 
     # ----- Run Single Run -----   
-    elif cfg.params["study_execution_mode"] == "SingleRun":
-        BASE_DIR = os.path.join(OUTPUT_BASE, run_name + "_SingleRun")
+    elif cfg.params["study_execution_mode"] == "SingleStudy":
+        BASE_DIR = os.path.join(OUTPUT_BASE, run_name + "_SingleStudy")
         
         print(f"\n{'='*80}")
         print("SINGLE RUN MODE")
         print(f"Run directory: {BASE_DIR}")
-        print(f"{'='*80}\n")
+        print(f"{'='*80}")
         
-        n_trisos = run_simulation(cfg.params, cfg.core_rings, BASE_DIR)
+        n_trisos = run_simulation(cfg.params, BASE_DIR)
 
         if cfg.params["run_post_processing"]:
             run_post_processing(BASE_DIR, cfg.params, n_trisos)
@@ -943,5 +947,5 @@ if __name__ == "__main__":
 
     else:
         print(f"\nERROR: Unknown study_execution_mode: '{cfg.params['study_execution_mode']}'")
-        print("Valid modes: SingleRun, ParametricStudy, ReactivityStudy, DepletionRun")
+        print("Valid modes: SingleStudy, ParametricStudy, ReactivityStudy, DepletionStudy")
         sys.exit(1)
