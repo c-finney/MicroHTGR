@@ -16,6 +16,7 @@ from .parametric_postprocessing import run_parametric_postprocessing
 from .spectrum_thermalization import run_spectrum_analysis
 from .reactivity_postprocessing import run_reactivity_postprocessing
 from .depletion_postprocessing import run_depletion_postprocessing
+from .radial_leakage_spectrum.py import run_radial_leakage_analysis
 
 __all__ = [
     'run_burnup_estimation',
@@ -24,4 +25,5 @@ __all__ = [
     'run_spectrum_analysis',
     'run_reactivity_postprocessing',
     'run_depletion_postprocessing',
+    'run_radial_leakage_analysis'
 ]

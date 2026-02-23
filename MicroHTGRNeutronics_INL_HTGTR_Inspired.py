@@ -369,6 +369,8 @@ def build_model(params, run_dir):
 
     tallies = openmc.Tallies()
 
+    # ----- Global Tallies -----
+
     fuel_filter = openmc.MaterialFilter(mats.fuel)
     energy_bins = np.logspace(-9, 7, 200)
     energy_filter = openmc.EnergyFilter(energy_bins)
@@ -384,6 +386,8 @@ def build_model(params, run_dir):
     heating_tally.scores = ["heating-local"]
 
     tallies += [flux_spectrum_tally, fission_tally, heating_tally]
+
+    # ----- Mesh Tallies -----
 
     if params["use_1/6_geometry"]:
         mesh_x_min = 0.0
@@ -429,6 +433,32 @@ def build_model(params, run_dir):
     global_tally.scores = ['flux', 'fission', 'nu-fission']
 
     tallies += [mesh_tally_active, mesh_tally_full, global_tally]
+
+    # ----- Radial Neutron Leakage Tallies -----
+
+    # Cylindrical surface mesh at the core outer radius
+    radial_leakage_mesh = openmc.CylindricalMesh(
+        r_grid     = [params["core_radius"] - 1.0, params["core_radius"]], # thin 1 cm annulus at core edge
+        z_grid     = np.linspace(reactor_bottom, reactor_top, params["n_ax_zones"] + 1),
+        phi_grid   = [0.0, np.pi / 3] if params["use_1/6_geometry"] else [0.0, 2 * np.pi]
+    )
+
+    radial_leakage_mesh_filter = openmc.MeshFilter(radial_leakage_mesh)
+
+    leakage_energy_bins = np.logspace(-9, 7, 200)
+    leakage_energy_filter = openmc.EnergyFilter(leakage_energy_bins)
+
+    # Surface current tally — measures neutrons actually crossing the boundary
+    radial_current_tally = openmc.Tally(name='radial_leakage_current')
+    radial_current_tally.filters = [radial_leakage_mesh_filter, leakage_energy_filter]
+    radial_current_tally.scores   = ['current']
+
+    # Flux tally in the same annulus — complements the current measurement
+    radial_flux_tally = openmc.Tally(name='radial_leakage_flux')
+    radial_flux_tally.filters = [radial_leakage_mesh_filter, leakage_energy_filter]
+    radial_flux_tally.scores   = ['flux']
+
+    tallies += [radial_current_tally, radial_flux_tally]
 
     model.tallies = tallies
 
@@ -907,6 +937,15 @@ def run_post_processing(run_dir, params, n_trisos):
         print(f"Warning: Could not import spectrum_thermalization: {e}")
     except Exception as e:
         print(f"Warning: Spectrum analysis failed: {e}")
+
+    try:
+        from radial_leakage_spectrum import run_radial_leakage_analysis
+        print("Running radial leakage spectrum analysis...")
+        run_radial_leakage_analysis(run_dir, merged_params)
+    except ImportError as e:
+        print(f"Warning: Could not import radial_leakage_spectrum: {e}")
+    except Exception as e:
+        print(f"Warning: Radial neutron leakage failed: {e}")
 
     print(f"{'='*80}")
     print("POST-PROCESSING COMPLETE")

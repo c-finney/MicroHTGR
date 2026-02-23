@@ -42,7 +42,7 @@ params = {
     "core_height": 237.9,
     "reflector_thickness": 79.3, 
     "n_ax_zones": 50,
-    "use_1/6_geometry": True,
+    "use_1/6_geometry": False,
 
     # ----- Burnable Poison -----
     "B10_enrichment_poison": 0.3,
@@ -64,10 +64,10 @@ params = {
 
     # ----- Core Layout -----
     "core_rings": [
-        ["rr", "f", "f"] * 6,
-        ["f", "fc2"] * 6,
-        ["fc1"] * 6,
-        ["fp"],
+        ["r3", "f", "f"] * 6,
+        ["f", "fc1"] + ["f", "fc2"] * 5,
+        ["fpa"] * 6,
+        ["fcp2"],
     ],
     # Core Ring Assembly Options:
     #     "f"              — Fueled assembly with no control rods or burnable poison rods
@@ -75,6 +75,7 @@ params = {
     #     "fpa"            — Fueled assembly with 1 burnable poison rod in the center of the assembly
     #     "fc1/fc2/fc3"    — Fueled assembly with 1 central control rod with bank number 1, 2, or 3
     #     "fcp1/fcp2/fcp3" — Fueled assembly with 1 central control rod with bank number 1, 2, or 3 and 6 burnable poison rods on the outer corners of the assembly
+    #     "rr"               Reflector block with no control rods
     #     "r1/r2/r3"       — Reflector block with 1 central control rod with bank number 1, 2, or 3
     #     "ra1/ra2/ra3"    — Alt reflector block with 3 control rods in hexagonal ring with bank number 1, 2, or 3 (ONLY WORKS FOR 1/6 GEOMETRY)
 
@@ -94,12 +95,12 @@ params = {
     "particles": 50_000,
 
     # ----- Stochastic Volume Calculation Settings -----
-    "calculate_fuel_volume": True,
+    "calculate_fuel_volume": False,
     "volume_samples": 1_000_000_000,
 
     # ----- Parametric Study Configuration -----
-    "parametric_param": "triso_pf",
-    "parametric_values": [0.10, 0.125, 0.15, 0.175, 0.2, 0.225, 0.25, 0.275, 0.3],
+    "parametric_param": "bank_1_insertion",
+    "parametric_values": [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
 
     # ----- Reactivity Coefficient Study Configuration -----
     "reactivity_delta_T_values": [50.0, 100.0, 150.0],
@@ -150,8 +151,8 @@ params = {
     ],
 
     # ----- Study Execution Mode Configuration -----
-    "run_post_processing": True,
-    "study_execution_mode": "SingleStudy"
+    "run_post_processing": False,
+    "study_execution_mode": "ParametricStudy"
     # Study Execution Mode Options:
     #     "SingleStudy"     — Singular steady state monte carlo simulation of specified core layout 
     #     "ParametricStudy" — Creates multiple steady state monte carlo simulations varying a single core parameter
