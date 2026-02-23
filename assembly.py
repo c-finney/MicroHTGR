@@ -242,7 +242,7 @@ def build_bank_assemblies(
         "fcp": fcp_univ,
     }
 
-def create_assembly_univs(params, mats, T_coolant_z, T_compact_z, T_matrix_z,
+def create_assembly_univs(params, mats, T_coolant_z, T_compact_z, T_matrix_z, T_reflector_z,
                           triso_lattice, axial_coords, reactor_bottom, reactor_top):
     """
     Create all fuel assembly variants and reflector assemblies.
@@ -352,7 +352,7 @@ def create_assembly_univs(params, mats, T_coolant_z, T_compact_z, T_matrix_z,
     graphite_outer_refl.temperature = params["reflector_min"]
     inf_graphite_refl_universe = openmc.Universe(cells=[graphite_outer_refl])
 
-    # Standard fuel assembly  (f)
+    # Standard fuel assembly (f)
     fuel_assembly_lat = openmc.HexLattice(name="Fuel Lattice")
     fuel_assembly_lat.orientation = 'x'
     fuel_assembly_lat.center = (0.0, 0.0, 0.5 * (reactor_bottom + reactor_top))
@@ -364,7 +364,7 @@ def create_assembly_univs(params, mats, T_coolant_z, T_compact_z, T_matrix_z,
         fill=fuel_assembly_lat, region=hex_prism_fuel & +min_z & -max_z)
     fuel_assembly_univ = openmc.Universe(cells=[fuel_assembly_cell])
 
-    # Fuel assembly with 6 edge poison rods  (fp)
+    # Fuel assembly with 6 edge poison rods (fp)
     fuel_assembly_poison_lat = openmc.HexLattice(name="Fuel Lattice with Poison")
     fuel_assembly_poison_lat.orientation = 'x'
     fuel_assembly_poison_lat.center = (0.0, 0.0, 0.5 * (reactor_bottom + reactor_top))
@@ -376,7 +376,7 @@ def create_assembly_univs(params, mats, T_coolant_z, T_compact_z, T_matrix_z,
         fill=fuel_assembly_poison_lat, region=hex_prism_fuel & +min_z & -max_z)
     fuel_assembly_poison_univ = openmc.Universe(cells=[fuel_assembly_poison_cell])
 
-    # Fuel assembly with singular central poison rod  (fpa)
+    # Fuel assembly with singular central poison rod (fpa)
     fuel_assembly_poison_lat_alt = openmc.HexLattice(name="Fuel Lattice with Poison Alt")
     fuel_assembly_poison_lat_alt.orientation = 'x'
     fuel_assembly_poison_lat_alt.center = (0.0, 0.0, 0.5 * (reactor_bottom + reactor_top))
@@ -387,6 +387,28 @@ def create_assembly_univs(params, mats, T_coolant_z, T_compact_z, T_matrix_z,
     fuel_assembly_poison_cell_alt = openmc.Cell(
         fill=fuel_assembly_poison_lat_alt, region=hex_prism_fuel & +min_z & -max_z)
     fuel_assembly_poison_univ_alt = openmc.Universe(cells=[fuel_assembly_poison_cell_alt])
+
+    # Pure graphite reflector block (rr)    
+    rr_lattice_univs = []
+    for idx in range(len(axial_coords) - 1):
+        T_reflector = T_reflector_z[idx]
+
+        graphite_rr_cell = openmc.Cell(fill=mats.graphite)
+        graphite_rr_cell.temperature = T_reflector
+        graphite_rr_univ = openmc.Universe(cells=[graphite_rr_cell])
+
+        rr_lattice_univs.append([[graphite_rr_univ]])
+
+    rr_assembly_lat = openmc.HexLattice(name="Pure Graphite Reflector Lattice")
+    rr_assembly_lat.orientation = 'x'
+    rr_assembly_lat.center = (0.0, 0.0, 0.5 * (reactor_bottom + reactor_top))
+    rr_assembly_lat.pitch = (bundle_pitch, axial_section_height)
+    rr_assembly_lat.universes = rr_lattice_univs
+    rr_assembly_lat.outer = inf_graphite_refl_universe
+
+    rr_assembly_cell = openmc.Cell(
+        fill=rr_assembly_lat, region=hex_prism_refl & +min_z & -max_z)
+    rr_assembly_univ = openmc.Universe(cells=[rr_assembly_cell])
 
     # ==================================================================
     # BANK-DEPENDENT ASSEMBLIES  (r, fc, fcp) × 3 banks
@@ -402,6 +424,7 @@ def create_assembly_univs(params, mats, T_coolant_z, T_compact_z, T_matrix_z,
         "f":   fuel_assembly_univ,
         "fp":  fuel_assembly_poison_univ,
         "fpa": fuel_assembly_poison_univ_alt,
+        "rr":  rr_assembly_univ,
     }
 
     for param_key, bank_id in bank_keys:

@@ -32,86 +32,51 @@ def run_burnup_estimation(run_dir, params, n_trisos=None, burnup_limit=160_000, 
     print(f"{'='*80}")
     
     # =========================================================================
-    # 1. EXTRACT k_eff AND LEAKAGE FROM STATEPOINT
+    # EXTRACT k_eff AND LEAKAGE FROM OUTPUT FILE
     # =========================================================================
-    
-    # Find the statepoint file
-    sp_file = None
-    for f in os.listdir(run_dir):
-        if f.startswith('statepoint') and f.endswith('.h5'):
-            sp_file = os.path.join(run_dir, f)
-            break
-    
-    if sp_file is None:
-        print("ERROR: No statepoint file found!")
-        return None
-    
-    sp = openmc.StatePoint(sp_file)
-    
-    # Extract k_eff
-    keff = sp.keff.nominal_value
-    keff_std = sp.keff.std_dev
-    
-    # Extract leakage fraction - correct method
+
+    keff = None
+    keff_std = None
     leakage_fraction = None
     leakage_std = None
-    
-    # Read from the main OpenMC output (where openmc.run() prints)
-    # This is typically captured in the console output or redirected files
-    output_candidates = [
-        os.path.join(run_dir, 'tallies.out'),
-        os.path.join(run_dir, 'output.txt'),
-        os.path.join(run_dir, 'out'),
-        os.path.join(run_dir, 'openmc_output.txt'),
-    ]
-    
-    # Also check for any .out or .log files
-    try:
-        for file in os.listdir(run_dir):
-            if file.endswith('.out') or file.endswith('.log'):
-                output_candidates.append(os.path.join(run_dir, file))
-    except:
-        pass
-    
-    for output_file in output_candidates:
-        if os.path.exists(output_file):
-            try:
-                with open(output_file, 'r') as f:
-                    content = f.read()
-                    # Look for the leakage fraction line
-                    for line in content.split('\n'):
-                        if 'Leakage Fraction' in line and '=' in line:
-                            # Parse line like: "Leakage Fraction            = 0.23736 +/- 0.00050"
-                            parts = line.split('=')
-                            if len(parts) > 1:
-                                values = parts[1].strip().split('+/-')
-                                leakage_fraction = float(values[0].strip())
-                                if len(values) > 1:
-                                    leakage_std = float(values[1].strip())
-                                print(f"Extracted leakage from {os.path.basename(output_file)}: {leakage_fraction:.5f}")
-                                break
-                if leakage_fraction is not None:
-                    break
-            except Exception as e:
-                continue
-    
-    # If output wasn't captured to a file, inform user
+
+    output_file = os.path.join(run_dir, 'openmc_output.txt')
+
+    if not os.path.exists(output_file):
+        print("ERROR: openmc_output.txt not found!")
+        return None
+
+    with open(output_file, 'r') as f:
+        content = f.read()
+
+    for line in content.split('\n'):
+        if 'k-effective (Collision)' in line and '=' in line:
+            parts = line.split('=')[1].strip().split('+/-')
+            keff = float(parts[0].strip())
+            if len(parts) > 1:
+                keff_std = float(parts[1].strip())
+
+        if 'Leakage Fraction' in line and '=' in line:
+            parts = line.split('=')[1].strip().split('+/-')
+            leakage_fraction = float(parts[0].strip())
+            if len(parts) > 1:
+                leakage_std = float(parts[1].strip())
+
+    if keff is None:
+        print("ERROR: Could not parse k-effective from openmc_output.txt")
+        return None
+
     if leakage_fraction is None:
-        print("WARNING: Could not find leakage fraction in output files!")
-        print("Checked files:", [os.path.basename(f) for f in output_candidates if os.path.exists(f)])
-        print("\nSetting leakage to 0.0 for now (calculation will continue)")
+        print("WARNING: Could not parse leakage fraction, defaulting to 0.0")
         leakage_fraction = 0.0
         leakage_std = 0.0
-    
+
     print(f"\nSimulation Results:")
     print(f"   k-effective: {keff:.5f} ± {keff_std:.5f}")
-    if leakage_std is not None:
-        print(f"   Leakage fraction: {leakage_fraction:.5f} ± {leakage_std:.5f} ({leakage_fraction*100:.2f}%)")
-    else:
-        print(f"   Leakage fraction: {leakage_fraction:.5f} ({leakage_fraction*100:.2f}%)")
+    print(f"   Leakage fraction: {leakage_fraction:.5f} ± {leakage_std:.5f} ({leakage_fraction*100:.2f}%)")
     
     # =========================================================================
-    # 2. GET URANIUM MASS FROM OPENMC VOLUME CALCULATION
+    # GET URANIUM MASS FROM OPENMC VOLUME CALCULATION
     # =========================================================================
     
     import warnings
@@ -135,19 +100,16 @@ def run_burnup_estimation(run_dir, params, n_trisos=None, burnup_limit=160_000, 
             
             print("\nDomain volumes:")
             
-            # Iterate through volumes correctly
             for domain_id, vol_var in vol_calc.volumes.items():
-                # Extract nominal value and standard deviation from Variable object
                 vol = vol_var.nominal_value
                 vol_std = vol_var.std_dev
-                
-                # Try to get domain name
-                domain_name = f"Domain {domain_id}"
-                
-                # Check if this matches the fuel material by checking params or trying common names
-                # For now, assume all volumes in the calculation are fuel (since we specify fuel in vol_calc)
-                print(f"   {domain_name}: {vol:.2f} ± {vol_std:.2f} cm³")
-                total_fuel_volume_cm3 += vol
+
+                # Only accumulate fuel domain volumes
+                if domain_id == params["fuel_material_id"]:
+                    print(f"   Fuel domain {domain_id}: {vol:.2f} ± {vol_std:.2f} cm³")
+                    total_fuel_volume_cm3 += vol
+                else:
+                    print(f"   Non-fuel domain {domain_id}: {vol:.2f} ± {vol_std:.2f} cm³ (skipped)")
             
             # If we found fuel volumes, estimate mass using UCO density
             if total_fuel_volume_cm3 > 0:

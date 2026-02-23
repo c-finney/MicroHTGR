@@ -55,8 +55,8 @@ params = {
     "sheath_thickness": 0.1, 
     "guide_tube_thickness": 0.2,  
     "bank_1_insertion": 0.0,                   # Fractional control rod insertion for bank 1 (0-1.0)
-    "bank_2_insertion": 0.0,                   # Fractional control rod insertion for bank 2 (0-1.0)
-    "bank_3_insertion": 0.0,                   # Fractional control rod insertion for bank 3 (0-1.0)
+    "bank_2_insertion": 1.0,                   # Fractional control rod insertion for bank 2 (0-1.0)
+    "bank_3_insertion": 1.0,                   # Fractional control rod insertion for bank 3 (0-1.0)
     "B10_enrichment_control": 0.6,
     "B10_wt_percent_control": 0.001,
     "B4C_density_control": 2380,
@@ -64,9 +64,9 @@ params = {
 
     # ----- Core Layout -----
     "core_rings": [
-        ["ra3", "f", "f"] * 6,
+        ["r3", "f", "f"] * 6,
         ["f", "fc2"] * 6,
-        ["f"] * 6,
+        ["fpa"] * 6,
         ["fcp1"],
     ],
     # Core Ring Assembly Options:
@@ -89,13 +89,13 @@ params = {
     "reflector_max": 968.15,
 
     # ----- OpenMC Monte Carlo Settings -----
-    "total_batches": 50,
-    "inactive_batches": 20,
+    "total_batches": 100,
+    "inactive_batches": 40,
     "particles": 50_000,
 
     # ----- Stochastic Volume Calculation Settings -----
     "calculate_fuel_volume": True,
-    "volume_samples": 100_000_000,
+    "volume_samples": 1_000_000_000,
 
     # ----- Parametric Study Configuration -----
     "parametric_param": "triso_pf",

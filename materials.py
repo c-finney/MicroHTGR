@@ -70,6 +70,7 @@ b4c_poison.add_nuclide('B10', grams_10_poison / total_mass_poison, 'wo')
 b4c_poison.add_nuclide('B11', grams_11_poison / total_mass_poison, 'wo')
 b4c_poison.add_element('C', carbon_mass_poison / total_mass_poison, 'wo')
 b4c_poison.set_density('kg/m3', params["B4C_density_poison"])
+b4c_poison.depletable = True
 
 # ----- Boron Carbide Control Rod -----
 b4c_control = openmc.Material(name="B4C_Control")

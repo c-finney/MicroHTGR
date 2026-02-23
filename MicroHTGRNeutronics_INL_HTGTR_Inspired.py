@@ -176,6 +176,7 @@ def build_model(params, run_dir):
         T_coolant_z = T_coolant_z,
         T_compact_z = T_compact_z,
         T_matrix_z = T_matrix_z,
+        T_reflector_z = T_reflector_z,
         triso_lattice = triso_lattice,
         axial_coords = axial_coords,
         reactor_bottom = reactor_bottom,
@@ -464,7 +465,7 @@ def build_model(params, run_dir):
     # Stochastic volume calculation
     if params.get("calculate_fuel_volume", False):        
         vol_calc = openmc.VolumeCalculation(
-            domains=[mats.fuel],
+            domains=[mats.fuel, mats.b4c_poison],
             samples=params.get("volume_samples", 1_000_000),
             lower_left=[mesh_x_min, mesh_y_min, reactor_bottom],
             upper_right=[mesh_x_max, mesh_y_max, reactor_top]
@@ -506,29 +507,83 @@ def run_simulation(params, run_dir):
 
     # Stochastic volume calculation
     if params.get("calculate_fuel_volume", False):
-        print("\nRunning stochastic volume calculation for fuel...\n")
-        
+        print("\nRunning stochastic volume calculation for fuel and burnable poison...\n")
+
         openmc.calculate_volumes(
-            cwd = run_dir,
-            threads = 24,
-            output = True
+            cwd=run_dir,
+            threads=24,
+            output=True
         )
-        
+
         vol_calc_results = openmc.VolumeCalculation.from_hdf5(
             os.path.join(run_dir, 'volume_1.h5')
         )
-        
+
+        geometry_factor = 6 if params["use_1/6_geometry"] else 1
+        fuel_volume_simulated = 0.0
+        poison_volume_simulated = 0.0
+
         for domain_id, vol_var in vol_calc_results.volumes.items():
             vol = vol_var.nominal_value
-            geometry_factor = 6 if params["use_1/6_geometry"] else 1
-            total_vol = vol * geometry_factor
-            
-            uco_density = params["kernel_density"] / 1000
-            u_mass_fraction = 238.0 / 268.0
-            total_u_mass_kg = (total_vol * uco_density * u_mass_fraction) / 1000
-            
-            print(f"\nTotal fuel volume (full core): {total_vol:.4f} cm³")
-            print(f"Estimated uranium mass: {total_u_mass_kg:.2f} kg\n")
+            vol_std = vol_var.std_dev
+
+            if domain_id == mats.fuel.id:
+                fuel_volume_simulated += vol
+                print(f"\nFuel domain {domain_id}: {vol:.4f} ± {vol_std:.4f} cm³")
+            elif domain_id == mats.b4c_poison.id:
+                poison_volume_simulated += vol
+                print(f"B4C poison domain {domain_id}: {vol:.4f} ± {vol_std:.4f} cm³")
+
+        # Fuel reporting
+        total_fuel_volume_full_core = fuel_volume_simulated * geometry_factor
+        uco_density_g_cm3 = params["kernel_density"] / 1000.0
+        u_mass_fraction = 238.0 / 268.0
+        total_HM_mass_kg = (total_fuel_volume_full_core * uco_density_g_cm3 * u_mass_fraction) / 1000.0
+
+        # B4C poison reporting
+        total_poison_volume_full_core = poison_volume_simulated * geometry_factor
+        b4c_density_g_cm3 = params["B4C_density_poison"] / 1000.0
+        b10_enrichment = params["B10_enrichment_poison"]
+        mass_10 = openmc.data.atomic_mass('B10')
+        mass_11 = openmc.data.atomic_mass('B11')
+        b10_mass_fraction = (b10_enrichment * mass_10) / (
+            b10_enrichment * mass_10 + (1.0 - b10_enrichment) * mass_11
+        )
+        total_B10_mass_kg = (total_poison_volume_full_core * b4c_density_g_cm3 * b10_mass_fraction) / 1000.0
+
+        print(f"\nFuel volume (simulated geometry):        {fuel_volume_simulated:.4f} cm³")
+        print(f"Fuel volume (full core):                 {total_fuel_volume_full_core:.4f} cm³")
+        print(f"Estimated uranium mass:                  {total_HM_mass_kg:.2f} kg")
+        print(f"\nB4C poison volume (simulated geometry):  {poison_volume_simulated:.4f} cm³")
+        print(f"B4C poison volume (full core):           {total_poison_volume_full_core:.4f} cm³")
+        print(f"Estimated B-10 mass:                     {total_B10_mass_kg:.4f} kg\n")
+
+        # Save to run_params.json
+        import json
+        params_path = os.path.join(run_dir, 'run_params.json')
+        if os.path.exists(params_path):
+            with open(params_path, 'r') as f:
+                saved_params = json.load(f)
+        else:
+            saved_params = {}
+
+        saved_params['n_trisos']                    = n_trisos
+        saved_params['fuel_material_id']            = mats.fuel.id
+        saved_params['poison_material_id']          = mats.b4c_poison.id
+        saved_params['fuel_volume_simulated_cm3']   = fuel_volume_simulated
+        saved_params['fuel_volume_full_core_cm3']   = total_fuel_volume_full_core
+        saved_params['total_HM_mass_kg']            = total_HM_mass_kg
+        saved_params['total_HM_mass_kg']           = total_HM_mass_kg
+        saved_params['poison_volume_simulated_cm3'] = poison_volume_simulated
+        saved_params['poison_volume_full_core_cm3'] = total_poison_volume_full_core
+        saved_params['total_B10_mass_kg']           = total_B10_mass_kg
+        saved_params['total_B10_mass_kg']          = total_B10_mass_kg
+
+        with open(params_path, 'w') as f:
+            json.dump(saved_params, f, indent=2)
+
+        print(f"   Volume results saved to run_params.json\n")
+
     else:
         print("\nSkipping volume calculation.\n")
 
@@ -545,18 +600,18 @@ def run_simulation(params, run_dir):
             bufsize=1,
             env={**os.environ, 'OMP_NUM_THREADS': '24'}
         )
-        
+
         for line in process.stdout:
             print(line, end='')
             sys.stdout.flush()
             outf.write(line)
             outf.flush()
-        
+
         return_code = process.wait()
 
     if return_code != 0:
         raise RuntimeError(f"OpenMC failed with return code {return_code}")
-    
+
     return n_trisos
 
 # ====================================================================================================
@@ -592,16 +647,18 @@ def run_depletion_simulation(params, run_dir):
     # ==================================================================
     # EXPORT MODEL AND RUN STOCHASTIC VOLUME CALCULATION
     # ==================================================================
+
     model.export_to_xml()
+
     openmc.plot_geometry(output=False, cwd=run_dir)
 
-    print("\nRunning stochastic volume calculation for fuel...")
+    print("\nRunning stochastic volume calculation for fuel and burnable poison...")
     print(f"Samples: {depletion_params.get('volume_samples', 1_000_000):,}\n")
 
     openmc.calculate_volumes(
-        cwd=run_dir,
-        threads=24,
-        output=True
+        cwd = run_dir,
+        threads = 24,
+        output = True
     )
 
     vol_calc_results = openmc.VolumeCalculation.from_hdf5(
@@ -609,36 +666,63 @@ def run_depletion_simulation(params, run_dir):
     )
 
     # ==================================================================
-    # SET FUEL MATERIAL VOLUME FROM STOCHASTIC CALCULATION
+    # SET FUEL AND POISON MATERIAL VOLUMES FROM STOCHASTIC CALCULATION
     # ==================================================================
 
     geometry_factor = 6 if params["use_1/6_geometry"] else 1
     fuel_volume_simulated = 0.0
+    poison_volume_simulated = 0.0
 
     for domain_id, vol_var in vol_calc_results.volumes.items():
         vol = vol_var.nominal_value
         vol_std = vol_var.std_dev
-        fuel_volume_simulated += vol
-        print(f"  Domain {domain_id}: {vol:.4f} ± {vol_std:.4f} cm³")
+
+        if domain_id == mats.fuel.id:
+            fuel_volume_simulated += vol
+            print(f"\nFuel domain {domain_id}: {vol:.4f} ± {vol_std:.4f} cm³")
+        elif domain_id == mats.b4c_poison.id:
+            poison_volume_simulated += vol
+            print(f"B4C poison domain {domain_id}: {vol:.4f} ± {vol_std:.4f} cm³")
 
     if fuel_volume_simulated <= 0:
         raise RuntimeError("Stochastic volume calculation returned zero fuel volume. "
                            "Check that the volume calculation bounds overlap the fuel region.")
+    if poison_volume_simulated <= 0:
+        raise RuntimeError("Stochastic volume calculation returned zero B4C poison volume. "
+                           "Check that the volume calculation bounds overlap the poison region.")
 
-    # Set volume on the fuel material (this is the volume OpenMC's operator sees)
+    # Set volumes on depletable materials
     mats.fuel.volume = fuel_volume_simulated
+    mats.b4c_poison.volume = poison_volume_simulated
 
+    # Fuel mass reporting
     total_fuel_volume_full_core = fuel_volume_simulated * geometry_factor
     uco_density_g_cm3 = params["kernel_density"] / 1000.0
     u_mass_fraction = 238.0 / 268.0
     total_HM_mass_kg = (total_fuel_volume_full_core * uco_density_g_cm3 * u_mass_fraction) / 1000.0
 
-    print(f"\n   Fuel volume (simulated geometry): {fuel_volume_simulated:.4f} cm³")
-    print(f"   Fuel volume (full core):          {total_fuel_volume_full_core:.4f} cm³")
-    print(f"   Estimated uranium mass:           {total_HM_mass_kg:.2f} kg")
+    # B4C poison mass reporting
+    total_poison_volume_full_core = poison_volume_simulated * geometry_factor
+    b4c_density_g_cm3 = params["B4C_density_poison"] / 1000.0
+    mass_10 = openmc.data.atomic_mass('B10')
+    mass_11 = openmc.data.atomic_mass('B11')
+    b10_enrichment = params["B10_enrichment_poison"]
+    b10_atom_fraction = b10_enrichment
+    b10_mass_fraction = (b10_atom_fraction * mass_10) / (
+        b10_atom_fraction * mass_10 + (1 - b10_atom_fraction) * mass_11
+    )
+    total_B10_mass_kg = (total_poison_volume_full_core * b4c_density_g_cm3 * b10_mass_fraction) / 1000.0
 
-    # Store HM mass in params for post-processing
-    params["_total_HM_mass_kg"] = total_HM_mass_kg
+    print(f"\nFuel volume (simulated geometry):        {fuel_volume_simulated:.4f} cm³")
+    print(f"Fuel volume (full core):                 {total_fuel_volume_full_core:.4f} cm³")
+    print(f"Estimated uranium mass:                  {total_HM_mass_kg:.2f} kg")
+    print(f"\nB4C poison volume (simulated geometry):  {poison_volume_simulated:.4f} cm³")
+    print(f"B4C poison volume (full core):           {total_poison_volume_full_core:.4f} cm³")
+    print(f"Estimated B-10 mass:                     {total_B10_mass_kg:.4f} kg")
+
+    # Store masses in params for post-processing
+    params["total_HM_mass_kg"] = total_HM_mass_kg
+    params["total_B10_mass_kg"] = total_B10_mass_kg
 
     # Update run_params.json with depletion-specific info
     params_path = os.path.join(run_dir, 'run_params.json')
@@ -651,9 +735,17 @@ def run_depletion_simulation(params, run_dir):
     saved_params['fuel_volume_simulated_cm3'] = fuel_volume_simulated
     saved_params['fuel_volume_full_core_cm3'] = total_fuel_volume_full_core
     saved_params['total_HM_mass_kg'] = total_HM_mass_kg
-    saved_params['_total_HM_mass_kg'] = total_HM_mass_kg
+    saved_params['total_HM_mass_kg'] = total_HM_mass_kg
+    saved_params['poison_volume_simulated_cm3'] = poison_volume_simulated
+    saved_params['poison_volume_full_core_cm3'] = total_poison_volume_full_core
+    saved_params['total_B10_mass_kg'] = total_B10_mass_kg
+    saved_params['total_B10_mass_kg'] = total_B10_mass_kg
+    saved_params['fuel_material_id'] = mats.fuel.id
+    saved_params['poison_material_id'] = mats.b4c_poison.id
     with open(params_path, 'w') as f:
         json.dump(saved_params, f, indent=2)
+
+    model.export_to_xml()
 
     # ==================================================================
     # CONFIGURE DEPLETION CHAIN
@@ -701,11 +793,11 @@ def run_depletion_simulation(params, run_dir):
     # ==================================================================
     # CREATE OPERATOR AND INTEGRATOR
     # ==================================================================
-
+    
     operator = openmc.deplete.CoupledOperator(
         model,
         chain_file = chain_file,
-        normalization_mode = "source-rate"
+        normalization_mode = "fission-q"
     )
 
     integrator_name = params.get("depletion_integrator", "PredictorIntegrator")
