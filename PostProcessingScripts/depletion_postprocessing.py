@@ -179,6 +179,8 @@ def run_depletion_postprocessing(run_dir, params):
         burnup_MWd_per_MtU = None
 
     x_data        = burnup_MWd_per_MtU if burnup_MWd_per_MtU is not None else time_days
+
+    x_data        = burnup_MWd_per_MtU if burnup_MWd_per_MtU is not None else time_days
     x_label       = "Burnup (MWd/MtU)"  if burnup_MWd_per_MtU is not None else "Time (days)"
     x_label_short = "burnup"            if burnup_MWd_per_MtU is not None else "time"
 

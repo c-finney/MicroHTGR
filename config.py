@@ -64,7 +64,7 @@ params = {
 
     # ----- Core Layout -----
     "core_rings": [
-        ["r1", "f", "f"] + ["r3", "f", "f"] + ["r3", "f", "f"] * 4,
+        ["r2", "f", "f"] + ["r1", "f", "f"] + ["r3", "f", "f"] * 4,
         ["f", "fc2"] * 6,
         ["fpa"] * 6,
         ["fcp2"],
@@ -89,6 +89,11 @@ params = {
     "reflector_min": 903.15,
     "reflector_max": 968.15,
 
+    # ----- Tally Configuration -----
+    "use_global_tallies": True,
+    "use_mesh_tallies": True,
+    "use_leakage_tallies": True,
+
     # ----- OpenMC Monte Carlo Settings -----
     "total_batches": 50,
     "inactive_batches": 25,
@@ -109,8 +114,9 @@ params = {
     # ----- Depletion Study Configuration -----
     "thermal_power_MW": 15.0,
     "depletion_chain_file": "/home/cade/Desktop/OpenMC/CrossSections/chain_endfb81_thermal.xml",
+    # "depletion_chain_file": "/home/cade/Desktop/OpenMC/CrossSections/chain_casl_pwr.xml",
     "use_reduced_chain_file": True,
-    "depletion_timesteps_days": [10, 10, 10, 30, 30, 30, 60, 60, 60, 120, 120, 120, 120, 120, 120, 180, 180, 180],
+    "depletion_timesteps_days": [10, 10, 10, 30, 30, 30, 60, 60, 60, 120, 120, 120, 120],
     "depletion_integrator": "PredictorIntegrator",
     # Integrator options:
     #     "PredictorIntegrator" — simplest, one transport solve per step
@@ -201,7 +207,7 @@ params = {
 
     # ----- Study Execution Mode Configuration -----
     "run_post_processing": True,
-    "study_execution_mode": "ParametricStudy"
+    "study_execution_mode": "DepletionStudy"
     # Study Execution Mode Options:
     #     "SingleStudy"     — Singular steady state monte carlo simulation of specified core layout 
     #     "ParametricStudy" — Creates multiple steady state monte carlo simulations varying a single core parameter
