@@ -153,8 +153,17 @@ def run_depletion_postprocessing(run_dir, params):
     # ==================================================================
 
     time_steps, keff_values = results.get_keff()
-    keff_mean = np.array([k.nominal_value for k in keff_values])
-    keff_std  = np.array([k.std_dev       for k in keff_values])
+
+    # Handle both older OpenMC (uncertainties objects with .nominal_value/.std_dev)
+    # and newer OpenMC (plain numpy array of shape [n_steps, 2])
+    if hasattr(keff_values[0], 'nominal_value'):
+        keff_mean = np.array([k.nominal_value for k in keff_values])
+        keff_std  = np.array([k.std_dev       for k in keff_values])
+    else:
+        # Newer API: keff_values is shape (n_steps, 2) — columns are [mean, std_dev]
+        keff_values = np.array(keff_values)
+        keff_mean   = keff_values[:, 0]
+        keff_std    = keff_values[:, 1]
 
     time_days  = time_steps / 86400.0
     time_years = time_days  / 365.25

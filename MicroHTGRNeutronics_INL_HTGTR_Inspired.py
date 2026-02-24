@@ -656,6 +656,11 @@ def run_depletion_simulation(params, run_dir):
     the first run and written to params["depletion_chain_reduced_file"].
     On subsequent runs the reduced chain is reused automatically.
 
+    If params["restart_depletion"] is True, the model is loaded from the
+    original run directory's XML files (preserving material IDs that match
+    depletion_results.h5) and previous results are passed to the
+    CoupledOperator via prev_results.
+
     Returns:
         n_trisos: Number of TRISO particles per axial zone
     """
@@ -664,142 +669,282 @@ def run_depletion_simulation(params, run_dir):
     print("DEPLETION SIMULATION")
     print(f"{'=' * 80}")
 
-    # Force volume calculation on for depletion (operator needs fuel volume)
-    depletion_params = params.copy()
-    depletion_params["calculate_fuel_volume"] = True
-
-    model, n_trisos, m_colors = build_model(depletion_params, run_dir)
+    is_restart = params.get("restart_depletion", False)
 
     # ==================================================================
-    # EXPORT MODEL AND RUN STOCHASTIC VOLUME CALCULATION
+    # RESTART PATH — load existing model from original run directory
+    # ==================================================================
+    #
+    # Rebuilding the model from scratch assigns new material IDs, which
+    # breaks the mapping between depletion_results.h5 and the model.
+    # Instead, load the XML files that were written during the original
+    # run so that material IDs are guaranteed to match.
     # ==================================================================
 
-    model.export_to_xml()
+    if is_restart:
+        restart_dir = params.get("restart_run_dir", run_dir)
+        prev_h5 = os.path.join(restart_dir, "depletion_results.h5")
 
-    openmc.plot_geometry(output=False, cwd=run_dir)
+        # Validate restart directory contents
+        required_files = {
+            "depletion_results.h5": prev_h5,
+            "materials.xml":       os.path.join(restart_dir, "materials.xml"),
+            "geometry.xml":        os.path.join(restart_dir, "geometry.xml"),
+            "settings.xml":        os.path.join(restart_dir, "settings.xml"),
+            "run_params.json":     os.path.join(restart_dir, "run_params.json"),
+        }
+        for label, path in required_files.items():
+            if not os.path.exists(path):
+                raise FileNotFoundError(
+                    f"Cannot restart: {label} not found in {restart_dir}"
+                )
 
-    print("\nRunning stochastic volume calculation for fuel and burnable poison...")
-    print(f"Samples: {depletion_params.get('volume_samples', 1_000_000):,}\n")
+        print(f"\n{'=' * 80}")
+        print("RESTART MODE — loading model from original run directory")
+        print(f"Restart directory: {restart_dir}")
+        print(f"{'=' * 80}")
 
-    openmc.calculate_volumes(
-        cwd = run_dir,
-        threads = 24,
-        output = True
-    )
+        os.chdir(restart_dir)
 
-    vol_calc_results = openmc.VolumeCalculation.from_hdf5(
-        os.path.join(run_dir, 'volume_1.h5')
-    )
+        # Load previous depletion results FIRST — we need these to
+        # restore correct material compositions before building the model.
+        #
+        # During the failed run, the operator likely updated materials.xml
+        # with step N+1 compositions before crashing, while
+        # depletion_results.h5 only recorded through step N. Loading
+        # materials.xml directly would give us stale/wrong compositions.
+        # export_to_materials() writes the step-N compositions from the
+        # HDF5 file back into a corrected materials XML.
+        prev_results = openmc.deplete.Results(prev_h5)
+        n_completed = len(prev_results) - 1   # Results includes the t=0 entry
+        print(f"  Completed depletion steps: {n_completed}")
 
-    # ==================================================================
-    # SET FUEL AND POISON MATERIAL VOLUMES FROM STOCHASTIC CALCULATION
-    # ==================================================================
-
-    geometry_factor = 6 if params["use_1/6_geometry"] else 1
-    fuel_volume_simulated = 0.0
-    poison_volume_simulated = 0.0
-
-    for domain_id, vol_var in vol_calc_results.volumes.items():
-        vol = vol_var.nominal_value
-        vol_std = vol_var.std_dev
-
-        if domain_id == mats.fuel.id:
-            fuel_volume_simulated += vol
-            print(f"\nFuel domain {domain_id}: {vol:.4f} ± {vol_std:.4f} cm³")
-        elif domain_id == mats.b4c_poison.id:
-            poison_volume_simulated += vol
-            print(f"B4C poison domain {domain_id}: {vol:.4f} ± {vol_std:.4f} cm³")
-
-    if fuel_volume_simulated <= 0:
-        raise RuntimeError("Stochastic volume calculation returned zero fuel volume. "
-                           "Check that the volume calculation bounds overlap the fuel region.")
-    if poison_volume_simulated <= 0:
-        raise RuntimeError("Stochastic volume calculation returned zero B4C poison volume. "
-                           "Check that the volume calculation bounds overlap the poison region.")
-
-    # Set volumes on depletable materials
-    mats.fuel.volume = fuel_volume_simulated
-    mats.b4c_poison.volume = poison_volume_simulated
-
-    # Fuel mass reporting
-    total_fuel_volume_full_core = fuel_volume_simulated * geometry_factor
-    uco_density_g_cm3 = params["kernel_density"] / 1000.0
-    u_mass_fraction = 238.0 / 268.0
-    total_HM_mass_kg = (total_fuel_volume_full_core * uco_density_g_cm3 * u_mass_fraction) / 1000.0
-
-    # B4C poison mass reporting
-    total_poison_volume_full_core = poison_volume_simulated * geometry_factor
-    b4c_density_g_cm3 = params["B4C_density_poison"] / 1000.0
-    mass_10 = openmc.data.atomic_mass('B10')
-    mass_11 = openmc.data.atomic_mass('B11')
-    b10_enrichment = params["B10_enrichment_poison"]
-    b10_atom_fraction = b10_enrichment
-    b10_mass_fraction = (b10_atom_fraction * mass_10) / (
-        b10_atom_fraction * mass_10 + (1 - b10_atom_fraction) * mass_11
-    )
-    total_B10_mass_kg = (total_poison_volume_full_core * b4c_density_g_cm3 * b10_mass_fraction) / 1000.0
-
-    print(f"\nFuel volume (simulated geometry):        {fuel_volume_simulated:.4f} cm³")
-    print(f"Fuel volume (full core):                 {total_fuel_volume_full_core:.4f} cm³")
-    print(f"Estimated uranium mass:                  {total_HM_mass_kg:.2f} kg")
-    print(f"\nB4C poison volume (simulated geometry):  {poison_volume_simulated:.4f} cm³")
-    print(f"B4C poison volume (full core):           {total_poison_volume_full_core:.4f} cm³")
-    print(f"Estimated B-10 mass:                     {total_B10_mass_kg:.4f} kg")
-
-    # Store masses in params for post-processing
-    params["total_HM_mass_kg"] = total_HM_mass_kg
-    params["total_B10_mass_kg"] = total_B10_mass_kg
-
-    # Update run_params.json with depletion-specific info
-    params_path = os.path.join(run_dir, 'run_params.json')
-    if os.path.exists(params_path):
-        with open(params_path, 'r') as f:
-            saved_params = json.load(f)
-    else:
-        saved_params = {}
-    saved_params['n_trisos'] = n_trisos
-    saved_params['fuel_volume_simulated_cm3'] = fuel_volume_simulated
-    saved_params['fuel_volume_full_core_cm3'] = total_fuel_volume_full_core
-    saved_params['total_HM_mass_kg'] = total_HM_mass_kg
-    saved_params['total_HM_mass_kg'] = total_HM_mass_kg
-    saved_params['poison_volume_simulated_cm3'] = poison_volume_simulated
-    saved_params['poison_volume_full_core_cm3'] = total_poison_volume_full_core
-    saved_params['total_B10_mass_kg'] = total_B10_mass_kg
-    saved_params['total_B10_mass_kg'] = total_B10_mass_kg
-    saved_params['fuel_material_id'] = mats.fuel.id
-    saved_params['poison_material_id'] = mats.b4c_poison.id
-    with open(params_path, 'w') as f:
-        json.dump(saved_params, f, indent=2)
-
-    model.export_to_xml()
-
-    # ==================================================================
-    # CONFIGURE DEPLETION CHAIN
-    # ==================================================================
-
-    full_chain_file = params.get("depletion_chain_file", None)
-    if full_chain_file is None or not os.path.exists(full_chain_file):
-        raise FileNotFoundError(f"Depletion chain file not found: {full_chain_file}")
-
-    # Always generate reduced chain into the run directory
-    reduced_chain_file = os.path.join(run_dir, "chain_reduced.xml")
-
-    if params["use_reduced_chain_file"] and len(params["tracked_nuclides"]) > 0:
-        # Build (or reuse) a reduced chain containing only the tracked nuclides
-        chain_file = build_reduced_chain(
-            full_chain_file    = full_chain_file,
-            reduced_chain_file = reduced_chain_file,
-            tracked_nuclides   = params["tracked_nuclides"]
+        # Write corrected materials.xml from last completed step.
+        # export_to_materials reads from `path`, updates compositions
+        # from the HDF5 results, and writes back to the same file.
+        # We copy the original first so we don't overwrite it.
+        corrected_materials_path = os.path.join(restart_dir, "materials_restart.xml")
+        shutil.copy2(
+            os.path.join(restart_dir, "materials.xml"),
+            corrected_materials_path
         )
+        prev_results.export_to_materials(-1, path=corrected_materials_path)
+        print(f"  Exported step-{n_completed} compositions to: {corrected_materials_path}")
+
+        # Clear OpenMC's global ID registries AFTER export_to_materials
+        # (which internally creates Material objects) and BEFORE we load
+        # the model, so that from_xml() can cleanly claim the correct IDs.
+        for cls in [openmc.Material, openmc.Cell, openmc.Universe,
+                    openmc.Surface, openmc.Lattice]:
+            if hasattr(cls, 'used_ids'):
+                cls.used_ids.clear()
+        if hasattr(openmc, 'reset_auto_ids'):
+            openmc.reset_auto_ids()
+
+        # Load the model from corrected materials (preserves material IDs
+        # while ensuring compositions match depletion_results.h5)
+        materials = openmc.Materials.from_xml(corrected_materials_path)
+        geometry = openmc.Geometry.from_xml(
+            os.path.join(restart_dir, "geometry.xml"),
+            materials = materials
+        )
+        settings = openmc.Settings.from_xml(
+            os.path.join(restart_dir, "settings.xml")
+        )
+
+        model = openmc.model.Model(
+            geometry = geometry,
+            materials = materials,
+            settings = settings
+        )
+
+        # Load saved run parameters for volumes and material IDs
+        with open(required_files["run_params.json"], 'r') as f:
+            saved_params = json.load(f)
+
+        n_trisos = saved_params.get("n_trisos", 0)
+        fuel_mat_id = saved_params["fuel_material_id"]
+        poison_mat_id = saved_params["poison_material_id"]
+        fuel_volume = saved_params["fuel_volume_simulated_cm3"]
+        poison_volume = saved_params["poison_volume_simulated_cm3"]
+
+        # Set volumes on the loaded materials (CoupledOperator needs them)
+        for mat in materials:
+            if mat.id == fuel_mat_id:
+                mat.volume = fuel_volume
+                print(f"  Fuel material (id={mat.id}): volume = {fuel_volume:.4f} cm³")
+            elif mat.id == poison_mat_id:
+                mat.volume = poison_volume
+                print(f"  Poison material (id={mat.id}): volume = {poison_volume:.4f} cm³")
+
+        # Determine remaining timesteps
+        restart_ts = params.get("restart_timesteps_days", None)
+        if restart_ts is not None and len(restart_ts) > 0:
+            timesteps_days = restart_ts
+            print(f"  Using user-specified restart timesteps: {timesteps_days}")
+        else:
+            original_ts = params.get("depletion_timesteps_days", [30] * 12)
+            timesteps_days = original_ts[n_completed:]
+            if len(timesteps_days) == 0:
+                print("  All original timesteps already completed — nothing to do.")
+                return n_trisos
+            print(f"  Original timesteps ({len(original_ts)}): {original_ts}")
+            print(f"  Remaining timesteps ({len(timesteps_days)}): {timesteps_days}")
+
+        # Use chain file from restart directory if it exists, otherwise regenerate
+        reduced_chain_in_dir = os.path.join(restart_dir, "chain_reduced.xml")
+        if os.path.exists(reduced_chain_in_dir):
+            chain_file = reduced_chain_in_dir
+            print(f"  Using existing reduced chain: {chain_file}")
+        else:
+            full_chain_file = params.get("depletion_chain_file", None)
+            if full_chain_file is None or not os.path.exists(full_chain_file):
+                raise FileNotFoundError(f"Depletion chain file not found: {full_chain_file}")
+            chain_file = full_chain_file
+            print(f"  Using full chain file: {chain_file}")
+
+    # ==================================================================
+    # FRESH RUN PATH — build model from scratch
+    # ==================================================================
+
     else:
-        print("\nUsing full depletion chain file.")
-        chain_file = full_chain_file
+        prev_results = None
+        n_completed = 0
+
+        # Force volume calculation on for depletion (operator needs fuel volume)
+        depletion_params = params.copy()
+        depletion_params["calculate_fuel_volume"] = True
+
+        model, n_trisos, m_colors = build_model(depletion_params, run_dir)
+
+        # ==================================================================
+        # EXPORT MODEL AND RUN STOCHASTIC VOLUME CALCULATION
+        # ==================================================================
+
+        model.export_to_xml()
+
+        openmc.plot_geometry(output=False, cwd=run_dir)
+
+        print("\nRunning stochastic volume calculation for fuel and burnable poison...")
+        print(f"Samples: {depletion_params.get('volume_samples', 1_000_000):,}\n")
+
+        openmc.calculate_volumes(
+            cwd = run_dir,
+            threads = 24,
+            output = True
+        )
+
+        vol_calc_results = openmc.VolumeCalculation.from_hdf5(
+            os.path.join(run_dir, 'volume_1.h5')
+        )
+
+        # ==================================================================
+        # SET FUEL AND POISON MATERIAL VOLUMES FROM STOCHASTIC CALCULATION
+        # ==================================================================
+
+        geometry_factor = 6 if params["use_1/6_geometry"] else 1
+        fuel_volume_simulated = 0.0
+        poison_volume_simulated = 0.0
+
+        for domain_id, vol_var in vol_calc_results.volumes.items():
+            vol = vol_var.nominal_value
+            vol_std = vol_var.std_dev
+
+            if domain_id == mats.fuel.id:
+                fuel_volume_simulated += vol
+                print(f"\nFuel domain {domain_id}: {vol:.4f} ± {vol_std:.4f} cm³")
+            elif domain_id == mats.b4c_poison.id:
+                poison_volume_simulated += vol
+                print(f"B4C poison domain {domain_id}: {vol:.4f} ± {vol_std:.4f} cm³")
+
+        if fuel_volume_simulated <= 0:
+            raise RuntimeError("Stochastic volume calculation returned zero fuel volume. "
+                               "Check that the volume calculation bounds overlap the fuel region.")
+        if poison_volume_simulated <= 0:
+            raise RuntimeError("Stochastic volume calculation returned zero B4C poison volume. "
+                               "Check that the volume calculation bounds overlap the poison region.")
+
+        # Set volumes on depletable materials
+        mats.fuel.volume = fuel_volume_simulated
+        mats.b4c_poison.volume = poison_volume_simulated
+
+        # Fuel mass reporting
+        total_fuel_volume_full_core = fuel_volume_simulated * geometry_factor
+        uco_density_g_cm3 = params["kernel_density"] / 1000.0
+        u_mass_fraction = 238.0 / 268.0
+        total_HM_mass_kg = (total_fuel_volume_full_core * uco_density_g_cm3 * u_mass_fraction) / 1000.0
+
+        # B4C poison mass reporting
+        total_poison_volume_full_core = poison_volume_simulated * geometry_factor
+        b4c_density_g_cm3 = params["B4C_density_poison"] / 1000.0
+        mass_10 = openmc.data.atomic_mass('B10')
+        mass_11 = openmc.data.atomic_mass('B11')
+        b10_enrichment = params["B10_enrichment_poison"]
+        b10_atom_fraction = b10_enrichment
+        b10_mass_fraction = (b10_atom_fraction * mass_10) / (
+            b10_atom_fraction * mass_10 + (1 - b10_atom_fraction) * mass_11
+        )
+        total_B10_mass_kg = (total_poison_volume_full_core * b4c_density_g_cm3 * b10_mass_fraction) / 1000.0
+
+        print(f"\nFuel volume (simulated geometry):        {fuel_volume_simulated:.4f} cm³")
+        print(f"Fuel volume (full core):                 {total_fuel_volume_full_core:.4f} cm³")
+        print(f"Estimated uranium mass:                  {total_HM_mass_kg:.2f} kg")
+        print(f"\nB4C poison volume (simulated geometry):  {poison_volume_simulated:.4f} cm³")
+        print(f"B4C poison volume (full core):           {total_poison_volume_full_core:.4f} cm³")
+        print(f"Estimated B-10 mass:                     {total_B10_mass_kg:.4f} kg")
+
+        # Store masses in params for post-processing
+        params["total_HM_mass_kg"] = total_HM_mass_kg
+        params["total_B10_mass_kg"] = total_B10_mass_kg
+
+        # Update run_params.json with depletion-specific info
+        params_path = os.path.join(run_dir, 'run_params.json')
+        if os.path.exists(params_path):
+            with open(params_path, 'r') as f:
+                saved_params = json.load(f)
+        else:
+            saved_params = {}
+        saved_params['n_trisos'] = n_trisos
+        saved_params['fuel_volume_simulated_cm3'] = fuel_volume_simulated
+        saved_params['fuel_volume_full_core_cm3'] = total_fuel_volume_full_core
+        saved_params['total_HM_mass_kg'] = total_HM_mass_kg
+        saved_params['poison_volume_simulated_cm3'] = poison_volume_simulated
+        saved_params['poison_volume_full_core_cm3'] = total_poison_volume_full_core
+        saved_params['total_B10_mass_kg'] = total_B10_mass_kg
+        saved_params['fuel_material_id'] = mats.fuel.id
+        saved_params['poison_material_id'] = mats.b4c_poison.id
+        with open(params_path, 'w') as f:
+            json.dump(saved_params, f, indent=2)
+
+        model.export_to_xml()
+
+        # ==================================================================
+        # CONFIGURE DEPLETION CHAIN
+        # ==================================================================
+
+        full_chain_file = params.get("depletion_chain_file", None)
+        if full_chain_file is None or not os.path.exists(full_chain_file):
+            raise FileNotFoundError(f"Depletion chain file not found: {full_chain_file}")
+
+        # Always generate reduced chain into the run directory
+        reduced_chain_file = os.path.join(run_dir, "chain_reduced.xml")
+
+        if params["use_reduced_chain_file"] and len(params["tracked_nuclides"]) > 0:
+            chain_file = build_reduced_chain(
+                full_chain_file    = full_chain_file,
+                reduced_chain_file = reduced_chain_file,
+                tracked_nuclides   = params["tracked_nuclides"]
+            )
+        else:
+            print("\nUsing full depletion chain file.")
+            chain_file = full_chain_file
+
+        timesteps_days = params.get("depletion_timesteps_days", [30] * 12)
 
     # ==================================================================
-    # CONFIGURE DEPLETION TIMESTEPS AND POWER
+    # CONFIGURE DEPLETION TIMESTEPS AND POWER (shared by both paths)
     # ==================================================================
 
-    timesteps_days = params.get("depletion_timesteps_days", [30] * 12)
     thermal_power_W = params.get("thermal_power_MW", 15.0) * 1e6
 
     # Scale power for 1/6 geometry (operator sees only the simulated fraction)
@@ -815,6 +960,8 @@ def run_depletion_simulation(params, run_dir):
     print(f"Number of timesteps: {len(timesteps_days)}")
     print(f"Total depletion time: {sum(timesteps_days):.0f} days ({sum(timesteps_days)/365.25:.2f} years)")
     print(f"Timesteps (days): {timesteps_days}")
+    if is_restart:
+        print(f"RESTART: appending {len(timesteps_days)} steps to {n_completed} previously completed steps")
 
     # ==================================================================
     # CREATE OPERATOR AND INTEGRATOR
@@ -823,7 +970,8 @@ def run_depletion_simulation(params, run_dir):
     operator = openmc.deplete.CoupledOperator(
         model,
         chain_file = chain_file,
-        normalization_mode = "fission-q"
+        normalization_mode = "fission-q",
+        prev_results = prev_results
     )
 
     integrator_name = params.get("depletion_integrator", "PredictorIntegrator")
@@ -857,7 +1005,10 @@ def run_depletion_simulation(params, run_dir):
     # ==================================================================
 
     print(f"\n{'=' * 80}")
-    print("STARTING DEPLETION CALCULATION")
+    if is_restart:
+        print("STARTING DEPLETION RESTART CALCULATION")
+    else:
+        print("STARTING DEPLETION CALCULATION")
     print(f"{'=' * 80}\n")
 
     integrator.integrate()
@@ -1047,12 +1198,20 @@ if __name__ == "__main__":
 
     # ----- Run Depletion -----
     elif cfg.params["study_execution_mode"] == "DepletionStudy":
-        BASE_DIR = os.path.join(OUTPUT_BASE, run_name + "_Depletion")
 
-        print(f"\n{'='*80}")
-        print("DEPLETION RUN MODE")
-        print(f"Run directory: {BASE_DIR}")
-        print(f"{'='*80}")
+        # If restarting, run inside the original directory instead of creating a new one
+        if cfg.params.get("restart_depletion", False) and cfg.params.get("restart_run_dir"):
+            BASE_DIR = cfg.params["restart_run_dir"]
+            print(f"\n{'='*80}")
+            print("DEPLETION RESTART MODE")
+            print(f"Restarting in original run directory: {BASE_DIR}")
+            print(f"{'='*80}")
+        else:
+            BASE_DIR = os.path.join(OUTPUT_BASE, run_name + "_Depletion")
+            print(f"\n{'='*80}")
+            print("DEPLETION RUN MODE")
+            print(f"Run directory: {BASE_DIR}")
+            print(f"{'='*80}")
 
         n_trisos = run_depletion_simulation(cfg.params, BASE_DIR)
 

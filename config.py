@@ -64,7 +64,7 @@ params = {
 
     # ----- Core Layout -----
     "core_rings": [
-        ["r1", "f", "f"] + ["r3", "f", "f"] * 5,
+        ["r1", "f", "f"] + ["r3", "f", "f"] + ["r3", "f", "f"] * 4,
         ["f", "fc2"] * 6,
         ["fpa"] * 6,
         ["fcp2"],
@@ -95,7 +95,7 @@ params = {
     "particles": 100_000,
 
     # ----- Stochastic Volume Calculation Settings -----
-    "calculate_fuel_volume": False,
+    "calculate_fuel_volume": True,
     "volume_samples": 1_000_000_000,
 
     # ----- Parametric Study Configuration -----
@@ -118,6 +118,17 @@ params = {
     #     "CF4Integrator"       — 4th order (most accurate, 4× cost)
     #     "LEQIIntegrator"      — LE/QI (good accuracy, 2× cost)
 
+    # ----- Depletion Restart Configuration -----
+    "restart_depletion": False, # Set True to restart from last completed step
+    "restart_run_dir": "/home/cade/Desktop/OpenMC/SeniorDesign/MicroHTGR_Output/htgr_run_02.23.2026_14.00.15_Depletion", # Path to the original run directory containing depletion_results.h5
+    "restart_timesteps_days": [120],  # Remaining timesteps to run (replaces original list)
+    # To use restart:
+    #   1. Set restart_depletion = True
+    #   2. Set restart_run_dir to the path of the failed run directory
+    #   3. Set restart_timesteps_days to whatever timesteps remain
+    #   4. Set study_execution_mode = "DepletionStudy"
+    #   5. Run — results will be appended to the existing depletion_results.h5
+
     # ----- Depletion Nuclide Tracking -----
     "tracked_nuclides": [
         # --- Fissile Actinides ---
@@ -131,7 +142,7 @@ params = {
         # --- Minor Actinides ---
         "Np237", "Np239", "Pu238",
         "Am241", "Am243",
-        "Cm242", "Cm243", "Cm244", "Cm245", "Cm246"
+        "Cm242", "Cm243", "Cm244", "Cm245", "Cm246",
 
         # --- Xe/I Poisons ---
         "Xe131", "Xe135", "Xe135_m1",
@@ -189,7 +200,7 @@ params = {
     },
 
     # ----- Study Execution Mode Configuration -----
-    "run_post_processing": False,
+    "run_post_processing": True,
     "study_execution_mode": "ParametricStudy"
     # Study Execution Mode Options:
     #     "SingleStudy"     — Singular steady state monte carlo simulation of specified core layout 
