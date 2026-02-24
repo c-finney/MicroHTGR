@@ -42,7 +42,7 @@ params = {
     "core_height": 237.9,
     "reflector_thickness": 79.3, 
     "n_ax_zones": 50,
-    "use_1/6_geometry": True,
+    "use_1/6_geometry": False,
 
     # ----- Burnable Poison -----
     "B10_enrichment_poison": 0.3,
@@ -54,9 +54,9 @@ params = {
     "fuel_assembly_control_radius": 2.54,      # Radius for circular control rods in fuel assemblies
     "sheath_thickness": 0.1, 
     "guide_tube_thickness": 0.2,  
-    "bank_1_insertion": 0.78,                   # Fractional control rod insertion for bank 1 (0-1.0)
-    "bank_2_insertion": 0.78,                   # Fractional control rod insertion for bank 2 (0-1.0)
-    "bank_3_insertion": 0.78,                   # Fractional control rod insertion for bank 3 (0-1.0)
+    "bank_1_insertion": 0.0,                   # Fractional control rod insertion for bank 1 (0-1.0)
+    "bank_2_insertion": 0.0,                   # Fractional control rod insertion for bank 2 (0-1.0)
+    "bank_3_insertion": 0.0,                   # Fractional control rod insertion for bank 3 (0-1.0)
     "B10_enrichment_control": 0.6,
     "B10_wt_percent_control": 0.001,
     "B4C_density_control": 2380,
@@ -64,10 +64,10 @@ params = {
 
     # ----- Core Layout -----
     "core_rings": [
-        ["r3", "f", "f"] * 6,
+        ["r1", "f", "f"] + ["r3", "f", "f"] * 5,
         ["f", "fc2"] * 6,
         ["fpa"] * 6,
-        ["fcp1"],
+        ["fcp2"],
     ],
     # Core Ring Assembly Options:
     #     "f"              — Fueled assembly with no control rods or burnable poison rods
@@ -95,7 +95,7 @@ params = {
     "particles": 100_000,
 
     # ----- Stochastic Volume Calculation Settings -----
-    "calculate_fuel_volume": True,
+    "calculate_fuel_volume": False,
     "volume_samples": 1_000_000_000,
 
     # ----- Parametric Study Configuration -----
@@ -120,39 +120,77 @@ params = {
 
     # ----- Depletion Nuclide Tracking -----
     "tracked_nuclides": [
-        # --- Actinides ---
-        "U234",  "U235",  "U236",  "U238",
-        "Np237", "Np239",
-        "Pu238", "Pu239", "Pu240", "Pu241", "Pu242",
-        "Am241", "Am243",
-        "Cm242", "Cm243", "Cm244", "Cm245", "Cm246",
+        # --- Fissile Actinides ---
+        "U235",
+        "Pu239", "Pu241",
 
-        # --- Fission Products ---
-        "Kr83",
+        # --- Fertile Actinides ---
+        "U238", "U234", "U236",
+        "Pu240", "Pu242",
+        
+        # --- Minor Actinides ---
+        "Np237", "Np239", "Pu238",
+        "Am241", "Am243",
+        "Cm242", "Cm243", "Cm244", "Cm245", "Cm246"
+
+        # --- Xe/I Poisons ---
+        "Xe131", "Xe135", "Xe135_m1",
+        "I135",
+        
+        # --- Sm/Pm Poisons ---
+        "Sm149", "Sm151", "Sm152",
+        "Pm147", "Pm149",
+        
+        # --- Cs/Sr Fission Products ---
+        "Cs133", "Cs134", "Cs137",
         "Sr90",
+
+        # --- Nd/Eu Fission Products ---
+        "Nd143", "Nd145", "Nd147",
+        "Eu153", "Eu154", "Eu155",
+        
+        # --- Mo/Tc/Rh/Pd Fission Products ---   
         "Mo95",
         "Tc99",
         "Rh103", "Rh105",
         "Pd107",
-        "I135",
-        "Xe131", "Xe135", "Xe135_m1",
-        "Cs133", "Cs134", "Cs137",
-        "Nd143", "Nd145", "Nd147",
-        "Pm147", "Pm149",
-        "Sm149", "Sm151", "Sm152",
-        "Eu153", "Eu154", "Eu155",
-
-        # --- Structural / Moderator ---
-        "O16",
-        "Si28", "Si29", "Si30",
+        
+        # ----- Kr Fission Products -----
+        "Kr83",
 
         # --- Burnable Poison ---
         "B10",
     ],
+    "poison_tracked_nuclides": ["B10"], # Nuclides to search for in the burnable poison material exclusively
+
+    # ----- Depletion Post-Processing Plot Groups -----
+    "depletion_plot_groups": {
+        "Fissile Actinides":    ["U235",
+                                 "Pu239", "Pu241"],
+        "Fertile Actinides":    ["U238", "U234", "U236",
+                                 "Pu240", "Pu242"],
+        "Minor Actinides":      ["Np237", "Np239", "Pu238",
+                                 "Am241", "Am243",
+                                 "Cm242", "Cm243", "Cm244", "Cm245", "Cm246"],
+        "Xe/I Poisons":         ["Xe131", "Xe135", "Xe135_m1",
+                                 "I135"],
+        "Sm/Pm Poisons":        ["Sm149", "Sm151", "Sm152",
+                                 "Pm147", "Pm149"],
+        "Cs/Sr FPs":            ["Cs133", "Cs134", "Cs137",
+                                 "Sr90"],
+        "Nd/Eu FPs":            ["Nd143", "Nd145", "Nd147",
+                                 "Eu153", "Eu154", "Eu155"],
+        "Mo/Tc/Rh/Pd FPs":      ["Mo95",
+                                 "Tc99",
+                                 "Rh103", "Rh105",
+                                 "Pd107"],
+        "Kr FPs":               ["Kr83"],
+        "Burnable Poison":      ["B10"],
+    },
 
     # ----- Study Execution Mode Configuration -----
-    "run_post_processing": True,
-    "study_execution_mode": "SingleStudy"
+    "run_post_processing": False,
+    "study_execution_mode": "ParametricStudy"
     # Study Execution Mode Options:
     #     "SingleStudy"     — Singular steady state monte carlo simulation of specified core layout 
     #     "ParametricStudy" — Creates multiple steady state monte carlo simulations varying a single core parameter
