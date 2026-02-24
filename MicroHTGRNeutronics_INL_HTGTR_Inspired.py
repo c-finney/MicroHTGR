@@ -1,5 +1,4 @@
 import os
-import math
 import shutil
 import openmc
 import numpy as np
@@ -371,7 +370,6 @@ def build_model(params, run_dir):
 
     # ----- Global Tallies -----
 
-    fuel_filter = openmc.MaterialFilter(mats.fuel)
     energy_bins = np.logspace(-9, 7, 200)
     energy_filter = openmc.EnergyFilter(energy_bins)
 
@@ -467,7 +465,7 @@ def build_model(params, run_dir):
     settings = openmc.Settings()
     settings.run_mode = "eigenvalue"
     settings.batches = params.get("total_batches", 300)
-    settings.inactive = params.get("inactive_batches", 50)
+    settings.inactive = params.get("inactive_batches", 100)
     settings.particles = params.get("particles", 100_000)
     settings.temperature = {
         'method': 'interpolation',
@@ -579,12 +577,12 @@ def run_simulation(params, run_dir):
         )
         total_B10_mass_kg = (total_poison_volume_full_core * b4c_density_g_cm3 * b10_mass_fraction) / 1000.0
 
-        print(f"\nFuel volume (simulated geometry):        {fuel_volume_simulated:.4f} cm³")
-        print(f"Fuel volume (full core):                 {total_fuel_volume_full_core:.4f} cm³")
-        print(f"Estimated uranium mass:                  {total_HM_mass_kg:.2f} kg")
-        print(f"\nB4C poison volume (simulated geometry):  {poison_volume_simulated:.4f} cm³")
-        print(f"B4C poison volume (full core):           {total_poison_volume_full_core:.4f} cm³")
-        print(f"Estimated B-10 mass:                     {total_B10_mass_kg:.4f} kg\n")
+        print(f"\nFuel volume (simulated geometry):       {fuel_volume_simulated:.4f} cm³")
+        print(f"Fuel volume (full core):                  {total_fuel_volume_full_core:.4f} cm³")
+        print(f"Estimated uranium mass:                   {total_HM_mass_kg:.2f} kg")
+        print(f"\nB4C poison volume (simulated geometry): {poison_volume_simulated:.4f} cm³")
+        print(f"B4C poison volume (full core):            {total_poison_volume_full_core:.4f} cm³")
+        print(f"Estimated B-10 mass:                      {total_B10_mass_kg:.4f} kg\n")
 
         # Save to run_params.json
         params_path = os.path.join(run_dir, 'run_params.json')
@@ -600,21 +598,21 @@ def run_simulation(params, run_dir):
         saved_params['fuel_volume_simulated_cm3']   = fuel_volume_simulated
         saved_params['fuel_volume_full_core_cm3']   = total_fuel_volume_full_core
         saved_params['total_HM_mass_kg']            = total_HM_mass_kg
-        saved_params['total_HM_mass_kg']           = total_HM_mass_kg
+        saved_params['total_HM_mass_kg']            = total_HM_mass_kg
         saved_params['poison_volume_simulated_cm3'] = poison_volume_simulated
         saved_params['poison_volume_full_core_cm3'] = total_poison_volume_full_core
         saved_params['total_B10_mass_kg']           = total_B10_mass_kg
-        saved_params['total_B10_mass_kg']          = total_B10_mass_kg
+        saved_params['total_B10_mass_kg']           = total_B10_mass_kg
 
         with open(params_path, 'w') as f:
             json.dump(saved_params, f, indent=2)
 
-        print(f"   Volume results saved to run_params.json\n")
+        print(f"\nVolume results saved to run_params.json")
 
     else:
-        print("\nSkipping volume calculation.\n")
+        print("\nSkipping volume calculation.")
 
-    # Run OpenMC
+    # Run OpenMC and save output to text file
     openmc_output_file = os.path.join(run_dir, 'openmc_output.txt')
 
     with open(openmc_output_file, 'w', buffering=1) as outf:
@@ -636,6 +634,7 @@ def run_simulation(params, run_dir):
 
         return_code = process.wait()
 
+    # Print errors OpenMC runs into
     if return_code != 0:
         raise RuntimeError(f"OpenMC failed with return code {return_code}")
 
@@ -674,7 +673,6 @@ def run_depletion_simulation(params, run_dir):
     # ==================================================================
     # RESTART PATH — load existing model from original run directory
     # ==================================================================
-    #
     # Rebuilding the model from scratch assigns new material IDs, which
     # breaks the mapping between depletion_results.h5 and the model.
     # Instead, load the XML files that were written during the original
@@ -688,10 +686,10 @@ def run_depletion_simulation(params, run_dir):
         # Validate restart directory contents
         required_files = {
             "depletion_results.h5": prev_h5,
-            "materials.xml":       os.path.join(restart_dir, "materials.xml"),
-            "geometry.xml":        os.path.join(restart_dir, "geometry.xml"),
-            "settings.xml":        os.path.join(restart_dir, "settings.xml"),
-            "run_params.json":     os.path.join(restart_dir, "run_params.json"),
+            "materials.xml":        os.path.join(restart_dir, "materials.xml"),
+            "geometry.xml":         os.path.join(restart_dir, "geometry.xml"),
+            "settings.xml":         os.path.join(restart_dir, "settings.xml"),
+            "run_params.json":      os.path.join(restart_dir, "run_params.json"),
         }
         for label, path in required_files.items():
             if not os.path.exists(path):
@@ -716,8 +714,8 @@ def run_depletion_simulation(params, run_dir):
         # export_to_materials() writes the step-N compositions from the
         # HDF5 file back into a corrected materials XML.
         prev_results = openmc.deplete.Results(prev_h5)
-        n_completed = len(prev_results) - 1   # Results includes the t=0 entry
-        print(f"  Completed depletion steps: {n_completed}")
+        n_completed = len(prev_results) - 1 # Results includes the t=0 entry
+        print(f"Completed depletion steps: {n_completed}")
 
         # Write corrected materials.xml from last completed step.
         # export_to_materials reads from `path`, updates compositions
@@ -729,7 +727,7 @@ def run_depletion_simulation(params, run_dir):
             corrected_materials_path
         )
         prev_results.export_to_materials(-1, path=corrected_materials_path)
-        print(f"  Exported step-{n_completed} compositions to: {corrected_materials_path}")
+        print(f"Exported step-{n_completed} compositions to: {corrected_materials_path}")
 
         # Clear OpenMC's global ID registries AFTER export_to_materials
         # (which internally creates Material objects) and BEFORE we load
@@ -1196,7 +1194,7 @@ if __name__ == "__main__":
             run_post_processing_fn = run_post_processing if cfg.params["run_post_processing"] else None,
         )
 
-    # ----- Run Depletion -----
+    # ----- Run Depletion Study -----
     elif cfg.params["study_execution_mode"] == "DepletionStudy":
 
         # If restarting, run inside the original directory instead of creating a new one
@@ -1223,7 +1221,7 @@ if __name__ == "__main__":
         print(f"Results Directory: {BASE_DIR}")
         print(f"{'='*80}")
 
-    # ----- Run Single Run -----   
+    # ----- Run Single Study -----   
     elif cfg.params["study_execution_mode"] == "SingleStudy":
         BASE_DIR = os.path.join(OUTPUT_BASE, run_name + "_SingleStudy")
         
