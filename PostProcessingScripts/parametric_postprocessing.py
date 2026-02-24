@@ -211,11 +211,11 @@ def run_parametric_postprocessing(parametric_dir, batch_number=None):
     print(f"\nResults:")
     
     # Print compact table
-    display_cols = ['parameter_value', 'keff', 'keff_std', 'leakage_fraction']
+    display_cols = ['parameter_value', 'keff', 'keff_std', 'leakage_fraction', "leakage_std"]
     print(df[display_cols].to_string(index=False))
     
     print(f"\nk_eff range: {df['keff'].min():.5f} to {df['keff'].max():.5f}")
-    print(f"{'='*80}\n")
+    print(f"{'='*80}")
     
     return df
 

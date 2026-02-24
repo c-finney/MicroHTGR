@@ -434,74 +434,29 @@ def build_model(params, run_dir):
 
     tallies += [mesh_tally_active, mesh_tally_full, global_tally]
 
-    # ----- Radial Neutron Leakage Tallies -----
+    # ----- Leakage Spectrum Tallies -----
 
-    # Cylindrical surface mesh at the core outer radius
-    radial_leakage_mesh = openmc.CylindricalMesh(
-        r_grid     = [params["core_radius"] - 1.0, params["core_radius"]], # thin 1 cm annulus at core edge
-        z_grid     = np.linspace(reactor_bottom, reactor_top, params["n_ax_zones"] + 1),
-        phi_grid   = [0.0, np.pi / 3] if params["use_1/6_geometry"] else [0.0, 2 * np.pi]
-    )
-
-    radial_leakage_mesh_filter = openmc.MeshFilter(radial_leakage_mesh)
-
-    leakage_energy_bins = np.logspace(-9, 7, 200)
+    leakage_energy_bins   = np.logspace(-9, 7, 200)
     leakage_energy_filter = openmc.EnergyFilter(leakage_energy_bins)
 
-    # Surface current tally — measures neutrons actually crossing the boundary
+    # Surface filters
+    radial_surf_filter  = openmc.SurfaceFilter(core_cyl)
+    axial_top_surf_filter = openmc.SurfaceFilter(top_refl)
+    axial_bot_surf_filter = openmc.SurfaceFilter(bottom_refl)
+
     radial_current_tally = openmc.Tally(name='radial_leakage_current')
-    radial_current_tally.filters = [radial_leakage_mesh_filter, leakage_energy_filter]
-    radial_current_tally.scores   = ['current']
+    radial_current_tally.filters = [radial_surf_filter, leakage_energy_filter]
+    radial_current_tally.scores  = ['current']
 
-    # Flux tally in the same annulus — complements the current measurement
-    radial_flux_tally = openmc.Tally(name='radial_leakage_flux')
-    radial_flux_tally.filters = [radial_leakage_mesh_filter, leakage_energy_filter]
-    radial_flux_tally.scores   = ['flux']
-
-    tallies += [radial_current_tally, radial_flux_tally]
-
-    # ----- Axial Neutron Leakage Tallies -----
-
-    axial_leakage_mesh_top = openmc.CylindricalMesh(
-        r_grid   = np.linspace(0.0, params["core_radius"], 50),
-        z_grid   = [reactor_top  + params["reflector_thickness"] - 1.0,
-                    reactor_top  + params["reflector_thickness"]], # thin 1 cm slab at top reflector
-        phi_grid = [0.0, np.pi / 3] if params["use_1/6_geometry"] else [0.0, 2 * np.pi]
-    )
-
-    axial_leakage_mesh_bot = openmc.CylindricalMesh(
-        r_grid   = np.linspace(0.0, params["core_radius"], 50),
-        z_grid   = [reactor_bottom - params["reflector_thickness"],
-                    reactor_bottom - params["reflector_thickness"] + 1.0], # thin 1 cm slab at bottom reflector
-        phi_grid = [0.0, np.pi / 3] if params["use_1/6_geometry"] else [0.0, 2 * np.pi]
-    )
-
-    axial_leakage_energy_bins   = np.logspace(-9, 7, 500)
-    axial_leakage_energy_filter = openmc.EnergyFilter(axial_leakage_energy_bins)
-
-    axial_top_mesh_filter = openmc.MeshFilter(axial_leakage_mesh_top)
-    axial_bot_mesh_filter = openmc.MeshFilter(axial_leakage_mesh_bot)
-
-    # Current tallies — physically correct leakage measurement
     axial_top_current_tally = openmc.Tally(name='axial_top_leakage_current')
-    axial_top_current_tally.filters = [axial_top_mesh_filter, axial_leakage_energy_filter]
+    axial_top_current_tally.filters = [axial_top_surf_filter, leakage_energy_filter]
     axial_top_current_tally.scores  = ['current']
 
     axial_bot_current_tally = openmc.Tally(name='axial_bot_leakage_current')
-    axial_bot_current_tally.filters = [axial_bot_mesh_filter, axial_leakage_energy_filter]
+    axial_bot_current_tally.filters = [axial_bot_surf_filter, leakage_energy_filter]
     axial_bot_current_tally.scores  = ['current']
 
-    # Flux tallies in same slabs for spectral comparison
-    axial_top_flux_tally = openmc.Tally(name='axial_top_leakage_flux')
-    axial_top_flux_tally.filters = [axial_top_mesh_filter, axial_leakage_energy_filter]
-    axial_top_flux_tally.scores  = ['flux']
-
-    axial_bot_flux_tally = openmc.Tally(name='axial_bot_leakage_flux')
-    axial_bot_flux_tally.filters = [axial_bot_mesh_filter, axial_leakage_energy_filter]
-    axial_bot_flux_tally.scores  = ['flux']
-
-    tallies += [axial_top_current_tally, axial_bot_current_tally,
-                axial_top_flux_tally,    axial_bot_flux_tally]
+    tallies += [radial_current_tally, axial_top_current_tally, axial_bot_current_tally]
 
     model.tallies = tallies
 
