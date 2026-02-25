@@ -18,6 +18,7 @@ import matplotlib.pyplot as plt
 import os
 import sys
 import json
+import glob
 
 # ====================================================================================================
 # NORMALIZATION FACTOR FUNCTION
@@ -47,7 +48,7 @@ def get_normalization_factor(sp, target_power_MW=15.0):
 # PERFORM LEAKAGE ANALYSIS PLOTTING AND SAVE RESULTS
 # ====================================================================================================
 
-def run_leakage_analysis(run_dir, params, batch=None):
+def run_leakage_analysis(run_dir, params, statepoint_path=None, batch=None):
     """
     Extract and plot neutron leakage energy spectra at all reflector outer boundaries.
     Absolute rates are normalized using the heating tally, matching tally_plotter.py.
@@ -66,17 +67,25 @@ def run_leakage_analysis(run_dir, params, batch=None):
     # 1. LOCATE AND OPEN STATEPOINT
     # ================================================================================
 
-    if batch is None:
-        for f in os.listdir(run_dir):
+    if statepoint_path is not None:
+        sp_path = statepoint_path
+    elif batch is not None:
+        sp_path = os.path.join(run_dir, f"statepoint.{batch}.h5")
+    else:
+        # Try eigenvalue naming first, then depletion naming
+        for f in sorted(os.listdir(run_dir)):
             if f.startswith("statepoint") and f.endswith(".h5"):
-                batch = int(f.split(".")[1])
+                sp_path = os.path.join(run_dir, f)
                 break
+        else:
+            # Fall back to last depletion statepoint
+            dep_sps = sorted(glob.glob(os.path.join(run_dir, "openmc_simulation_n*.h5")))
+            if dep_sps:
+                sp_path = dep_sps[-1]
+            else:
+                print("ERROR: No statepoint file found!")
+                return None
 
-    if batch is None:
-        print("ERROR: No statepoint file found!")
-        return None
-
-    sp_path = os.path.join(run_dir, f"statepoint.{batch}.h5")
     print(f"\nStatepoint: {sp_path}")
 
     sp = openmc.StatePoint(sp_path)
@@ -340,7 +349,7 @@ def run_leakage_analysis(run_dir, params, batch=None):
 # ====================================================================================================
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
+    if len(sys.argv) < 3:
         print("Usage: python leakage_spectrum.py <run_directory> [batch_number]")
         print("\nExtracts neutron leakage energy spectra from the leakage current tallies")
         print("and computes absolute leakage rates normalized to thermal power.")
@@ -348,7 +357,8 @@ if __name__ == "__main__":
         sys.exit(1)
 
     run_dir = sys.argv[1]
-    batch   = int(sys.argv[2]) if len(sys.argv) > 2 else None
+    sp_path = sys.argv[2] if len(sys.argv) > 2 else None
+    batch   = int(sys.argv[3]) if len(sys.argv) > 3 else None
 
     print(f"\nProcessing: {run_dir}")
 
@@ -362,4 +372,4 @@ if __name__ == "__main__":
         print("Absolute leakage rates will not be available without thermal_power_MW")
         params = {}
 
-    run_leakage_analysis(run_dir, params, batch)
+    run_leakage_analysis(run_dir, params, sp_path, batch)

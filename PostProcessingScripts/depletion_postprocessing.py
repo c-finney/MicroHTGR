@@ -25,18 +25,27 @@ import matplotlib.pyplot as plt
 
 # Default plot groups — used only if not specified in params
 DEFAULT_PLOT_GROUPS = {
-    "Fissile Actinides":    ["U235", "Pu239", "Pu241"],
-    "Fertile Actinides":    ["U238", "U234", "U236", "Pu240", "Pu242"],
-    "Minor Actinides":      ["Np237", "Np239", "Pu238",
-                             "Am241", "Am243",
-                             "Cm242", "Cm243", "Cm244", "Cm245", "Cm246"],
-    "Xe/I Poisons":         ["Xe131", "Xe135", "Xe135_m1", "I135"],
-    "Sm/Pm Poisons":        ["Sm149", "Sm151", "Sm152", "Pm147", "Pm149"],
-    "Cs/Sr FPs":            ["Cs133", "Cs134", "Cs137", "Sr90"],
-    "Nd/Eu FPs":            ["Nd143", "Nd145", "Nd147", "Eu153", "Eu154", "Eu155"],
-    "Mo/Tc/Rh/Pd FPs":     ["Mo95", "Tc99", "Rh103", "Rh105", "Pd107"],
-    "Kr FPs":               ["Kr83"],
-    "Burnable Poison":      ["B10"],
+    "Fissile Actinides": ["U235",
+                          "Pu239", "Pu241"],
+    "Fertile Actinides": ["U238", "U234", "U236",
+                          "Pu238", "Pu240", "Pu242"],
+    "Minor Actinides":   ["Np237", "Np239",
+                          "Am241", "Am243",
+                          "Cm242", "Cm243", "Cm244", "Cm245", "Cm246"],
+    "Xe/I Poisons":      ["Xe131", "Xe135", "Xe135_m1",
+                          "I135"],
+    "Sm/Pm Poisons":     ["Sm149", "Sm151", "Sm152",
+                          "Pm147", "Pm149"],
+    "Cs/Sr FPs":         ["Cs133", "Cs134", "Cs137",
+                          "Sr90"],
+    "Nd/Eu FPs":         ["Nd143", "Nd145", "Nd147",
+                          "Eu153", "Eu154", "Eu155"],
+    "Mo/Tc/Rh/Pd FPs":   ["Mo95",
+                          "Tc99",
+                          "Rh103", "Rh105",
+                          "Pd107"],
+    "Kr FPs":            ["Kr83"],
+    "Boron Poisons":     ["B10"],
 }
 
 # ====================================================================================================
@@ -302,9 +311,6 @@ def run_depletion_postprocessing(run_dir, params):
     if discharge_burnup is not None and burnup_MWd_per_MtU is not None:
         ax.axvline(discharge_burnup, color="green", linestyle=":", alpha=0.7,
                    label=f"Discharge: {discharge_burnup:.0f} MWd/MtU")
-    elif discharge_time_days is not None:
-        ax.axvline(discharge_time_days, color="green", linestyle=":", alpha=0.7,
-                   label=f"Discharge: {discharge_time_days:.0f} days")
     ax.set_xlabel(x_label, fontsize=12)
     ax.set_ylabel("k-effective", fontsize=12)
     ax.set_title("k-effective vs. Burnup", fontsize=14)
@@ -317,11 +323,15 @@ def run_depletion_postprocessing(run_dir, params):
     if burnup_MWd_per_MtU is not None:
         fig, ax = plt.subplots(figsize=(12, 6), dpi=150)
         ax.errorbar(time_days, keff_mean, yerr=keff_std, fmt="o-", capsize=3,
-                    markersize=5, linewidth=1.5)
-        ax.axhline(1.0, color="red", linestyle="--", alpha=0.7, linewidth=1)
+                    markersize=5, linewidth=1.5, label="k-effective")
+        ax.axhline(1.0, color="red", linestyle="--", alpha=0.7, linewidth=1, label="k = 1.0")
+        if discharge_time_years is not None and discharge_time_days is not None:
+            ax.axvline(discharge_time_days, color="green", linestyle=":", alpha=0.7,
+                       label=f"Discharge: {discharge_time_years:.2f} years")
         ax.set_xlabel("Time (days)", fontsize=12)
         ax.set_ylabel("k-effective", fontsize=12)
         ax.set_title("k-effective vs. Time", fontsize=14)
+        ax.legend(fontsize=10)
         ax.grid(True, alpha=0.3)
         ax2 = ax.twiny()
         ax2.set_xlim(ax.get_xlim()[0] / 365.25, ax.get_xlim()[1] / 365.25)
@@ -390,7 +400,7 @@ def run_depletion_postprocessing(run_dir, params):
 
     # B-10 burnout — two-panel: absolute atoms and fractional remaining
     if "B10" in all_nuclide_data:
-        b10        = all_nuclide_data["B10"]
+        b10         = all_nuclide_data["B10"]
         b10_initial = b10[0]
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5), dpi=150)
         ax1.plot(x_data, b10, "o-", markersize=4, linewidth=1.5, color="purple")

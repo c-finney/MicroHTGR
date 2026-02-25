@@ -185,8 +185,8 @@ params = {
         "Fissile Actinides":    ["U235",
                                  "Pu239", "Pu241"],
         "Fertile Actinides":    ["U238", "U234", "U236",
-                                 "Pu240", "Pu242"],
-        "Minor Actinides":      ["Np237", "Np239", "Pu238",
+                                 "Pu238", "Pu240", "Pu242"],
+        "Minor Actinides":      ["Np237", "Np239",
                                  "Am241", "Am243",
                                  "Cm242", "Cm243", "Cm244", "Cm245", "Cm246"],
         "Xe/I Poisons":         ["Xe131", "Xe135", "Xe135_m1",
@@ -202,7 +202,7 @@ params = {
                                  "Rh103", "Rh105",
                                  "Pd107"],
         "Kr FPs":               ["Kr83"],
-        "Burnable Poison":      ["B10"],
+        "Boron Poisons":        ["B10"],
     },
 
     # ----- Study Execution Mode Configuration -----
