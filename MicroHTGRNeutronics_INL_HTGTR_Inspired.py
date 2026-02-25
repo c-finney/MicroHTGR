@@ -368,12 +368,11 @@ def build_model(params, run_dir):
 
     tallies = openmc.Tallies()
     energy_bins = np.logspace(-9, 7, 200)
+    energy_filter = openmc.EnergyFilter(energy_bins)
 
     # ----- Global Tallies -----
 
     if params["use_global_tallies"]:
-        energy_filter = openmc.EnergyFilter(energy_bins, id=1)
-
         flux_spectrum_tally = openmc.Tally(name="flux_energy_spectrum")
         flux_spectrum_tally.scores = ["flux"]
         flux_spectrum_tally.filters = [energy_filter]
@@ -383,8 +382,11 @@ def build_model(params, run_dir):
 
         heating_tally = openmc.Tally(name="heating")
         heating_tally.scores = ["heating-local"]
+        
+        global_tally = openmc.Tally(name='global_rates')
+        global_tally.scores = ['flux', 'fission', 'nu-fission']
 
-        tallies += [flux_spectrum_tally, fission_tally, heating_tally]
+        tallies += [flux_spectrum_tally, fission_tally, heating_tally, global_tally]
 
     # ----- Mesh Tallies -----
 
@@ -408,7 +410,7 @@ def build_model(params, run_dir):
         mesh.dimension = [mesh_nx, mesh_ny, params["n_ax_zones"]]
         mesh.lower_left = [mesh_x_min, mesh_y_min, reactor_bottom]
         mesh.upper_right = [mesh_x_max, mesh_y_max, reactor_top]
-        mesh_filter = openmc.MeshFilter(mesh, id=2)
+        mesh_filter = openmc.MeshFilter(mesh)
 
         mesh_tally_active = openmc.Tally(name='mesh_rates')
         mesh_tally_active.filters = [mesh_filter]
@@ -423,37 +425,32 @@ def build_model(params, run_dir):
         mesh_top = reactor_top + params["reflector_thickness"]
         mesh_full.lower_left = [mesh_x_min, mesh_y_min, mesh_bottom]
         mesh_full.upper_right = [mesh_x_max, mesh_y_max, mesh_top]
-        mesh_full_filter = openmc.MeshFilter(mesh_full, id=3)
+        mesh_full_filter = openmc.MeshFilter(mesh_full)
 
         mesh_tally_full = openmc.Tally(name='mesh_rates_full')
         mesh_tally_full.filters = [mesh_full_filter]
         mesh_tally_full.scores = ['flux', 'fission', 'nu-fission']
 
-        global_tally = openmc.Tally(name='global_rates')
-        global_tally.scores = ['flux', 'fission', 'nu-fission']
-
-        tallies += [mesh_tally_active, mesh_tally_full, global_tally]
+        tallies += [mesh_tally_active, mesh_tally_full]
 
     # ----- Leakage Spectrum Tallies -----
 
     if params["use_leakage_tallies"]:
-        leakage_energy_filter = openmc.EnergyFilter(energy_bins, id=4)
-
         # Surface filters
-        radial_surf_filter  = openmc.SurfaceFilter(core_cyl, id=5)
-        axial_top_surf_filter = openmc.SurfaceFilter(top_refl, id=6)
-        axial_bot_surf_filter = openmc.SurfaceFilter(bottom_refl, id=7)
+        radial_surf_filter  = openmc.SurfaceFilter(core_cyl)
+        axial_top_surf_filter = openmc.SurfaceFilter(top_refl)
+        axial_bot_surf_filter = openmc.SurfaceFilter(bottom_refl)
 
         radial_current_tally = openmc.Tally(name='radial_leakage_current')
-        radial_current_tally.filters = [radial_surf_filter, leakage_energy_filter]
+        radial_current_tally.filters = [radial_surf_filter, energy_filter]
         radial_current_tally.scores  = ['current']
 
         axial_top_current_tally = openmc.Tally(name='axial_top_leakage_current')
-        axial_top_current_tally.filters = [axial_top_surf_filter, leakage_energy_filter]
+        axial_top_current_tally.filters = [axial_top_surf_filter, energy_filter]
         axial_top_current_tally.scores  = ['current']
 
         axial_bot_current_tally = openmc.Tally(name='axial_bot_leakage_current')
-        axial_bot_current_tally.filters = [axial_bot_surf_filter, leakage_energy_filter]
+        axial_bot_current_tally.filters = [axial_bot_surf_filter, energy_filter]
         axial_bot_current_tally.scores  = ['current']
 
         tallies += [radial_current_tally, axial_top_current_tally, axial_bot_current_tally]

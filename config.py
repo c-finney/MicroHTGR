@@ -64,7 +64,7 @@ params = {
 
     # ----- Core Layout -----
     "core_rings": [
-        ["r2", "f", "f"] + ["r1", "f", "f"] + ["r3", "f", "f"] * 4,
+        ["r3", "f", "f"] + ["r1", "f", "f"] + ["r3", "f", "f"] * 4,
         ["f", "fc2"] * 6,
         ["fpa"] * 6,
         ["fcp2"],
@@ -91,8 +91,8 @@ params = {
 
     # ----- Tally Configuration -----
     "use_global_tallies": True,
-    "use_mesh_tallies": True,
-    "use_leakage_tallies": True,
+    "use_mesh_tallies": False,
+    "use_leakage_tallies": False,
 
     # ----- OpenMC Monte Carlo Settings -----
     "total_batches": 50,
@@ -100,7 +100,7 @@ params = {
     "particles": 100_000,
 
     # ----- Stochastic Volume Calculation Settings -----
-    "calculate_fuel_volume": True,
+    "calculate_fuel_volume": False,
     "volume_samples": 1_000_000_000,
 
     # ----- Parametric Study Configuration -----
@@ -206,8 +206,8 @@ params = {
     },
 
     # ----- Study Execution Mode Configuration -----
-    "run_post_processing": True,
-    "study_execution_mode": "DepletionStudy"
+    "run_post_processing": False,
+    "study_execution_mode": "ParametricStudy"
     # Study Execution Mode Options:
     #     "SingleStudy"     — Singular steady state monte carlo simulation of specified core layout 
     #     "ParametricStudy" — Creates multiple steady state monte carlo simulations varying a single core parameter
