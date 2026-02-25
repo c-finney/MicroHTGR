@@ -367,94 +367,93 @@ def build_model(params, run_dir):
     # ==================================================================
 
     tallies = openmc.Tallies()
-
-    # ----- Global Tallies -----
-
     energy_bins = np.logspace(-9, 7, 200)
     energy_filter = openmc.EnergyFilter(energy_bins)
 
-    flux_spectrum_tally = openmc.Tally(name="flux_energy_spectrum")
-    flux_spectrum_tally.scores = ["flux"]
-    flux_spectrum_tally.filters = [energy_filter]
+    # ----- Global Tallies -----
 
-    fission_tally = openmc.Tally(name="fission")
-    fission_tally.scores = ["fission"]
+    if params["use_global_tallies"]:
+        flux_spectrum_tally = openmc.Tally(name="flux_energy_spectrum")
+        flux_spectrum_tally.scores = ["flux"]
+        flux_spectrum_tally.filters = [energy_filter]
 
-    heating_tally = openmc.Tally(name="heating")
-    heating_tally.scores = ["heating-local"]
+        fission_tally = openmc.Tally(name="fission")
+        fission_tally.scores = ["fission"]
 
-    tallies += [flux_spectrum_tally, fission_tally, heating_tally]
+        heating_tally = openmc.Tally(name="heating")
+        heating_tally.scores = ["heating-local"]
+        
+        global_tally = openmc.Tally(name='global_rates')
+        global_tally.scores = ['flux', 'fission', 'nu-fission']
+
+        tallies += [flux_spectrum_tally, fission_tally, heating_tally, global_tally]
 
     # ----- Mesh Tallies -----
 
-    if params["use_1/6_geometry"]:
-        mesh_x_min = 0.0
-        mesh_x_max = params["core_radius"]
-        mesh_nx = 250
-        mesh_y_min = 0.0
-        mesh_y_max = params["core_radius"] * sin60 
-        mesh_ny = 217
-    else:
-        mesh_x_min = -params["core_radius"]
-        mesh_x_max = params["core_radius"]
-        mesh_nx = 500
-        mesh_y_min = -params["core_radius"]
-        mesh_y_max = params["core_radius"]
-        mesh_ny = 500
+    if params["use_mesh_tallies"]:
+        if params["use_1/6_geometry"]:
+            mesh_x_min = 0.0
+            mesh_x_max = params["core_radius"]
+            mesh_nx = 250
+            mesh_y_min = 0.0
+            mesh_y_max = params["core_radius"] * sin60 
+            mesh_ny = 217
+        else:
+            mesh_x_min = -params["core_radius"]
+            mesh_x_max = params["core_radius"]
+            mesh_nx = 500
+            mesh_y_min = -params["core_radius"]
+            mesh_y_max = params["core_radius"]
+            mesh_ny = 500
 
-    mesh = openmc.RegularMesh()
-    mesh.dimension = [mesh_nx, mesh_ny, params["n_ax_zones"]]
-    mesh.lower_left = [mesh_x_min, mesh_y_min, reactor_bottom]
-    mesh.upper_right = [mesh_x_max, mesh_y_max, reactor_top]
-    mesh_filter = openmc.MeshFilter(mesh)
+        mesh = openmc.RegularMesh()
+        mesh.dimension = [mesh_nx, mesh_ny, params["n_ax_zones"]]
+        mesh.lower_left = [mesh_x_min, mesh_y_min, reactor_bottom]
+        mesh.upper_right = [mesh_x_max, mesh_y_max, reactor_top]
+        mesh_filter = openmc.MeshFilter(mesh)
 
-    mesh_tally_active = openmc.Tally(name='mesh_rates')
-    mesh_tally_active.filters = [mesh_filter]
-    mesh_tally_active.scores = ['flux', 'fission', 'nu-fission']
+        mesh_tally_active = openmc.Tally(name='mesh_rates')
+        mesh_tally_active.filters = [mesh_filter]
+        mesh_tally_active.scores = ['flux', 'fission', 'nu-fission']
 
-    n_reflector_zones = 33
-    n_total_zones = n_reflector_zones + params["n_ax_zones"] + n_reflector_zones
+        n_reflector_zones = 33
+        n_total_zones = n_reflector_zones + params["n_ax_zones"] + n_reflector_zones
 
-    mesh_full = openmc.RegularMesh()
-    mesh_full.dimension = [mesh_nx, mesh_ny, n_total_zones]
-    mesh_bottom = reactor_bottom - params["reflector_thickness"]
-    mesh_top = reactor_top + params["reflector_thickness"]
-    mesh_full.lower_left = [mesh_x_min, mesh_y_min, mesh_bottom]
-    mesh_full.upper_right = [mesh_x_max, mesh_y_max, mesh_top]
-    mesh_full_filter = openmc.MeshFilter(mesh_full)
+        mesh_full = openmc.RegularMesh()
+        mesh_full.dimension = [mesh_nx, mesh_ny, n_total_zones]
+        mesh_bottom = reactor_bottom - params["reflector_thickness"]
+        mesh_top = reactor_top + params["reflector_thickness"]
+        mesh_full.lower_left = [mesh_x_min, mesh_y_min, mesh_bottom]
+        mesh_full.upper_right = [mesh_x_max, mesh_y_max, mesh_top]
+        mesh_full_filter = openmc.MeshFilter(mesh_full)
 
-    mesh_tally_full = openmc.Tally(name='mesh_rates_full')
-    mesh_tally_full.filters = [mesh_full_filter]
-    mesh_tally_full.scores = ['flux', 'fission', 'nu-fission']
+        mesh_tally_full = openmc.Tally(name='mesh_rates_full')
+        mesh_tally_full.filters = [mesh_full_filter]
+        mesh_tally_full.scores = ['flux', 'fission', 'nu-fission']
 
-    global_tally = openmc.Tally(name='global_rates')
-    global_tally.scores = ['flux', 'fission', 'nu-fission']
-
-    tallies += [mesh_tally_active, mesh_tally_full, global_tally]
+        tallies += [mesh_tally_active, mesh_tally_full]
 
     # ----- Leakage Spectrum Tallies -----
 
-    leakage_energy_bins   = np.logspace(-9, 7, 200)
-    leakage_energy_filter = openmc.EnergyFilter(leakage_energy_bins)
+    if params["use_leakage_tallies"]:
+        # Surface filters
+        radial_surf_filter  = openmc.SurfaceFilter(core_cyl)
+        axial_top_surf_filter = openmc.SurfaceFilter(top_refl)
+        axial_bot_surf_filter = openmc.SurfaceFilter(bottom_refl)
 
-    # Surface filters
-    radial_surf_filter  = openmc.SurfaceFilter(core_cyl)
-    axial_top_surf_filter = openmc.SurfaceFilter(top_refl)
-    axial_bot_surf_filter = openmc.SurfaceFilter(bottom_refl)
+        radial_current_tally = openmc.Tally(name='radial_leakage_current')
+        radial_current_tally.filters = [radial_surf_filter, energy_filter]
+        radial_current_tally.scores  = ['current']
 
-    radial_current_tally = openmc.Tally(name='radial_leakage_current')
-    radial_current_tally.filters = [radial_surf_filter, leakage_energy_filter]
-    radial_current_tally.scores  = ['current']
+        axial_top_current_tally = openmc.Tally(name='axial_top_leakage_current')
+        axial_top_current_tally.filters = [axial_top_surf_filter, energy_filter]
+        axial_top_current_tally.scores  = ['current']
 
-    axial_top_current_tally = openmc.Tally(name='axial_top_leakage_current')
-    axial_top_current_tally.filters = [axial_top_surf_filter, leakage_energy_filter]
-    axial_top_current_tally.scores  = ['current']
+        axial_bot_current_tally = openmc.Tally(name='axial_bot_leakage_current')
+        axial_bot_current_tally.filters = [axial_bot_surf_filter, energy_filter]
+        axial_bot_current_tally.scores  = ['current']
 
-    axial_bot_current_tally = openmc.Tally(name='axial_bot_leakage_current')
-    axial_bot_current_tally.filters = [axial_bot_surf_filter, leakage_energy_filter]
-    axial_bot_current_tally.scores  = ['current']
-
-    tallies += [radial_current_tally, axial_top_current_tally, axial_bot_current_tally]
+        tallies += [radial_current_tally, axial_top_current_tally, axial_bot_current_tally]
 
     model.tallies = tallies
 
@@ -686,10 +685,10 @@ def run_depletion_simulation(params, run_dir):
         # Validate restart directory contents
         required_files = {
             "depletion_results.h5": prev_h5,
-            "materials.xml":        os.path.join(restart_dir, "materials.xml"),
-            "geometry.xml":         os.path.join(restart_dir, "geometry.xml"),
-            "settings.xml":         os.path.join(restart_dir, "settings.xml"),
-            "run_params.json":      os.path.join(restart_dir, "run_params.json"),
+            "materials.xml":       os.path.join(restart_dir, "materials.xml"),
+            "geometry.xml":        os.path.join(restart_dir, "geometry.xml"),
+            "settings.xml":        os.path.join(restart_dir, "settings.xml"),
+            "run_params.json":     os.path.join(restart_dir, "run_params.json"),
         }
         for label, path in required_files.items():
             if not os.path.exists(path):
@@ -704,34 +703,8 @@ def run_depletion_simulation(params, run_dir):
 
         os.chdir(restart_dir)
 
-        # Load previous depletion results FIRST — we need these to
-        # restore correct material compositions before building the model.
-        #
-        # During the failed run, the operator likely updated materials.xml
-        # with step N+1 compositions before crashing, while
-        # depletion_results.h5 only recorded through step N. Loading
-        # materials.xml directly would give us stale/wrong compositions.
-        # export_to_materials() writes the step-N compositions from the
-        # HDF5 file back into a corrected materials XML.
-        prev_results = openmc.deplete.Results(prev_h5)
-        n_completed = len(prev_results) - 1 # Results includes the t=0 entry
-        print(f"Completed depletion steps: {n_completed}")
-
-        # Write corrected materials.xml from last completed step.
-        # export_to_materials reads from `path`, updates compositions
-        # from the HDF5 results, and writes back to the same file.
-        # We copy the original first so we don't overwrite it.
-        corrected_materials_path = os.path.join(restart_dir, "materials_restart.xml")
-        shutil.copy2(
-            os.path.join(restart_dir, "materials.xml"),
-            corrected_materials_path
-        )
-        prev_results.export_to_materials(-1, path=corrected_materials_path)
-        print(f"Exported step-{n_completed} compositions to: {corrected_materials_path}")
-
-        # Clear OpenMC's global ID registries AFTER export_to_materials
-        # (which internally creates Material objects) and BEFORE we load
-        # the model, so that from_xml() can cleanly claim the correct IDs.
+        # Clear OpenMC's global ID registries to avoid collisions with objects created at import time by the materials module
+        # Without this, from_xml() cannot reclaim the same IDs, which breaks the mapping between prev_results and the model
         for cls in [openmc.Material, openmc.Cell, openmc.Universe,
                     openmc.Surface, openmc.Lattice]:
             if hasattr(cls, 'used_ids'):
@@ -739,9 +712,13 @@ def run_depletion_simulation(params, run_dir):
         if hasattr(openmc, 'reset_auto_ids'):
             openmc.reset_auto_ids()
 
-        # Load the model from corrected materials (preserves material IDs
-        # while ensuring compositions match depletion_results.h5)
-        materials = openmc.Materials.from_xml(corrected_materials_path)
+        # Load the original model (preserves material IDs).
+        # NOTE: This assumes materials.xml and depletion_results.h5 are consistent (i.e. both reflect the same completed timestep)
+        # If the original run crashed mid-step, materials.xml may contain compositions from a step not yet recorded in depletion_results.h5
+        # In that case, manually fix materials.xml before restarting (e.g. using Results.export_to_materials())
+        materials = openmc.Materials.from_xml(
+            os.path.join(restart_dir, "materials.xml")
+        )
         geometry = openmc.Geometry.from_xml(
             os.path.join(restart_dir, "geometry.xml"),
             materials = materials
@@ -770,30 +747,35 @@ def run_depletion_simulation(params, run_dir):
         for mat in materials:
             if mat.id == fuel_mat_id:
                 mat.volume = fuel_volume
-                print(f"  Fuel material (id={mat.id}): volume = {fuel_volume:.4f} cm³")
+                print(f"Fuel material (id={mat.id}): volume = {fuel_volume:.4f} cm³")
             elif mat.id == poison_mat_id:
                 mat.volume = poison_volume
-                print(f"  Poison material (id={mat.id}): volume = {poison_volume:.4f} cm³")
+                print(f"Poison material (id={mat.id}): volume = {poison_volume:.4f} cm³")
+
+        # Load previous depletion results
+        prev_results = openmc.deplete.Results(prev_h5)
+        n_completed = len(prev_results) - 1   # Results includes the t=0 entry
+        print(f"Completed depletion steps: {n_completed}")
 
         # Determine remaining timesteps
         restart_ts = params.get("restart_timesteps_days", None)
         if restart_ts is not None and len(restart_ts) > 0:
             timesteps_days = restart_ts
-            print(f"  Using user-specified restart timesteps: {timesteps_days}")
+            print(f"Using user-specified restart timesteps: {timesteps_days}")
         else:
             original_ts = params.get("depletion_timesteps_days", [30] * 12)
             timesteps_days = original_ts[n_completed:]
             if len(timesteps_days) == 0:
-                print("  All original timesteps already completed — nothing to do.")
+                print("All original timesteps already completed — nothing to do.")
                 return n_trisos
-            print(f"  Original timesteps ({len(original_ts)}): {original_ts}")
-            print(f"  Remaining timesteps ({len(timesteps_days)}): {timesteps_days}")
+            print(f"Original timesteps ({len(original_ts)}): {original_ts}")
+            print(f"Remaining timesteps ({len(timesteps_days)}): {timesteps_days}")
 
         # Use chain file from restart directory if it exists, otherwise regenerate
         reduced_chain_in_dir = os.path.join(restart_dir, "chain_reduced.xml")
         if os.path.exists(reduced_chain_in_dir):
             chain_file = reduced_chain_in_dir
-            print(f"  Using existing reduced chain: {chain_file}")
+            print(f"Using existing reduced chain: {chain_file}")
         else:
             full_chain_file = params.get("depletion_chain_file", None)
             if full_chain_file is None or not os.path.exists(full_chain_file):
@@ -1158,9 +1140,9 @@ if __name__ == "__main__":
             run_dir = os.path.join(BASE_DIR, runName)
 
             print(f"\n{'='*80}")
-            print(f"Runing Case {caseNumFormatted}: {cfg.params["parametric_param"]} = {val}")
+            print(f"Running Case {caseNumFormatted}: {cfg.params["parametric_param"]} = {val}")
             print(f"Run Directory: {run_dir}")
-            print(f"{'='*80}\n")
+            print(f"{'='*80}")
 
             params_copy = cfg.params.copy()
             params_copy[cfg.params["parametric_param"]] = val
