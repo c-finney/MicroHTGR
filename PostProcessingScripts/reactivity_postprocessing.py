@@ -5,7 +5,12 @@ Extracts, summarizes, and plots results from reactivity coefficient
 perturbation studies. Called automatically by reactivity_coefficients.py
 after all perturbed cases have been run.
 
-Can also be run standalone to re-process existing results:
+Usage:
+    # As a module:
+    from reactivity_postprocessing import run_reactivity_postprocessing
+    run_reactivity_postprocessing(all_results, k_ref, k_ref_std, output_dir)
+
+    # Standalone:
     python reactivity_postprocessing.py <reactivity_study_directory>
 """
 
@@ -16,19 +21,17 @@ import math
 import numpy as np
 import matplotlib.pyplot as plt
 
+# ====================================================================================================
+# HELPER FUNCTION
+# ====================================================================================================
 
-# ===========================================================================
-# Helper functions
-# ===========================================================================
-
-def _reactivity_pcm(k):
+def reactivity_pcm(k):
     """Convert k-effective to reactivity in pcm."""
     return (k - 1.0) / k * 1e5
 
-
-# ===========================================================================
-# Summary printing
-# ===========================================================================
+# ====================================================================================================
+# SUMMARY PRINTING
+# ====================================================================================================
 
 def print_summary(all_results, k_ref, k_ref_std, rho_ref):
     """Print a formatted summary to stdout."""
@@ -64,15 +67,14 @@ def print_summary(all_results, k_ref, k_ref_std, rho_ref):
 
     print("\n" + "=" * 80)
 
-
-# ===========================================================================
-# File output
-# ===========================================================================
+# ====================================================================================================
+# SAVE RESULTS TO JSON AND TEXT FILES
+# ====================================================================================================
 
 def save_results(all_results, k_ref, k_ref_std, rho_ref, output_dir):
-    """Save results to JSON and text files."""
+    
+    # ----- JSON FILE -----
 
-    # --- JSON ---
     json_data = {
         "reference": {
             "k_eff": k_ref,
@@ -106,7 +108,8 @@ def save_results(all_results, k_ref, k_ref_std, rho_ref, output_dir):
         json.dump(json_data, f, indent=2)
     print(f"\nResults saved to: {json_path}")
 
-    # --- Human-readable text ---
+    # ----- Text File -----
+
     txt_path = os.path.join(output_dir, "reactivity_coefficients.txt")
     with open(txt_path, "w") as f:
         f.write("=" * 80 + "\n")
@@ -128,10 +131,9 @@ def save_results(all_results, k_ref, k_ref_std, rho_ref, output_dir):
         f.write("=" * 80 + "\n")
     print(f"Results saved to: {txt_path}")
 
-
-# ===========================================================================
-# Plotting
-# ===========================================================================
+# ====================================================================================================
+# PLOTTING FUNCTION
+# ====================================================================================================
 
 def plot_results(all_results, k_ref, output_dir):
     """Generate publication-quality plots of reactivity vs. temperature perturbation."""
@@ -143,7 +145,7 @@ def plot_results(all_results, k_ref, output_dir):
         k_stds = np.array([c["k_pert_std"] for c in cases])
         ks = np.array([c["k_pert"] for c in cases])
 
-        rho_ref_val = _reactivity_pcm(k_ref)
+        rho_ref_val = reactivity_pcm(k_ref)
         delta_rho = rhos - rho_ref_val
 
         # Propagated uncertainty on Δρ
@@ -208,10 +210,9 @@ def plot_results(all_results, k_ref, output_dir):
     plt.close()
     print(f"  Summary plot saved: {save_path}")
 
-
-# ===========================================================================
-# Full post-processing entry point
-# ===========================================================================
+# ====================================================================================================
+# POST-PROCESSING ENTRY POINT FUNCTION
+# ====================================================================================================
 
 def run_reactivity_postprocessing(all_results, k_ref, k_ref_std, output_dir):
     """
@@ -228,16 +229,15 @@ def run_reactivity_postprocessing(all_results, k_ref, k_ref_std, output_dir):
     output_dir : str
         Directory to save outputs.
     """
-    rho_ref = _reactivity_pcm(k_ref)
+    rho_ref = reactivity_pcm(k_ref)
 
     print_summary(all_results, k_ref, k_ref_std, rho_ref)
     save_results(all_results, k_ref, k_ref_std, rho_ref, output_dir)
     plot_results(all_results, k_ref, output_dir)
 
-
-# ===========================================================================
-# Standalone: re-process from saved JSON
-# ===========================================================================
+# ====================================================================================================
+# STANDALON ENTY POINT FUNCTION: RE-PROCESS FROM SAVED JSON
+# ====================================================================================================
 
 def reprocess_from_json(json_path, output_dir=None):
     """
@@ -274,6 +274,9 @@ def reprocess_from_json(json_path, output_dir=None):
     print(f"\nRe-processing from: {json_path}")
     run_reactivity_postprocessing(all_results, k_ref, k_ref_std, output_dir)
 
+# ====================================================================================================
+# STANDALONE ENTRY POINT
+# ====================================================================================================
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:

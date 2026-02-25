@@ -1,7 +1,15 @@
 """
 Leakage Spectrum Post-Processing Script
+
 Extracts neutron leakage energy spectra and absolute leakage rates from all core boundaries.
-Normalization matches tally_plotter.py exactly (heating-local tally based).
+
+Usage:
+    # As a module:
+    from leakage_spectrum import run_leakage_analysis
+    run_leakage_analysis(run_dir, params, batch=None)
+
+    # Standalone:
+    python leakage_spectrum.py <reactivity_study_directory> <batch=None>
 """
 
 import openmc
@@ -11,6 +19,9 @@ import os
 import sys
 import json
 
+# ====================================================================================================
+# NORMALIZATION FACTOR FUNCTION
+# ====================================================================================================
 
 def get_normalization_factor(sp, target_power_MW=15.0):
     """
@@ -32,6 +43,9 @@ def get_normalization_factor(sp, target_power_MW=15.0):
     source_per_sec   = power_watts / heating_rate_j
     return source_per_sec, heating_rate_ev, heating_rate_j
 
+# ====================================================================================================
+# PERFORM LEAKAGE ANALYSIS PLOTTING AND SAVE RESULTS
+# ====================================================================================================
 
 def run_leakage_analysis(run_dir, params, batch=None):
     """
@@ -48,9 +62,9 @@ def run_leakage_analysis(run_dir, params, batch=None):
     print("LEAKAGE SPECTRUM ANALYSIS")
     print(f"{'='*80}")
 
-    # =========================================================================
-    # LOCATE AND OPEN STATEPOINT
-    # =========================================================================
+    # ================================================================================
+    # 1. LOCATE AND OPEN STATEPOINT
+    # ================================================================================
 
     if batch is None:
         for f in os.listdir(run_dir):
@@ -67,9 +81,9 @@ def run_leakage_analysis(run_dir, params, batch=None):
 
     sp = openmc.StatePoint(sp_path)
 
-    # =========================================================================
-    # NORMALIZATION — identical to tally_plotter.py
-    # =========================================================================
+    # ================================================================================
+    # 2. POWER NORMALIZATION
+    # ================================================================================
 
     thermal_power_MW = params.get("thermal_power_MW", params.get("thermal_power", 15.0))
     geometry_factor  = 6 if params.get("use_1/6_geometry", False) else 1
@@ -94,9 +108,9 @@ def run_leakage_analysis(run_dir, params, batch=None):
         print(f"Source rate:                {source_per_sec:.4e} source/s")
         print(f"Geometry factor:            {geometry_factor}x")
 
-    # =========================================================================
-    # LOAD LEAKAGE CURRENT TALLIES
-    # =========================================================================
+    # ================================================================================
+    # 3. LOAD LEAKAGE CURRENT TALLIES
+    # ================================================================================
 
     leakage_tally_names = {
         'radial':    'radial_leakage_current',
@@ -181,9 +195,9 @@ def run_leakage_analysis(run_dir, params, batch=None):
         print("ERROR: No leakage tallies found in statepoint")
         return None
 
-    # =========================================================================
-    # SURFACE BREAKDOWN SUMMARY
-    # =========================================================================
+    # ================================================================================
+    # 4. SURFACE BREAKDOWN SUMMARY
+    # ================================================================================
 
     total_abs_leakage      = sum(r['abs_leakage_n_per_sec'] for r in results.values())
     total_leakage_fraction = sum(r['leakage_fraction']       for r in results.values())
@@ -199,9 +213,9 @@ def run_leakage_analysis(run_dir, params, batch=None):
         )
         print(f"   {labels[name]:<45} {frac:.1f}%")
 
-    # =========================================================================
-    # PLOTTING
-    # =========================================================================
+    # ================================================================================
+    # 5. PLOTTING
+    # ================================================================================
 
     colors = {'radial': 'steelblue', 'axial_top': 'firebrick', 'axial_bot': 'seagreen'}
 
@@ -239,9 +253,9 @@ def run_leakage_analysis(run_dir, params, batch=None):
     plt.close()
     print(f"\nPlot saved to: {plot_path}")
 
-    # =========================================================================
-    # SAVE RESULTS TO TEXT FILE
-    # =========================================================================
+    # ================================================================================
+    # 6. SAVE RESULTS TO TEXT FILE
+    # ================================================================================
 
     results_file = os.path.join(run_dir, 'leakage_spectrum_results.txt')
     with open(results_file, 'w') as f:
@@ -306,9 +320,9 @@ def run_leakage_analysis(run_dir, params, batch=None):
 
     print(f"Results saved to: {results_file}")
 
-    # =========================================================================
-    # SAVE NUMERICAL ARRAYS
-    # =========================================================================
+    # ================================================================================
+    # 7. SAVE NUMERICAL ARRAYS
+    # ================================================================================
 
     np.savez(
         os.path.join(run_dir, 'leakage_spectrum.npz'),
@@ -321,10 +335,9 @@ def run_leakage_analysis(run_dir, params, batch=None):
 
     return results
 
-
-# =============================================================================
+# ====================================================================================================
 # STANDALONE ENTRY POINT
-# =============================================================================
+# ====================================================================================================
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
@@ -346,7 +359,7 @@ if __name__ == "__main__":
             params = json.load(f)
     else:
         print("WARNING: run_params.json not found, using empty params dict")
-        print("         Absolute leakage rates will not be available without thermal_power_MW")
+        print("Absolute leakage rates will not be available without thermal_power_MW")
         params = {}
 
     run_leakage_analysis(run_dir, params, batch)

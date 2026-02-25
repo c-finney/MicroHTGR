@@ -1061,7 +1061,7 @@ def run_post_processing(run_dir, params, n_trisos):
     try:
         from burnup_estimation import run_burnup_estimation
         print("Running burnup estimation...")
-        run_burnup_estimation(run_dir, merged_params, n_trisos)
+        run_burnup_estimation(run_dir, merged_params)
     except ImportError as e:
         print(f"Warning: Could not import burnup_estimation: {e}")
     except Exception as e:

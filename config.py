@@ -70,14 +70,14 @@ params = {
         ["fcp2"],
     ],
     # Core Ring Assembly Options:
-    #     "f"              — Fueled assembly with no control rods or burnable poison rods
-    #     "fp"             — Fueled assembly with 6 burnable poison rods on the outer corners of the assembly
-    #     "fpa"            — Fueled assembly with 1 burnable poison rod in the center of the assembly
-    #     "fc1/fc2/fc3"    — Fueled assembly with 1 central control rod with bank number 1, 2, or 3
-    #     "fcp1/fcp2/fcp3" — Fueled assembly with 1 central control rod with bank number 1, 2, or 3 and 6 burnable poison rods on the outer corners of the assembly
-    #     "rr"               Reflector block with no control rods
-    #     "r1/r2/r3"       — Reflector block with 1 central control rod with bank number 1, 2, or 3
-    #     "ra1/ra2/ra3"    — Alt reflector block with 3 control rods in hexagonal ring with bank number 1, 2, or 3 (ONLY WORKS FOR 1/6 GEOMETRY)
+    #    "f"              — Fueled assembly with no control rods or burnable poison rods
+    #    "fp"             — Fueled assembly with 6 burnable poison rods on the outer corners of the assembly
+    #    "fpa"            — Fueled assembly with 1 burnable poison rod in the center of the assembly
+    #    "fc1/fc2/fc3"    — Fueled assembly with 1 central control rod with bank number 1, 2, or 3
+    #    "fcp1/fcp2/fcp3" — Fueled assembly with 1 central control rod with bank number 1, 2, or 3 and 6 burnable poison rods on the outer corners of the assembly
+    #    "rr"             — Reflector block with no control rods
+    #    "r1/r2/r3"       — Reflector block with 1 central control rod with bank number 1, 2, or 3
+    #    "ra1/ra2/ra3"    — Alt reflector block with 3 control rods in hexagonal ring with bank number 1, 2, or 3 (ONLY WORKS FOR 1/6 GEOMETRY)
 
     # ----- Temperature Profile -----
     "coolant_inlet": 573.15,
@@ -113,21 +113,21 @@ params = {
     "depletion_timesteps_days": [10, 10, 10, 30, 30, 30, 60, 60, 60, 120, 120, 120, 120, 120, 120, 180, 180, 180],
     "depletion_integrator": "PredictorIntegrator",
     # Integrator options:
-    #     "PredictorIntegrator" — simplest, one transport solve per step
-    #     "CECMIntegrator"      — CE/CM predictor-corrector (more accurate, 2× cost)
-    #     "CF4Integrator"       — 4th order (most accurate, 4× cost)
-    #     "LEQIIntegrator"      — LE/QI (good accuracy, 2× cost)
+    #    "PredictorIntegrator" — simplest, one transport solve per step
+    #    "CECMIntegrator"      — CE/CM predictor-corrector (more accurate, 2× cost)
+    #    "CF4Integrator"       — 4th order (most accurate, 4× cost)
+    #    "LEQIIntegrator"      — LE/QI (good accuracy, 2× cost)
 
     # ----- Depletion Restart Configuration -----
     "restart_depletion": False, # Set True to restart from last completed step
     "restart_run_dir": "/home/cade/Desktop/OpenMC/SeniorDesign/MicroHTGR_Output/htgr_run_02.23.2026_14.00.15_Depletion", # Path to the original run directory containing depletion_results.h5
     "restart_timesteps_days": [120],  # Remaining timesteps to run (replaces original list)
     # To use restart:
-    #   1. Set restart_depletion = True
-    #   2. Set restart_run_dir to the path of the failed run directory
-    #   3. Set restart_timesteps_days to whatever timesteps remain
-    #   4. Set study_execution_mode = "DepletionStudy"
-    #   5. Run — results will be appended to the existing depletion_results.h5
+    #    1. Set restart_depletion = True
+    #    2. Set restart_run_dir to the path of the failed run directory
+    #    3. Set restart_timesteps_days to whatever timesteps remain
+    #    4. Set study_execution_mode = "DepletionStudy"
+    #    5. Run — results will be appended to the existing depletion_results.h5
 
     # ----- Depletion Nuclide Tracking -----
     "tracked_nuclides": [
@@ -203,8 +203,8 @@ params = {
     "run_post_processing": True,
     "study_execution_mode": "ParametricStudy"
     # Study Execution Mode Options:
-    #     "SingleStudy"     — Singular steady state monte carlo simulation of specified core layout 
-    #     "ParametricStudy" — Creates multiple steady state monte carlo simulations varying a single core parameter
-    #     "ReactivityStudy" — Calculates reactivity coefficients via multiple steady state monte carlo simulations and specified temperature perturbations
-    #     "DepletionStudy"  — Performs depletion run on specified core layout using specified depletion timesteps
+    #    "SingleStudy"     — Singular steady state monte carlo simulation of specified core layout 
+    #    "ParametricStudy" — Creates multiple steady state monte carlo simulations varying a single core parameter
+    #    "ReactivityStudy" — Calculates reactivity coefficients via multiple steady state monte carlo simulations and specified temperature perturbations
+    #    "DepletionStudy"  — Performs depletion run on specified core layout using specified depletion timesteps
 }

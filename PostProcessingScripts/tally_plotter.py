@@ -1,7 +1,15 @@
 """
 Tally Plotter Post-Processing Script
+
 Generates flux and fission rate plots from OpenMC simulation results.
-Fixed for 1/6 geometry support with efficient reconstruction.
+
+Usage:
+    # As a module:
+    from tally_plotter import run_tally_plots
+    run_tally_plots(run_dir, params, batch=None)
+
+    # Standalone:
+    python tally_plotter.py <reactivity_study_directory> <batch=None>
 """
 
 import openmc
@@ -9,7 +17,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 from scipy.interpolate import RegularGridInterpolator
+import sys
+import json
 
+# ====================================================================================================
+# NORMALIZATION FACTOR FUNCTION
+# ====================================================================================================
 
 def get_normalization_factor(sp_path, target_power_MW=15.0):
     """
@@ -42,6 +55,9 @@ def get_normalization_factor(sp_path, target_power_MW=15.0):
 
     return source_per_sec
 
+# ====================================================================================================
+# RECONSTRUCT CORE FROM 1/6 WEDGE
+# ====================================================================================================
 
 def reconstruct_full_core_vectorized(data_wedge, mesh, core_radius):
     """
@@ -125,6 +141,9 @@ def reconstruct_full_core_vectorized(data_wedge, mesh, core_radius):
     
     return data_full, x_full, y_full
 
+# ====================================================================================================
+# PLOTTING FUNCTION FOR CORE XY CROSS-SECTIONS
+# ====================================================================================================
 
 def plot_xy_slice(run_dir, batch, z_index, is_wedge=False, reconstruct=False, 
                   target_power_MW=15.0, core_radius=90.0, n_ax_zones=50):
@@ -259,6 +278,9 @@ def plot_xy_slice(run_dir, batch, z_index, is_wedge=False, reconstruct=False,
     plt.close()
     print(f"Saved: {save_path}")
 
+# ====================================================================================================
+# PLOTTING FUNCTION FOR AXIAL FLUX AND FISSION RATE PROFILES
+# ====================================================================================================
 
 def plot_axial_profile(run_dir, batch, is_wedge=False, target_power_MW=15.0):
     """
@@ -336,6 +358,9 @@ def plot_axial_profile(run_dir, batch, is_wedge=False, target_power_MW=15.0):
     plt.close()
     print(f"Saved: {save_path}")
 
+# ====================================================================================================
+# PLOTTING FUNCTION FOR CORE RZ CROSS-SECTIONS
+# ====================================================================================================
 
 def plot_rz_crosssection(run_dir, batch, angle_deg=0, is_wedge=False, 
                          target_power_MW=15.0, include_reflector=True):
@@ -464,6 +489,9 @@ def plot_rz_crosssection(run_dir, batch, angle_deg=0, is_wedge=False,
     plt.close()
     print(f"Saved: {save_path}")
 
+# ====================================================================================================
+# EXTRACT AND SAVE GLOBAL RATES
+# ====================================================================================================
 
 def print_global_rates(run_dir, batch, is_wedge=False, target_power_MW=15.0):
     """
@@ -546,6 +574,10 @@ def print_global_rates(run_dir, batch, is_wedge=False, target_power_MW=15.0):
         f.write('\n'.join(output))
     print(f"Saved: {save_path}")
 
+# ====================================================================================================
+# MAIN TALLY PLOTTING FUNCTION
+# ====================================================================================================
+
 def run_tally_plots(run_dir, params, batch=None):
     """
     Run all tally plotting for a simulation.
@@ -619,6 +651,10 @@ def run_tally_plots(run_dir, params, batch=None):
     print("TALLY PLOTTING COMPLETE")
     print(f"{'='*80}\n")
 
+# ====================================================================================================
+# LOAD PARAMATERS FROM JSON FILE
+# ====================================================================================================
+
 def load_params_from_run_dir(run_dir):
     """
     Load parameters from run_params.json in the run directory.
@@ -626,7 +662,6 @@ def load_params_from_run_dir(run_dir):
     Returns:
         dict: Parameters, or None if not found
     """
-    import json
     
     params_path = os.path.join(run_dir, 'run_params.json')
     
@@ -638,6 +673,10 @@ def load_params_from_run_dir(run_dir):
         return params
     
     return None
+
+# ====================================================================================================
+# CORE GEOMETRY DETECTION FUNCTION (BACKUP IF PARAMS CANNOT BE EXTRACTED FROM JSON)
+# ====================================================================================================
 
 def detect_geometry_from_statepoint(run_dir, batch=None):
     """
@@ -682,10 +721,11 @@ def detect_geometry_from_statepoint(run_dir, batch=None):
         "n_ax_zones": n_ax_zones
     }
 
+# ====================================================================================================
+# STANDALONE ENTRY POINT
+# ====================================================================================================
 
 if __name__ == "__main__":
-    import sys
-    
     if len(sys.argv) < 2:
         print("Usage: python tally_plotter.py <run_directory> [batch_number]")
         print("\nThe script will load parameters from run_params.json in the run directory.")

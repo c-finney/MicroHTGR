@@ -1,15 +1,28 @@
 """
 Burnup Estimation Post-Processing Script
+
 Estimates fuel cycle length and extracts k_eff and leakage fraction from statepoint files.
+
+Usage:
+    from burnup_estimation import run_burnup_estimation
+    run_burnup_estimation(run_dir, params)
+
+    # Standalone:
+    python burnup_estimation.py <reactivity_study_directory>
 """
 
 import openmc
 import numpy as np
 import os
 import glob
+import sys
+import json
 
+# ====================================================================================================
+# PERFORM BURNUP ANALYSIS AND SAVE RESULTS
+# ====================================================================================================
 
-def run_burnup_estimation(run_dir, params, n_trisos=None, burnup_limit=160_000, batch_number=None):
+def run_burnup_estimation(run_dir, params, burnup_limit=160_000):
     """
     Estimate fuel cycle length and extract simulation results.
     
@@ -19,9 +32,7 @@ def run_burnup_estimation(run_dir, params, n_trisos=None, burnup_limit=160_000, 
     Args:
         run_dir: Directory containing simulation results
         params: Dictionary of reactor parameters
-        n_trisos: Number of TRISO particles (optional, for legacy compatibility)
         burnup_limit: Maximum burnup limit in MWd/MtU (default 160,000)
-        batch_number: Batch number for statepoint file (auto-detected if None)
     
     Returns:
         dict: Dictionary containing all calculated values
@@ -31,9 +42,9 @@ def run_burnup_estimation(run_dir, params, n_trisos=None, burnup_limit=160_000, 
     print("SIMULATION RESULTS EXTRACTION")
     print(f"{'='*80}")
     
-    # =========================================================================
-    # EXTRACT k_eff AND LEAKAGE FROM OUTPUT FILE
-    # =========================================================================
+    # ================================================================================
+    # 1. EXTRACT K-EFFECTIVE AND LEAKAGE FRACTION FROM OUTPUT FILE
+    # ================================================================================
 
     keff = None
     keff_std = None
@@ -75,9 +86,9 @@ def run_burnup_estimation(run_dir, params, n_trisos=None, burnup_limit=160_000, 
     print(f"   k-effective: {keff:.5f} ± {keff_std:.5f}")
     print(f"   Leakage fraction: {leakage_fraction:.5f} ± {leakage_std:.5f} ({leakage_fraction*100:.2f}%)")
     
-    # =========================================================================
-    # GET URANIUM MASS FROM OPENMC VOLUME CALCULATION
-    # =========================================================================
+    # ================================================================================
+    # 2. GET URANIUM MASS FROM OPENMC VOLUME CALCULATION
+    # ================================================================================
     
     import warnings
     
@@ -142,9 +153,9 @@ def run_burnup_estimation(run_dir, params, n_trisos=None, burnup_limit=160_000, 
     # Reset warnings
     warnings.filterwarnings('default', category=openmc.IDWarning)
     
-    # =========================================================================
-    # CHECK IF WE HAVE MASS DATA - EARLY EXIT IF NOT
-    # =========================================================================
+    # ================================================================================
+    # 3. CHECK FOR HAVE MASS DATA (PERFORM EARLY EXIT IF NOT PRESENT)
+    # ================================================================================
     
     # If we couldn't extract mass directly, inform user and exit early
     if total_HM_mass_kg is None or total_HM_mass_kg <= 0:
@@ -184,9 +195,9 @@ def run_burnup_estimation(run_dir, params, n_trisos=None, burnup_limit=160_000, 
     print("FUEL CYCLE LENGTH ESTIMATE")
     print(f"{'='*80}")
     
-    # =========================================================================
-    # 3. CALCULATE FUEL CYCLE LENGTH
-    # =========================================================================
+    # ================================================================================
+    # 4. CALCULATE ESTIMATED FUEL CYCLE LENGTH
+    # ================================================================================
     
     max_burnup_MWd_per_MtU = burnup_limit
     thermal_power_MW = params.get("thermal_power", 15)
@@ -213,9 +224,9 @@ def run_burnup_estimation(run_dir, params, n_trisos=None, burnup_limit=160_000, 
     print(f"Cycle length (90% capacity factor):")
     print(f"   {cycle_length_days_90pct:.1f} days ({cycle_length_years_90pct:.2f} years)")
     
-    # =========================================================================
-    # 4. SPECIFIC POWER DENSITY
-    # =========================================================================
+    # ================================================================================
+    # 5. SPECIFIC POWER DENSITY
+    # ================================================================================
     
     specific_power_kW_per_kgU = (thermal_power_MW * 1000) / total_HM_mass_kg
     
@@ -224,9 +235,9 @@ def run_burnup_estimation(run_dir, params, n_trisos=None, burnup_limit=160_000, 
     
     print(f"{'='*80}")
     
-    # =========================================================================
-    # 5. CALCULATE KERNEL PROPERTIES AND TRISO COUNT
-    # =========================================================================
+    # ================================================================================
+    # 6. CALCULATE KERNEL PROPERTIES AND TRISO COUNT
+    # ================================================================================
     
     # Calculate mass per kernel
     kernel_radius_cm = params.get('kernel_radius', 2.125e-2)  # cm
@@ -246,9 +257,9 @@ def run_burnup_estimation(run_dir, params, n_trisos=None, burnup_limit=160_000, 
     print(f"  Total TRISO particles: {total_trisos_full_core:,}")
     print(f"{'='*80}\n")
     
-    # =========================================================================
-    # 6. SAVE RESULTS TO FILE
-    # =========================================================================
+    # ================================================================================
+    # 7. SAVE RESULTS TO TEXT FILE
+    # ================================================================================
     
     results_file = os.path.join(run_dir, 'simulation_results.txt')
     with open(results_file, 'w') as f:
@@ -286,7 +297,10 @@ def run_burnup_estimation(run_dir, params, n_trisos=None, burnup_limit=160_000, 
     
     print(f"Results saved to: {results_file}\n")
     
-    # Return all calculated values
+    # ================================================================================
+    # 8. RETURN ALL CALCULATED RESULTS
+    # ================================================================================
+
     return {
         'keff': keff,
         'keff_std': keff_std,
@@ -299,12 +313,11 @@ def run_burnup_estimation(run_dir, params, n_trisos=None, burnup_limit=160_000, 
         'specific_power_kW_per_kgU': specific_power_kW_per_kgU
     }
 
+# ====================================================================================================
+# STANDALONE ENTRY POINT
+# ====================================================================================================
 
 if __name__ == "__main__":
-    # Standalone usage
-    import sys
-    import json
-    
     if len(sys.argv) < 2:
         print("Usage: python burnup_estimation.py <run_directory>")
         print("\nThe script will load parameters from run_params.json in the run directory.")

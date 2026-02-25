@@ -2,11 +2,11 @@
 Depletion Post-Processing Script
 
 Extracts and plots results from OpenMC depletion simulations:
-  - k_eff vs. burnup and time
-  - Nuclide inventories vs. burnup (driven by params["tracked_nuclides"])
-  - Discharge burnup / cycle length estimates
-  - Fissile inventory ratios
-  - B-10 burnout from burnable poison material
+ - k_eff vs. burnup/time
+ - Nuclide inventories vs. burnup (driven by params["tracked_nuclides"])
+ - Discharge burnup and cycle length estimates
+ - Fissile inventory ratios
+ - B-10 burnout from burnable poison material
 
 Usage:
     # As a module:
@@ -38,6 +38,10 @@ DEFAULT_PLOT_GROUPS = {
     "Kr FPs":               ["Kr83"],
     "Burnable Poison":      ["B10"],
 }
+
+# ====================================================================================================
+# FIND MATERIAL IDS
+# ====================================================================================================
 
 def _find_material_id(results, params, mat_key, search_nuclide, label):
     """
@@ -85,6 +89,10 @@ def _find_material_id(results, params, mat_key, search_nuclide, label):
     print(f"   WARNING: Could not locate {label} material in depletion results")
     return None
 
+# ====================================================================================================
+# NUCLIDE DATA EXTRACTION
+# ====================================================================================================
+
 def _extract_nuclide_inventories(results, mat_id, nuclide_list, label):
     """
     Extract atom inventories for a list of nuclides from a single material.
@@ -119,6 +127,10 @@ def _extract_nuclide_inventories(results, mat_id, nuclide_list, label):
     print(f"   [{label}] Extracted {len(nuclide_data)} / {len(nuclide_list)} nuclides")
     return nuclide_data
 
+# ====================================================================================================
+# PERFORM DEPLETION ANALYSIS PLOTTING AND SAVE RESULTS
+# ====================================================================================================
+
 def run_depletion_postprocessing(run_dir, params):
     """
     Run full depletion post-processing.
@@ -148,9 +160,9 @@ def run_depletion_postprocessing(run_dir, params):
 
     results = openmc.deplete.Results(results_path)
 
-    # ==================================================================
-    # 1. k-effective vs time / burnup
-    # ==================================================================
+    # ================================================================================
+    # 1. K-EFFECTIVE VS. TIME/BURNUP
+    # ================================================================================
 
     time_steps, keff_values = results.get_keff()
 
@@ -182,9 +194,9 @@ def run_depletion_postprocessing(run_dir, params):
     x_label       = "Burnup (MWd/MtU)"  if burnup_MWd_per_MtU is not None else "Time (days)"
     x_label_short = "burnup"            if burnup_MWd_per_MtU is not None else "time"
 
-    # ==================================================================
-    # 2. Discharge burnup (k_eff crosses 1.0)
-    # ==================================================================
+    # ================================================================================
+    # 2. DISCHARGE BURNUP (k_eff crosses 1.0)
+    # ================================================================================
 
     discharge_burnup     = None
     discharge_time_days  = None
@@ -201,9 +213,9 @@ def run_depletion_postprocessing(run_dir, params):
                 )
             break
 
-    # ==================================================================
-    # 3. Locate materials and extract nuclide inventories
-    # ==================================================================
+    # ================================================================================
+    # 3. LOCATE MATERIALS AND EXTRACT NUCLIDE INVENTORIES
+    # ================================================================================
 
     print("\n   Locating materials in depletion results...")
 
@@ -231,9 +243,9 @@ def run_depletion_postprocessing(run_dir, params):
         all_nuclide_data[f"{nuc}_poison"] = atoms  # keep separate key
         all_nuclide_data[nuc] = atoms               # also overwrite top-level with poison value
 
-    # ==================================================================
-    # 4. Print summary
-    # ==================================================================
+    # ================================================================================
+    # 4. PRINT SUMMARY
+    # ================================================================================
 
     print(f"\n{'─' * 60}")
     print("  DEPLETION RESULTS SUMMARY")
@@ -274,9 +286,9 @@ def run_depletion_postprocessing(run_dir, params):
 
     print(f"{'─' * 60}")
 
-    # ==================================================================
-    # 5. Generate plots
-    # ==================================================================
+    # ================================================================================
+    # 5. PLOTTING
+    # ================================================================================
 
     print("\nGenerating depletion plots...")
 
@@ -398,9 +410,9 @@ def run_depletion_postprocessing(run_dir, params):
         plt.close()
         print(f"  Saved: depletion_B10_burnout.png")
 
-    # ==================================================================
-    # 6. Save results
-    # ==================================================================
+    # ================================================================================
+    # 6. SAVE RESULTS
+    # ================================================================================
 
     summary = {
         "n_steps":                       len(keff_mean),
@@ -424,7 +436,8 @@ def run_depletion_postprocessing(run_dir, params):
     with open(os.path.join(run_dir, "depletion_summary.json"), "w") as f:
         json.dump(summary, f, indent=2, default=float)
 
-    # CSV
+    # ----- CSV Report -----
+
     header = "time_days,time_years,keff,keff_std"
     cols   = [time_days, time_years, keff_mean, keff_std]
     if burnup_MWd_per_MtU is not None:
@@ -433,7 +446,8 @@ def run_depletion_postprocessing(run_dir, params):
     np.savetxt(os.path.join(run_dir, "depletion_keff_data.csv"),
                np.column_stack(cols), delimiter=",", header=header, comments="")
 
-    # Text report
+    # ----- Text Report -----
+
     txt_path = os.path.join(run_dir, "depletion_results.txt")
     with open(txt_path, "w") as f:
         f.write("=" * 80 + "\n")
@@ -467,7 +481,7 @@ def run_depletion_postprocessing(run_dir, params):
                 f.write(f"  {burnup_MWd_per_MtU[i]:>18.0f}")
             f.write("\n")
 
-        # Isotopic summary — fuel
+        # Isotopic summary — Fuel
         f.write("\n" + "=" * 80 + "\n")
         f.write("FUEL ISOTOPIC INVENTORY SUMMARY (atoms)\n")
         f.write("=" * 80 + "\n")
@@ -480,7 +494,7 @@ def run_depletion_postprocessing(run_dir, params):
                 pct     = (final - initial) / initial * 100 if initial > 0 else float('nan')
                 f.write(f"{nuc:<12}  {initial:>16.4e}  {final:>16.4e}  {pct:>+12.2f}%\n")
 
-        # Isotopic summary — poison
+        # Isotopic summary — Poison
         if poison_data:
             f.write("\n" + "=" * 80 + "\n")
             f.write("BURNABLE POISON ISOTOPIC INVENTORY SUMMARY (atoms)\n")
@@ -501,6 +515,10 @@ def run_depletion_postprocessing(run_dir, params):
     print(f"{'=' * 80}\n")
 
     return summary
+
+# ====================================================================================================
+# NUCLIDE GROUP PLOTTING
+# ====================================================================================================
 
 def _plot_nuclide_group(x_data, x_label, nuclide_data, nuclide_list,
                         title, run_dir, filename_base):
@@ -529,9 +547,9 @@ def _plot_nuclide_group(x_data, x_label, nuclide_data, nuclide_list,
     plt.close()
     print(f"  Saved: {save_path}")
 
-# ===========================================================================
-# Standalone entry point
-# ===========================================================================
+# ====================================================================================================
+# STANDALONE ENTRY POINT
+# ====================================================================================================
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
