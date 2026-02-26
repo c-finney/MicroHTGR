@@ -70,6 +70,7 @@ def _find_material_id(results, params, mat_key, search_nuclide, label):
     Returns:
         str or None: material ID string, or None if not found
     """
+
     # Option 1 — saved ID from run_params.json
     if mat_key in params:
         mat_id = str(params[mat_key])
@@ -116,6 +117,7 @@ def _extract_nuclide_inventories(results, mat_id, nuclide_list, label):
         dict: {nuclide_name: np.ndarray of atom counts per timestep}
               Only nuclides with at least one nonzero value are included.
     """
+
     if mat_id is None:
         return {}
 
@@ -137,6 +139,87 @@ def _extract_nuclide_inventories(results, mat_id, nuclide_list, label):
     return nuclide_data
 
 # ====================================================================================================
+# NUCLIDE INVENTORY CSV EXPORT
+# ====================================================================================================
+
+def save_nuclide_inventory_csv(run_dir, time_days, time_years, burnup_MWd_per_MtU, fuel_data, poison_data):
+    """
+    Save per-timestep nuclide atom inventories to CSV files.
+
+    Writes two files:
+      - nuclide_inventory_fuel.csv   — one column per fuel nuclide, rows = timesteps
+      - nuclide_inventory_poison.csv — one column per poison nuclide, rows = timesteps
+                                       (only if poison_data is non-empty)
+
+    Index columns in both files:
+      step, time_days, time_years[, burnup_MWd_per_MtU]
+
+    Args:
+        run_dir             : output directory
+        time_days           : np.ndarray, shape (n_steps,)
+        time_years          : np.ndarray, shape (n_steps,)
+        burnup_MWd_per_MtU  : np.ndarray or None
+        fuel_data           : dict {nuclide: np.ndarray}
+        poison_data         : dict {nuclide: np.ndarray}
+
+    Returns:
+        list of str: paths of files written
+    """
+
+    n_steps   = len(time_days)
+    steps_col = np.arange(n_steps)
+
+    # Build common index columns and header prefix
+    index_cols   = [steps_col, time_days, time_years]
+    index_header = "step,time_days,time_years"
+    if burnup_MWd_per_MtU is not None:
+        index_cols.append(burnup_MWd_per_MtU)
+        index_header += ",burnup_MWd_per_MtU"
+
+    written = []
+
+    for label, data, filename in [
+        ("Fuel",           fuel_data,   "nuclide_inventory_fuel.csv"),
+        ("Burnable Poison", poison_data, "nuclide_inventory_poison.csv"),
+    ]:
+        if not data:
+            print(f"  [{label}] No nuclide data to export, skipping {filename}")
+            continue
+
+        # Align all arrays to n_steps (trim if a nuclide array is longer)
+        nuclides = sorted(data.keys())
+        nuc_cols = []
+        for nuc in nuclides:
+            arr = data[nuc]
+            if len(arr) >= n_steps:
+                nuc_cols.append(arr[:n_steps])
+            else:
+                # Pad with NaN if shorter (shouldn't happen, but be safe)
+                padded = np.full(n_steps, np.nan)
+                padded[:len(arr)] = arr
+                nuc_cols.append(padded)
+                print(f"  [{label}] WARNING: {nuc} has {len(arr)} steps vs {n_steps}; padded with NaN")
+
+        all_cols  = index_cols + nuc_cols
+        header    = index_header + "," + ",".join(nuclides)
+        out_path  = os.path.join(run_dir, filename)
+
+        np.savetxt(
+            out_path,
+            np.column_stack(all_cols),
+            delimiter=",",
+            header=header,
+            comments="",
+            fmt=["%.0f", "%.6f", "%.8f"] + (["%.4f"] if burnup_MWd_per_MtU is not None else []) + ["%.6e"] * len(nuclides),
+        )
+
+        print(f"  [{label}] Nuclide inventory saved → {out_path}  "
+              f"({n_steps} steps × {len(nuclides)} nuclides)")
+        written.append(out_path)
+
+    return written
+
+# ====================================================================================================
 # PERFORM DEPLETION ANALYSIS PLOTTING AND SAVE RESULTS
 # ====================================================================================================
 
@@ -155,6 +238,7 @@ def run_depletion_postprocessing(run_dir, params):
     -------
     dict : Summary results.
     """
+
     import openmc.deplete
 
     print(f"\n{'=' * 80}")
@@ -448,7 +532,7 @@ def run_depletion_postprocessing(run_dir, params):
     with open(os.path.join(run_dir, "depletion_summary.json"), "w") as f:
         json.dump(summary, f, indent=2, default=float)
 
-    # ----- CSV Report -----
+    # ----- k-eff CSV Report -----
 
     header = "time_days,time_years,keff,keff_std"
     cols   = [time_days, time_years, keff_mean, keff_std]
@@ -457,6 +541,14 @@ def run_depletion_postprocessing(run_dir, params):
         cols.append(burnup_MWd_per_MtU)
     np.savetxt(os.path.join(run_dir, "depletion_keff_data.csv"),
                np.column_stack(cols), delimiter=",", header=header, comments="")
+
+    # ----- Nuclide Inventory CSV Report -----
+
+    print("\nExporting nuclide inventory CSVs...")
+    save_nuclide_inventory_csv(
+        run_dir, time_days, time_years, burnup_MWd_per_MtU,
+        fuel_data, poison_data
+    )
 
     # ----- Text Report -----
 
@@ -532,8 +624,7 @@ def run_depletion_postprocessing(run_dir, params):
 # NUCLIDE GROUP PLOTTING
 # ====================================================================================================
 
-def _plot_nuclide_group(x_data, x_label, nuclide_data, nuclide_list,
-                        title, run_dir, filename_base):
+def _plot_nuclide_group(x_data, x_label, nuclide_data, nuclide_list, title, run_dir, filename_base):
     available = [
         n for n in nuclide_list
         if n in nuclide_data and np.any(nuclide_data[n] > 0)

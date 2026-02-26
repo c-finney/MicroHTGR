@@ -42,7 +42,7 @@ params = {
     "core_height": 237.9,
     "reflector_thickness": 79.3, 
     "n_ax_zones": 50,
-    "use_1/6_geometry": False,
+    "use_1/6_geometry": True,
 
     # ----- Burnable Poison -----
     "B10_enrichment_poison": 0.3,
@@ -64,10 +64,10 @@ params = {
 
     # ----- Core Layout -----
     "core_rings": [
-        ["r3", "f", "f"] + ["r1", "f", "f"] + ["r3", "f", "f"] * 4,
+        ["r3", "f", "f"] * 6,
         ["f", "fc2"] * 6,
         ["fpa"] * 6,
-        ["fcp2"],
+        ["fcp1"],
     ],
     # Core Ring Assembly Options:
     #    "f"              — Fueled assembly with no control rods or burnable poison rods
@@ -91,8 +91,8 @@ params = {
 
     # ----- Tally Configuration -----
     "use_global_tallies": True,
-    "use_mesh_tallies": False,
-    "use_leakage_tallies": False,
+    "use_mesh_tallies": True,
+    "use_leakage_tallies": True,
 
     # ----- OpenMC Monte Carlo Settings -----
     "total_batches": 50,
@@ -100,7 +100,7 @@ params = {
     "particles": 100_000,
 
     # ----- Stochastic Volume Calculation Settings -----
-    "calculate_fuel_volume": False,
+    "calculate_fuel_volume": True,
     "volume_samples": 1_000_000_000,
 
     # ----- Parametric Study Configuration -----
@@ -112,11 +112,11 @@ params = {
     "reactivity_coefficients": ["FTC", "MTC", "ITC"],
 
     # ----- Depletion Study Configuration -----
-    "thermal_power_MW": 15.0,
-    "depletion_chain_file": "/home/cade/Desktop/OpenMC/CrossSections/chain_endfb81_thermal.xml",
-    # "depletion_chain_file": "/home/cade/Desktop/OpenMC/CrossSections/chain_casl_pwr.xml",
+    "thermal_power_MW": 10.0,
+    # "depletion_chain_file": "/home/cade/Desktop/OpenMC/CrossSections/chain_endfb81_thermal.xml",
+    "depletion_chain_file": "/home/cade/Desktop/OpenMC/CrossSections/chain_casl_pwr.xml",
     "use_reduced_chain_file": True,
-    "depletion_timesteps_days": [10, 10, 10, 30, 30, 30, 60, 60, 60, 120, 120, 120, 120],
+    "depletion_timesteps_days": [10, 10, 10, 30, 30, 30, 60, 60, 60, 120, 120, 120, 120, 120, 120],
     "depletion_integrator": "PredictorIntegrator",
     # Integrator options:
     #    "PredictorIntegrator" — simplest, one transport solve per step
@@ -206,8 +206,8 @@ params = {
     },
 
     # ----- Study Execution Mode Configuration -----
-    "run_post_processing": False,
-    "study_execution_mode": "ParametricStudy"
+    "run_post_processing": True,
+    "study_execution_mode": "DepletionStudy"
     # Study Execution Mode Options:
     #    "SingleStudy"     — Singular steady state monte carlo simulation of specified core layout 
     #    "ParametricStudy" — Creates multiple steady state monte carlo simulations varying a single core parameter
