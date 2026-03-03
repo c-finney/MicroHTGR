@@ -169,7 +169,7 @@ def build_model(params, run_dir):
     # CREATE ASSEMBLIES
     # ==================================================================
 
-    assemblies, m_colors, bundle_pitch = asm.create_assembly_univs(
+    assemblies, m_colors, bundle_pitch, = asm.create_assembly_univs(
         params = params,
         mats = mats,
         T_coolant_z = T_coolant_z,
@@ -377,16 +377,13 @@ def build_model(params, run_dir):
         flux_spectrum_tally.scores = ["flux"]
         flux_spectrum_tally.filters = [energy_filter]
 
-        fission_tally = openmc.Tally(name="fission")
-        fission_tally.scores = ["fission"]
-
         heating_tally = openmc.Tally(name="heating")
         heating_tally.scores = ["heating-local"]
         
         global_tally = openmc.Tally(name='global_rates')
         global_tally.scores = ['flux', 'fission', 'nu-fission']
 
-        tallies += [flux_spectrum_tally, fission_tally, heating_tally, global_tally]
+        tallies += [flux_spectrum_tally, heating_tally, global_tally]
 
     # ----- Mesh Tallies -----
 
@@ -414,7 +411,12 @@ def build_model(params, run_dir):
 
         mesh_tally_active = openmc.Tally(name='mesh_rates')
         mesh_tally_active.filters = [mesh_filter]
-        mesh_tally_active.scores = ['flux', 'fission', 'nu-fission']
+        mesh_tally_active.scores = ['flux', 'fission']
+
+        # ----- Heating Mesh Tally (active core only) -----
+        mesh_heating_tally = openmc.Tally(name='mesh_heating')
+        mesh_heating_tally.filters = [mesh_filter]
+        mesh_heating_tally.scores = ['heating-local']
 
         n_reflector_zones = 33
         n_total_zones = n_reflector_zones + params["n_ax_zones"] + n_reflector_zones
@@ -429,9 +431,14 @@ def build_model(params, run_dir):
 
         mesh_tally_full = openmc.Tally(name='mesh_rates_full')
         mesh_tally_full.filters = [mesh_full_filter]
-        mesh_tally_full.scores = ['flux', 'fission', 'nu-fission']
+        mesh_tally_full.scores = ['flux', 'fission']
 
-        tallies += [mesh_tally_active, mesh_tally_full]
+        # ----- Heating Mesh Tally (full core with reflectors) -----
+        mesh_heating_tally_full = openmc.Tally(name='mesh_heating_full')
+        mesh_heating_tally_full.filters = [mesh_full_filter]
+        mesh_heating_tally_full.scores = ['heating-local']
+
+        tallies += [mesh_tally_active, mesh_heating_tally, mesh_tally_full, mesh_heating_tally_full]
 
     # ----- Leakage Spectrum Tallies -----
 
@@ -1075,6 +1082,15 @@ def run_post_processing(run_dir, params, n_trisos):
         print(f"Warning: Could not import leakage_spectrum: {e}")
     except Exception as e:
         print(f"Warning: Leakage spectrum analysis failed: {e}")
+
+    try:
+        from heating_profile_extraction import run_heating_profile_extraction
+        print("Running heating profile extraction...")
+        run_heating_profile_extraction(run_dir, merged_params)
+    except ImportError as e:
+        print(f"Warning: Could not import heating_profile_extraction: {e}")
+    except Exception as e:
+        print(f"Warning: Heating profile extraction failed: {e}")
 
     print(f"{'='*80}")
     print("POST-PROCESSING COMPLETE")

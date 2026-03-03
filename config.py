@@ -6,8 +6,8 @@
 
 params = {
     # ----- Fuel Kernel -----
-    "fuel_type": "UCO",                        # No other fuel forms currently modeled yet
-    "enrichment": 0.1975,                      # U-235 atom fraction
+    "fuel_type": "UCO",           # No other fuel forms currently modeled yet
+    "enrichment": 0.1975,         # U-235 atom fraction
     "kernel_radius": 0.021485,
     "kernel_density": 10820, 
 
@@ -23,10 +23,9 @@ params = {
     # ----- Fuel Compact  -----
     "compact_radius": 0.635,
     "compact_height": 4.93,
-    "triso_pf": 0.30,                          # Packing fraction of triso particles in fuel compact
+    "triso_pf": 0.30,           # Packing fraction of triso particles in fuel compact
 
     # ----- Coolant Channel -----
-    "n_coolant_channels_per_block": 18,        # Number of coolant channels per assembly
     "coolant_radius": 0.8,
     "coolant_density": 2.873, 
 
@@ -50,13 +49,13 @@ params = {
     "B4C_density_poison": 2380,
 
     # ----- Control Rods -----
-    "control_radius": 2.54,                    # Radius for reflector assembly control rods
-    "fuel_assembly_control_radius": 2.54,      # Radius for circular control rods in fuel assemblies
+    "control_radius": 2.54,                  # Radius for reflector assembly control rods
+    "fuel_assembly_control_radius": 2.54,    # Radius for circular control rods in fuel assemblies
     "sheath_thickness": 0.1, 
     "guide_tube_thickness": 0.2,  
-    "bank_1_insertion": 0.0,                   # Fractional control rod insertion for bank 1 (0-1.0)
-    "bank_2_insertion": 0.0,                   # Fractional control rod insertion for bank 2 (0-1.0)
-    "bank_3_insertion": 0.0,                   # Fractional control rod insertion for bank 3 (0-1.0)
+    "bank_1_insertion": 0.76,                 # Fractional control rod insertion for bank 1 (0-1.0)
+    "bank_2_insertion": 0.76,                 # Fractional control rod insertion for bank 2 (0-1.0)
+    "bank_3_insertion": 0.76,                 # Fractional control rod insertion for bank 3 (0-1.0)
     "B10_enrichment_control": 0.6,
     "B10_wt_percent_control": 0.001,
     "B4C_density_control": 2380,
@@ -95,8 +94,8 @@ params = {
     "use_leakage_tallies": True,
 
     # ----- OpenMC Monte Carlo Settings -----
-    "total_batches": 50,
-    "inactive_batches": 25,
+    "total_batches": 20,
+    "inactive_batches": 10,
     "particles": 100_000,
 
     # ----- Stochastic Volume Calculation Settings -----
@@ -104,15 +103,15 @@ params = {
     "volume_samples": 1_000_000_000,
 
     # ----- Parametric Study Configuration -----
-    "parametric_param": "bank_1_insertion",
-    "parametric_values": [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
+    "parametric_param": "compact_radius",
+    "parametric_values": [0.635, 0.6175, 0.6, 0.5825, 0.565, 0.5475, 0.53, 0.5125, 0.495, 0.4775, 0.46],
 
     # ----- Reactivity Coefficient Study Configuration -----
     "reactivity_delta_T_values": [50.0, 100.0, 150.0],
     "reactivity_coefficients": ["FTC", "MTC", "ITC"],
 
     # ----- Depletion Study Configuration -----
-    "thermal_power_MW": 10.0,
+    "thermal_power_MW": 15.0,
     # "depletion_chain_file": "/home/cade/Desktop/OpenMC/CrossSections/chain_endfb81_thermal.xml",
     "depletion_chain_file": "/home/cade/Desktop/OpenMC/CrossSections/chain_casl_pwr.xml",
     "use_reduced_chain_file": True,
@@ -125,9 +124,9 @@ params = {
     #    "LEQIIntegrator"      — LE/QI (good accuracy, 2× cost)
 
     # ----- Depletion Restart Configuration -----
-    "restart_depletion": False, # Set True to restart from last completed step
-    "restart_run_dir": "/home/cade/Desktop/OpenMC/SeniorDesign/MicroHTGR_Output/htgr_run_02.23.2026_14.00.15_Depletion", # Path to the original run directory containing depletion_results.h5
-    "restart_timesteps_days": [120],  # Remaining timesteps to run (replaces original list)
+    "restart_depletion": False,
+    "restart_run_dir": "/home/cade/Desktop/OpenMC/SeniorDesign/MicroHTGR_Output/htgr_run_02.23.2026_14.00.15_Depletion",
+    "restart_timesteps_days": [120], # Remaining timesteps to run (replaces original list)
     # To use restart:
     #    1. Set restart_depletion = True
     #    2. Set restart_run_dir to the path of the failed run directory
@@ -178,7 +177,7 @@ params = {
         # --- Burnable Poison ---
         "B10",
     ],
-    "poison_tracked_nuclides": ["B10"], # Nuclides to search for in the burnable poison material exclusively
+    "poison_tracked_nuclides": ["B10"],    # Nuclides to search for in the burnable poison material exclusively
 
     # ----- Depletion Post-Processing Plot Groups -----
     "depletion_plot_groups": {
@@ -206,11 +205,12 @@ params = {
     },
 
     # ----- Study Execution Mode Configuration -----
-    "run_post_processing": True,
-    "study_execution_mode": "DepletionStudy"
+    "study_execution_mode": "SingleStudy",
     # Study Execution Mode Options:
     #    "SingleStudy"     — Singular steady state monte carlo simulation of specified core layout 
     #    "ParametricStudy" — Creates multiple steady state monte carlo simulations varying a single core parameter
     #    "ReactivityStudy" — Calculates reactivity coefficients via multiple steady state monte carlo simulations and specified temperature perturbations
     #    "DepletionStudy"  — Performs depletion run on specified core layout using specified depletion timesteps
+    "run_post_processing": True, # Note this controls individual study post-processing for ParametricStudy runs as parametric post-processing is always run
+
 }

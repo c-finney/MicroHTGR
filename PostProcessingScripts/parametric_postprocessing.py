@@ -134,6 +134,9 @@ def run_parametric_postprocessing(parametric_dir, batch_number=None):
     print(f"{'='*80}")
     print(f"Directory: {parametric_dir}")
     
+    POSTPROCESSING_RESULTS_DIR = os.path.join(parametric_dir, "parametric_study_results")
+    os.makedirs(POSTPROCESSING_RESULTS_DIR, exist_ok=True)
+
     # Find all case directories
     case_dirs = []
     for item in os.listdir(parametric_dir):
@@ -196,11 +199,11 @@ def run_parametric_postprocessing(parametric_dir, batch_number=None):
     df = df.sort_values('parameter_value')
     
     # Save to CSV
-    output_csv = os.path.join(parametric_dir, 'parametric_study_results.csv')
+    output_csv = os.path.join(POSTPROCESSING_RESULTS_DIR, 'parametric_study_results.csv')
     df.to_csv(output_csv, index=False)
     
     # Generate plots
-    generate_parametric_plots(df, parametric_dir)
+    generate_parametric_plots(df, POSTPROCESSING_RESULTS_DIR)
     
     # Print summary
     print(f"\n{'='*80}")

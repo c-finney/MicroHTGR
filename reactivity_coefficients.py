@@ -1,100 +1,125 @@
 """
 Reactivity Coefficient Calculation via Direct Perturbation Method
 
-Calculates:
-  - Fuel Temperature Coefficient (FTC): perturbs compact temperatures only
-  - Moderator Temperature Coefficient (MTC): perturbs graphite matrix + reflector temperatures only
-  - Isothermal Temperature Coefficient (ITC): perturbs all temperatures uniformly
+Calculates the following temperature reactivity coefficients:
+  - Fuel Temperature Coefficient (FTC / Doppler coefficient)
+  - Moderator Temperature Coefficient (MTC)
+  - Isothermal Temperature Coefficient (ITC)
 
-Method:
-  For each coefficient, the simulation is run at T_ref ± ΔT. The reactivity
-  coefficient is then computed via central difference:
-
-      α = (ρ₊ - ρ₋) / (T₊ - T₋)      [pcm/K]
-
-  where ρ = (k - 1) / k × 10⁵
+Method: For each coefficient, the simulation is re-run at perturbed temperatures
+and the reactivity difference is computed as:
+    α = Δρ / ΔT = [(k₂ - k₁) / (k₁ · k₂)] / (T₂ - T₁)   [pcm/K]
 
 Usage:
-  - As a standalone driver:
-      python reactivity_coefficients.py
+    # As a module (from the main simulation script):
+    from reactivity_coefficients import run_reactivity_coefficients
+    run_reactivity_coefficients(params, core_rings, base_run_dir, output_base_dir)
 
-  - Post-process an existing study:
-      python reactivity_coefficients.py <study_directory> <delta_T>
-
-  - Integrated into the main simulation by adding to config.py:
-      reactivity_study = True
-      reactivity_delta_T = 50.0   # Kelvin
+    # Standalone:
+    python reactivity_coefficients.py
 """
 
 import os
 import sys
-import json
 import copy
+import json
+import math
 import numpy as np
+import matplotlib.pyplot as plt
 from datetime import datetime
 
-# ====================================================================================================
-# HELPER FUNCTIONS
-# ====================================================================================================
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
-def keff_to_reactivity_pcm(k):
+def _reactivity_pcm(k):
     """Convert k-effective to reactivity in pcm."""
     return (k - 1.0) / k * 1e5
 
 
-def extract_keff(run_dir):
+def _alpha(k1, k2, dT):
     """
-    Extract k-effective from a completed OpenMC run directory.
+    Compute temperature coefficient α = Δρ/ΔT in pcm/K.
 
-    Returns:
-        tuple: (keff, keff_std) or (None, None) on failure
+    Parameters
+    ----------
+    k1, k2 : float
+        k-effective at temperatures T1 and T2 = T1 + dT.
+    dT : float
+        Temperature perturbation (K).
+
+    Returns
+    -------
+    float : reactivity coefficient in pcm/K.
     """
-    try:
-        import openmc
-        for f in os.listdir(run_dir):
-            if f.startswith('statepoint') and f.endswith('.h5'):
-                sp = openmc.StatePoint(os.path.join(run_dir, f))
-                return sp.keff.nominal_value, sp.keff.std_dev
-    except Exception as e:
-        print(f"  ERROR extracting k-eff from {run_dir}: {e}")
-    return None, None
+    rho1 = _reactivity_pcm(k1)
+    rho2 = _reactivity_pcm(k2)
+    return (rho2 - rho1) / dT
 
-# ====================================================================================================
-# TEMPERATURE PERTURBATION FUNCTIONS
-# ====================================================================================================
 
-def perturb_fuel_temperatures(params, delta_T):
+def _alpha_uncertainty(k1, k1_std, k2, k2_std, dT):
     """
-    Apply a uniform shift to fuel compact temperatures only.
+    Propagated 1σ uncertainty on α = Δρ/ΔT.
 
-    Perturbed parameters:
-        compact_min, compact_max
+    Uses standard error propagation assuming k1 and k2 are independent.
     """
-    p = copy.deepcopy(params)
+    # ∂ρ/∂k = 1/k² (in pcm units, multiply by 1e5)
+    sig_rho1 = k1_std / (k1 ** 2) * 1e5
+    sig_rho2 = k2_std / (k2 ** 2) * 1e5
+    sig_alpha = math.sqrt(sig_rho1 ** 2 + sig_rho2 ** 2) / abs(dT)
+    return sig_alpha
+
+
+def _extract_keff(run_dir):
+    """Extract k-effective from statepoint in a completed run directory."""
+    import openmc
+
+    for f in os.listdir(run_dir):
+        if f.startswith("statepoint") and f.endswith(".h5"):
+            sp = openmc.StatePoint(os.path.join(run_dir, f))
+            return sp.keff.nominal_value, sp.keff.std_dev
+    raise FileNotFoundError(f"No statepoint file found in {run_dir}")
+
+
+# ---------------------------------------------------------------------------
+# Temperature perturbation builders
+# ---------------------------------------------------------------------------
+
+def _build_fuel_perturbed_params(base_params, delta_T):
+    """
+    Perturb FUEL temperatures only (Doppler coefficient).
+
+    Shifts compact_min, compact_max by delta_T.
+    Everything else stays at nominal.
+    """
+    p = copy.deepcopy(base_params)
     p["compact_min"] += delta_T
     p["compact_max"] += delta_T
     return p
 
-def perturb_moderator_temperatures(params, delta_T):
-    """
-    Apply a uniform shift to moderator/reflector temperatures only.
 
-    Perturbed parameters:
-        matrix_min, matrix_max, reflector_min, reflector_max
+def _build_moderator_perturbed_params(base_params, delta_T):
     """
-    p = copy.deepcopy(params)
+    Perturb MODERATOR / GRAPHITE temperatures only (MTC).
+
+    Shifts matrix_min, matrix_max, reflector_min, reflector_max by delta_T.
+    Fuel compact and coolant temperatures stay at nominal.
+    """
+    p = copy.deepcopy(base_params)
     p["matrix_min"] += delta_T
     p["matrix_max"] += delta_T
     p["reflector_min"] += delta_T
     p["reflector_max"] += delta_T
     return p
 
-def perturb_isothermal_temperatures(params, delta_T):
+
+def _build_isothermal_perturbed_params(base_params, delta_T):
     """
-    Apply a uniform shift to ALL temperature parameters (fuel, moderator,
-    coolant, reflector) — i.e. the entire system temperature moves together.
+    Perturb ALL temperatures uniformly (ITC).
+
+    Shifts coolant, compact, matrix, and reflector temperatures by delta_T.
     """
-    p = copy.deepcopy(params)
+    p = copy.deepcopy(base_params)
     p["coolant_inlet"] += delta_T
     p["coolant_outlet"] += delta_T
     p["compact_min"] += delta_T
@@ -105,470 +130,432 @@ def perturb_isothermal_temperatures(params, delta_T):
     p["reflector_max"] += delta_T
     return p
 
-# Map of coefficient type -> perturbation function and readable name
-COEFF_REGISTRY = {
-    "FTC": {
-        "name": "Fuel Temperature Coefficient",
-        "perturb_fn": perturb_fuel_temperatures,
-        "description": "Perturbs compact_min, compact_max",
-    },
-    "MTC": {
-        "name": "Moderator Temperature Coefficient",
-        "perturb_fn": perturb_moderator_temperatures,
-        "description": "Perturbs matrix_min/max, reflector_min/max",
-    },
-    "ITC": {
-        "name": "Isothermal Temperature Coefficient",
-        "perturb_fn": perturb_isothermal_temperatures,
-        "description": "Perturbs all temperatures uniformly",
-    },
+
+# Mapping from coefficient name to perturbation builder
+PERTURBATION_BUILDERS = {
+    "FTC": _build_fuel_perturbed_params,
+    "MTC": _build_moderator_perturbed_params,
+    "ITC": _build_isothermal_perturbed_params,
 }
 
-# ====================================================================================================
-# CONFIGURE PERTURBATION STUDY CASES
-# ====================================================================================================
+COEFF_LABELS = {
+    "FTC": "Fuel Temperature Coefficient (Doppler)",
+    "MTC": "Moderator Temperature Coefficient",
+    "ITC": "Isothermal Temperature Coefficient",
+}
 
-def setup_perturbation_cases(base_params, delta_T, base_dir,
-                             coefficients=("FTC", "MTC", "ITC"),
-                             run_baseline=True):
+# ---------------------------------------------------------------------------
+# Main driver
+# ---------------------------------------------------------------------------
+
+def run_reactivity_coefficients(
+    params,
+    core_rings,
+    base_run_dir,
+    output_base_dir,
+    delta_T_values=None,
+    coefficients=None,
+    run_simulation_fn=None,
+    run_post_processing_fn=None,
+):
     """
-    Set up directory structure and parameter sets for all perturbation cases.
+    Calculate reactivity coefficients via direct perturbation.
 
-    For each coefficient type, creates:
-        <coeff>_plus_<dT>K/    (T_ref + dT)
-        <coeff>_minus_<dT>K/   (T_ref - dT)
-
-    Plus one shared baseline directory.
+    For each requested coefficient the code:
+      1. Accepts or runs a reference (nominal) case.
+      2. Runs perturbed cases at T_nom ± ΔT for each ΔT in delta_T_values.
+      3. Computes α = Δρ / ΔT at each perturbation and reports the average.
 
     Parameters
-    ------------
-    base_params : dict
-        Reference simulation parameters.
-    delta_T : float
-        Temperature perturbation magnitude in Kelvin.
-    base_dir : str
-        Root output directory for the study.
-    coefficients : tuple of str
-        Which coefficients to compute ("FTC", "MTC", "ITC").
-    run_baseline : bool
-        If True, include a shared baseline case.
+    ----------
+    params : dict
+        Nominal simulation parameters (from config.py).
+    core_rings : list
+        Core ring layout (from config.py).
+    base_run_dir : str
+        Path to a completed nominal (reference) run directory.  If the
+        directory contains a valid statepoint the reference k_eff is read
+        from it; otherwise the nominal case is re-run.
+    output_base_dir : str
+        Root directory under which perturbed-case directories are created.
+    delta_T_values : list[float], optional
+        List of temperature perturbations (K) to apply.  Both +ΔT and -ΔT
+        are run for each value to allow central-difference estimates.
+        Default: [50, 100, 150].
+    coefficients : list[str], optional
+        Which coefficients to compute.  Any subset of ["FTC", "MTC", "ITC"].
+        Default: all three.
+    run_simulation_fn : callable, optional
+        The function that runs an OpenMC simulation.  Signature must be
+        ``run_simulation_fn(params, core_rings, run_dir) -> n_trisos``.
+        If None, the function is imported from the main script.
+    run_post_processing_fn : callable, optional
+        Post-processing function with signature
+        ``run_post_processing_fn(run_dir, params, n_trisos)``.
 
     Returns
-    --------
-    list of dict
-        Each dict describes a case:
-        {"label", "coeff", "variant", "params", "run_dir", "delta_T"}
+    -------
+    dict : Nested dictionary of results keyed by coefficient name.
     """
-    os.makedirs(base_dir, exist_ok=True)
-    cases = []
 
-    # Shared baseline (same for all coefficients since ref temps are identical)
-    if run_baseline:
-        cases.append({
-            "label": "Baseline (T_ref)",
-            "coeff": "baseline",
-            "variant": "baseline",
-            "params": copy.deepcopy(base_params),
-            "run_dir": os.path.join(base_dir, "baseline"),
-            "delta_T": 0.0,
-        })
+    if delta_T_values is None:
+        delta_T_values = [50.0, 100.0, 150.0]
+    if coefficients is None:
+        coefficients = ["FTC", "MTC", "ITC"]
 
-    for coeff_key in coefficients:
-        entry = COEFF_REGISTRY[coeff_key]
-        perturb_fn = entry["perturb_fn"]
-
-        # Plus perturbation
-        cases.append({
-            "label": f"{coeff_key} +{delta_T:.0f} K",
-            "coeff": coeff_key,
-            "variant": "plus",
-            "params": perturb_fn(base_params, +delta_T),
-            "run_dir": os.path.join(base_dir, f"{coeff_key}_plus_{delta_T:.0f}K"),
-            "delta_T": +delta_T,
-        })
-
-        # Minus perturbation
-        cases.append({
-            "label": f"{coeff_key} -{delta_T:.0f} K",
-            "coeff": coeff_key,
-            "variant": "minus",
-            "params": perturb_fn(base_params, -delta_T),
-            "run_dir": os.path.join(base_dir, f"{coeff_key}_minus_{delta_T:.0f}K"),
-            "delta_T": -delta_T,
-        })
-
-    return cases
-
-# ====================================================================================================
-# RUN PERTURBTION STUDIES
-# ====================================================================================================
-
-def run_perturbation_study(base_params, delta_T, base_dir,
-                           coefficients=("FTC", "MTC", "ITC"),
-                           run_simulation_fn=None,
-                           skip_existing=True):
-    """
-    Run the full direct-perturbation reactivity coefficient study.
-
-    Parameters
-    ------------
-    base_params : dict
-        Reference simulation parameters.
-    delta_T : float
-        Temperature perturbation in Kelvin (positive value).
-    base_dir : str
-        Root output directory.
-    coefficients : tuple of str
-        Which coefficients to compute.
-    run_simulation_fn : callable
-        Function with signature run_simulation(params, run_dir).
-        If None, imports from MicroHTGRNeutronics_INL_HTGTR_Inspired.
-    skip_existing : bool
-        If True, skip cases where a statepoint file already exists.
-
-    Returns
-    --------
-    dict : Mapping from coefficient key to result dict.
-    """
+    # ------------------------------------------------------------------
+    # Import simulation driver if not provided
+    # ------------------------------------------------------------------
     if run_simulation_fn is None:
-        from MicroHTGRNeutronics_INL_HTGTR_Inspired import run_simulation
-        run_simulation_fn = run_simulation
+        SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+        sys.path.insert(0, SCRIPT_DIR)
+        from MicroHTGRNeutronics_INL_HTGTR_Inspired import run_simulation as _run_sim
+        from MicroHTGRNeutronics_INL_HTGTR_Inspired import run_post_processing as _run_pp
+        run_simulation_fn = _run_sim
+        if run_post_processing_fn is None:
+            run_post_processing_fn = _run_pp
 
-    cases = setup_perturbation_cases(
-        base_params, delta_T, base_dir,
-        coefficients=coefficients, run_baseline=True
-    )
+    # ------------------------------------------------------------------
+    # 1. Reference case
+    # ------------------------------------------------------------------
+    print("\n" + "=" * 80)
+    print("REACTIVITY COEFFICIENT CALCULATION — DIRECT PERTURBATION")
+    print("=" * 80)
 
-    # ----- Run all cases -----
-    n_cases = len(cases)
-    print(f"\n{'='*80}")
-    print(f"REACTIVITY COEFFICIENT STUDY - Direct Perturbation")
-    print(f"dT = +/-{delta_T:.0f} K | Coefficients: {', '.join(coefficients)}")
-    print(f"Output directory: {base_dir}")
-    print(f"Total cases to run: {n_cases}")
-    print(f"{'='*80}\n")
+    # Try to read reference k_eff from existing run
+    try:
+        k_ref, k_ref_std = _extract_keff(base_run_dir)
+        print(f"\nReference case found in: {base_run_dir}")
+        print(f"  k_ref = {k_ref:.5f} ± {k_ref_std:.5f}")
+    except (FileNotFoundError, Exception) as e:
+        print(f"\nNo valid reference run found ({e}).  Running nominal case…")
+        ref_dir = os.path.join(output_base_dir, "reference_nominal")
+        n_trisos = run_simulation_fn(params, ref_dir)
+        if run_post_processing_fn:
+            run_post_processing_fn(ref_dir, params, n_trisos)
+        k_ref, k_ref_std = _extract_keff(ref_dir)
+        base_run_dir = ref_dir
+        print(f"  k_ref = {k_ref:.5f} ± {k_ref_std:.5f}")
 
-    for i, case in enumerate(cases):
-        run_dir = case["run_dir"]
-        label = case["label"]
+    rho_ref = _reactivity_pcm(k_ref)
 
-        # Check for existing results
-        has_statepoint = False
-        if os.path.isdir(run_dir):
-            for f in os.listdir(run_dir):
-                if f.startswith("statepoint") and f.endswith(".h5"):
-                    has_statepoint = True
-                    break
+    # ------------------------------------------------------------------
+    # 2. Perturbed cases
+    # ------------------------------------------------------------------
+    all_results = {}
 
-        if skip_existing and has_statepoint:
-            print(f"[{i+1}/{n_cases}] {label} - SKIPPED (statepoint exists)")
-            continue
+    for coeff_name in coefficients:
+        builder = PERTURBATION_BUILDERS[coeff_name]
+        label = COEFF_LABELS[coeff_name]
 
-        print(f"\n[{i+1}/{n_cases}] Running: {label}")
-        print(f"  Directory: {run_dir}")
+        print(f"\n{'─' * 80}")
+        print(f"  Computing {label}")
+        print(f"{'─' * 80}")
 
-        # Log perturbed temperatures for traceability
-        p = case["params"]
-        print(f"  Fuel temps:      {p['compact_min']:.1f} - {p['compact_max']:.1f} K")
-        print(f"  Matrix temps:    {p['matrix_min']:.1f} - {p['matrix_max']:.1f} K")
-        print(f"  Coolant temps:   {p['coolant_inlet']:.1f} - {p['coolant_outlet']:.1f} K")
-        print(f"  Reflector temps: {p['reflector_min']:.1f} - {p['reflector_max']:.1f} K")
+        coeff_dir = os.path.join(output_base_dir, f"perturbation_{coeff_name}")
+        os.makedirs(coeff_dir, exist_ok=True)
 
-        try:
-            run_simulation_fn(case["params"], run_dir)
-        except Exception as e:
-            print(f"  FAILED: {e}")
+        case_results = []
 
-    # ----- Extract results and compute coefficients -----
-    return postprocess_perturbation_study(base_dir, delta_T, coefficients)
+        # Run both positive and negative perturbations
+        for dT in delta_T_values:
+            for sign, sign_label in [(+1, "pos"), (-1, "neg")]:
+                actual_dT = sign * dT
+                case_label = f"{coeff_name}_dT_{sign_label}{int(dT)}K"
+                case_dir = os.path.join(coeff_dir, case_label)
 
-# ====================================================================================================
-# POST-PROCESSING: EXTRACT K-EFF VALUES AND COMPUTE COEFFICIENTS
-# ====================================================================================================
+                perturbed_params = builder(params, actual_dT)
 
-def postprocess_perturbation_study(base_dir, delta_T, coefficients=("FTC", "MTC", "ITC")):
-    """
-    Post-process a completed perturbation study directory.
+                # Check if already computed
+                try:
+                    k_pert, k_pert_std = _extract_keff(case_dir)
+                    print(f"  [{case_label}] Already computed — k = {k_pert:.5f}")
+                except Exception:
+                    print(f"  [{case_label}] Running ΔT = {actual_dT:+.0f} K …")
+                    n_trisos = run_simulation_fn(perturbed_params, case_dir)
+                    if run_post_processing_fn:
+                        run_post_processing_fn(case_dir, perturbed_params, n_trisos)
+                    k_pert, k_pert_std = _extract_keff(case_dir)
+                    print(f"  [{case_label}] k = {k_pert:.5f} ± {k_pert_std:.5f}")
 
-    Can be called standalone without re-running simulations.
+                alpha_val = _alpha(k_ref, k_pert, actual_dT)
+                alpha_unc = _alpha_uncertainty(k_ref, k_ref_std, k_pert, k_pert_std, actual_dT)
 
-    Parameters
-    ------------
-    base_dir : str
-        Root directory containing baseline/, FTC_plus_*/, FTC_minus_*/, etc.
-    delta_T : float
-        The dT used in the study (K).
-    coefficients : tuple of str
-        Which coefficients to process.
+                case_results.append({
+                    "delta_T": actual_dT,
+                    "k_pert": k_pert,
+                    "k_pert_std": k_pert_std,
+                    "rho_pert": _reactivity_pcm(k_pert),
+                    "alpha_pcm_per_K": alpha_val,
+                    "alpha_std": alpha_unc,
+                    "case_dir": case_dir,
+                })
 
-    Returns
-    --------
-    dict : Mapping from coefficient key to result dict with:
-        alpha_pcm_per_K, alpha_std_pcm_per_K, k_plus, k_minus, k_baseline, etc.
-    """
-    print(f"\n{'='*80}")
-    print("REACTIVITY COEFFICIENT RESULTS")
-    print(f"{'='*80}")
+        # Central-difference estimates (pair +dT and -dT)
+        central_diff_results = []
+        for dT in delta_T_values:
+            pos = next((c for c in case_results if c["delta_T"] == +dT), None)
+            neg = next((c for c in case_results if c["delta_T"] == -dT), None)
+            if pos and neg:
+                alpha_cd = _alpha(neg["k_pert"], pos["k_pert"], 2 * dT)
+                alpha_cd_unc = _alpha_uncertainty(
+                    neg["k_pert"], neg["k_pert_std"],
+                    pos["k_pert"], pos["k_pert_std"],
+                    2 * dT,
+                )
+                central_diff_results.append({
+                    "delta_T": dT,
+                    "alpha_central_pcm_per_K": alpha_cd,
+                    "alpha_central_std": alpha_cd_unc,
+                })
 
-    # Extract baseline k-eff
-    baseline_dir = os.path.join(base_dir, "baseline")
-    k_base, k_base_std = extract_keff(baseline_dir)
+        # Average central-difference coefficient
+        if central_diff_results:
+            avg_alpha = np.mean([c["alpha_central_pcm_per_K"] for c in central_diff_results])
+            avg_alpha_std = np.sqrt(np.sum([c["alpha_central_std"] ** 2 for c in central_diff_results])) / len(central_diff_results)
+        else:
+            avg_alpha = np.mean([c["alpha_pcm_per_K"] for c in case_results])
+            avg_alpha_std = np.sqrt(np.sum([c["alpha_std"] ** 2 for c in case_results])) / len(case_results)
 
-    if k_base is None:
-        print("ERROR: Could not extract baseline k-eff!")
-        print(f"  Looked in: {baseline_dir}")
-        return None
-
-    rho_base = keff_to_reactivity_pcm(k_base)
-    print(f"\nBaseline: k_eff = {k_base:.5f} +/- {k_base_std:.5f}  (rho = {rho_base:.1f} pcm)")
-
-    results = {}
-
-    for coeff_key in coefficients:
-        entry = COEFF_REGISTRY[coeff_key]
-        name = entry["name"]
-
-        dir_plus = os.path.join(base_dir, f"{coeff_key}_plus_{delta_T:.0f}K")
-        dir_minus = os.path.join(base_dir, f"{coeff_key}_minus_{delta_T:.0f}K")
-
-        k_plus, k_plus_std = extract_keff(dir_plus)
-        k_minus, k_minus_std = extract_keff(dir_minus)
-
-        if k_plus is None or k_minus is None:
-            print(f"\n{name} ({coeff_key}): INCOMPLETE - missing results")
-            if k_plus is None:
-                print(f"  Missing: {dir_plus}")
-            if k_minus is None:
-                print(f"  Missing: {dir_minus}")
-            results[coeff_key] = None
-            continue
-
-        rho_plus = keff_to_reactivity_pcm(k_plus)
-        rho_minus = keff_to_reactivity_pcm(k_minus)
-
-        # Central difference: alpha = (rho_plus - rho_minus) / (2 * dT)
-        alpha = (rho_plus - rho_minus) / (2.0 * delta_T)
-
-        # Propagate uncertainty: sigma_alpha = sqrt(sigma_rho+^2 + sigma_rho-^2) / (2 dT)
-        # where sigma_rho = sigma_k / k^2 * 1e5
-        sigma_rho_plus = k_plus_std / (k_plus ** 2) * 1e5
-        sigma_rho_minus = k_minus_std / (k_minus ** 2) * 1e5
-        alpha_std = np.sqrt(sigma_rho_plus**2 + sigma_rho_minus**2) / (2.0 * delta_T)
-
-        results[coeff_key] = {
-            "name": name,
-            "alpha_pcm_per_K": alpha,
-            "alpha_std_pcm_per_K": alpha_std,
-            "k_baseline": k_base,
-            "k_baseline_std": k_base_std,
-            "k_plus": k_plus,
-            "k_plus_std": k_plus_std,
-            "k_minus": k_minus,
-            "k_minus_std": k_minus_std,
-            "rho_plus_pcm": rho_plus,
-            "rho_minus_pcm": rho_minus,
-            "delta_T_K": delta_T,
+        all_results[coeff_name] = {
+            "label": label,
+            "cases": case_results,
+            "central_difference": central_diff_results,
+            "average_alpha_pcm_per_K": avg_alpha,
+            "average_alpha_std": avg_alpha_std,
         }
 
-        print(f"\n{name} ({coeff_key}):")
-        print(f"  k(+{delta_T:.0f}K) = {k_plus:.5f} +/- {k_plus_std:.5f}  ->  rho = {rho_plus:.1f} pcm")
-        print(f"  k(-{delta_T:.0f}K) = {k_minus:.5f} +/- {k_minus_std:.5f}  ->  rho = {rho_minus:.1f} pcm")
-        print(f"  delta_rho = {rho_plus - rho_minus:.1f} pcm over {2*delta_T:.0f} K")
-        print(f"  alpha = {alpha:.3f} +/- {alpha_std:.3f} pcm/K")
+    # ------------------------------------------------------------------
+    # 3. Report
+    # ------------------------------------------------------------------
+    _print_summary(all_results, k_ref, k_ref_std, rho_ref)
+    _save_results(all_results, k_ref, k_ref_std, rho_ref, output_base_dir)
+    _plot_results(all_results, k_ref, output_base_dir)
 
-        # Flag unexpected signs
-        if coeff_key == "FTC" and alpha > 0:
-            print(f"  WARNING: Positive FTC - expected negative (Doppler feedback)")
-        elif coeff_key == "ITC" and alpha > 0:
-            print(f"  WARNING: Positive ITC - check moderator/fuel balance")
+    return all_results
 
-    # Verify ITC ~ FTC + MTC (additivity check)
-    if all(k in results and results[k] is not None for k in ("FTC", "MTC", "ITC")):
-        ftc = results["FTC"]["alpha_pcm_per_K"]
-        mtc = results["MTC"]["alpha_pcm_per_K"]
-        itc = results["ITC"]["alpha_pcm_per_K"]
-        sum_check = ftc + mtc
-        deviation = abs(itc - sum_check)
 
-        print(f"\n{'-'*60}")
-        print(f"Additivity Check:")
-        print(f"  FTC + MTC = {ftc:.3f} + {mtc:.3f} = {sum_check:.3f} pcm/K")
-        print(f"  ITC       = {itc:.3f} pcm/K")
-        print(f"  Difference: {deviation:.3f} pcm/K", end="")
-        if deviation < max(abs(itc) * 0.15, 0.5):
-            print("  (OK - within expected cross-coupling tolerance)")
-        else:
-            print("  (NOTE: Significant cross-coupling effects present)")
+# ---------------------------------------------------------------------------
+# Reporting helpers
+# ---------------------------------------------------------------------------
 
-    # ----- Save results -----
-    _save_results(results, base_dir, delta_T, k_base, k_base_std)
+def _print_summary(all_results, k_ref, k_ref_std, rho_ref):
+    """Print a formatted summary to stdout."""
+    print("\n" + "=" * 80)
+    print("REACTIVITY COEFFICIENT RESULTS SUMMARY")
+    print("=" * 80)
+    print(f"Reference k_eff = {k_ref:.5f} ± {k_ref_std:.5f}  (ρ = {rho_ref:.1f} pcm)")
 
-    print(f"\n{'='*80}\n")
-    return results
+    for name, res in all_results.items():
+        print(f"\n{'─' * 60}")
+        print(f"  {res['label']}")
+        print(f"{'─' * 60}")
 
-# ====================================================================================================
-# SAVE REACTIVITY COEFFICIENT CALCULATION RESULTS
-# ====================================================================================================
+        print(f"  {'ΔT (K)':>10}  {'k_pert':>10}  {'ρ_pert (pcm)':>14}  {'α (pcm/K)':>12}  {'± σ':>10}")
+        for c in res["cases"]:
+            print(
+                f"  {c['delta_T']:>+10.0f}  {c['k_pert']:>10.5f}  "
+                f"{c['rho_pert']:>14.1f}  {c['alpha_pcm_per_K']:>12.3f}  "
+                f"{c['alpha_std']:>10.3f}"
+            )
 
-def _save_results(results, base_dir, delta_T, k_base, k_base_std):
-    """Save results to text report and JSON."""
+        if res["central_difference"]:
+            print(f"\n  Central-difference estimates:")
+            print(f"  {'±ΔT (K)':>10}  {'α_cd (pcm/K)':>14}  {'± σ':>10}")
+            for cd in res["central_difference"]:
+                print(
+                    f"  {cd['delta_T']:>10.0f}  "
+                    f"{cd['alpha_central_pcm_per_K']:>14.3f}  "
+                    f"{cd['alpha_central_std']:>10.3f}"
+                )
 
-    # ----- Text report -----
-    report_path = os.path.join(base_dir, "reactivity_coefficients.txt")
-    with open(report_path, 'w') as f:
-        f.write("=" * 80 + "\n")
-        f.write("REACTIVITY COEFFICIENT RESULTS - Direct Perturbation Method\n")
-        f.write("=" * 80 + "\n\n")
-        f.write(f"Perturbation magnitude: dT = +/-{delta_T:.0f} K\n")
-        f.write(f"Baseline k-eff: {k_base:.5f} +/- {k_base_std:.5f}\n\n")
+        print(f"\n  ▶ Average α = {res['average_alpha_pcm_per_K']:.3f} ± {res['average_alpha_std']:.3f} pcm/K")
 
-        for key, res in results.items():
-            if res is None:
-                f.write(f"{key}: INCOMPLETE\n\n")
-                continue
-            f.write(f"{res['name']} ({key}):\n")
-            f.write(f"  k(+{delta_T:.0f}K) = {res['k_plus']:.5f} +/- {res['k_plus_std']:.5f}\n")
-            f.write(f"  k(-{delta_T:.0f}K) = {res['k_minus']:.5f} +/- {res['k_minus_std']:.5f}\n")
-            f.write(f"  alpha = {res['alpha_pcm_per_K']:.3f} +/- {res['alpha_std_pcm_per_K']:.3f} pcm/K\n\n")
+    print("\n" + "=" * 80)
 
-        # Additivity check
-        if all(k in results and results[k] is not None for k in ("FTC", "MTC", "ITC")):
-            ftc = results["FTC"]["alpha_pcm_per_K"]
-            mtc = results["MTC"]["alpha_pcm_per_K"]
-            itc = results["ITC"]["alpha_pcm_per_K"]
-            f.write(f"Additivity Check:\n")
-            f.write(f"  FTC + MTC = {ftc + mtc:.3f} pcm/K\n")
-            f.write(f"  ITC       = {itc:.3f} pcm/K\n")
-            f.write(f"  Difference: {abs(itc - ftc - mtc):.3f} pcm/K\n\n")
 
-        f.write("=" * 80 + "\n")
+def _save_results(all_results, k_ref, k_ref_std, rho_ref, output_dir):
+    """Save results to JSON and text files."""
 
-    print(f"\nReport saved: {report_path}")
-
-    # ----- JSON for programmatic access -----
-    json_path = os.path.join(base_dir, "reactivity_coefficients.json")
+    # --- JSON ---
     json_data = {
-        "delta_T_K": delta_T,
-        "k_baseline": k_base,
-        "k_baseline_std": k_base_std,
+        "reference": {
+            "k_eff": k_ref,
+            "k_eff_std": k_ref_std,
+            "reactivity_pcm": rho_ref,
+        },
         "coefficients": {},
     }
-    for key, res in results.items():
-        if res is not None:
-            json_data["coefficients"][key] = {k: v for k, v in res.items()}
 
-    with open(json_path, 'w') as f:
+    for name, res in all_results.items():
+        json_data["coefficients"][name] = {
+            "label": res["label"],
+            "average_alpha_pcm_per_K": res["average_alpha_pcm_per_K"],
+            "average_alpha_std": res["average_alpha_std"],
+            "cases": [
+                {
+                    "delta_T": c["delta_T"],
+                    "k_pert": c["k_pert"],
+                    "k_pert_std": c["k_pert_std"],
+                    "rho_pert": c["rho_pert"],
+                    "alpha_pcm_per_K": c["alpha_pcm_per_K"],
+                    "alpha_std": c["alpha_std"],
+                }
+                for c in res["cases"]
+            ],
+            "central_difference": res["central_difference"],
+        }
+
+    json_path = os.path.join(output_dir, "reactivity_coefficients.json")
+    with open(json_path, "w") as f:
         json.dump(json_data, f, indent=2)
+    print(f"\nResults saved to: {json_path}")
 
-    print(f"JSON saved:   {json_path}")
+    # --- Human-readable text ---
+    txt_path = os.path.join(output_dir, "reactivity_coefficients.txt")
+    with open(txt_path, "w") as f:
+        f.write("=" * 80 + "\n")
+        f.write("REACTIVITY COEFFICIENTS — DIRECT PERTURBATION\n")
+        f.write("=" * 80 + "\n\n")
+        f.write(f"Reference k_eff = {k_ref:.5f} ± {k_ref_std:.5f}\n")
+        f.write(f"Reference reactivity = {rho_ref:.1f} pcm\n\n")
 
-# ====================================================================================================
-# PLOTTING FUNCTIONS
-# ====================================================================================================
+        for name, res in all_results.items():
+            f.write(f"{res['label']}:\n")
+            f.write(f"  α = {res['average_alpha_pcm_per_K']:.3f} ± {res['average_alpha_std']:.3f} pcm/K\n\n")
+            for c in res["cases"]:
+                f.write(
+                    f"  ΔT = {c['delta_T']:+.0f} K  |  "
+                    f"k = {c['k_pert']:.5f}  |  "
+                    f"α = {c['alpha_pcm_per_K']:.3f} pcm/K\n"
+                )
+            f.write("\n")
+        f.write("=" * 80 + "\n")
+    print(f"Results saved to: {txt_path}")
 
-def plot_reactivity_coefficients(results, base_dir):
-    """Generate a bar chart comparing the three coefficients."""
-    import matplotlib.pyplot as plt
 
-    labels = []
-    values = []
-    errors = []
-    colors_list = []
+def _plot_results(all_results, k_ref, output_dir):
+    """Generate publication-quality plots of reactivity vs. temperature perturbation."""
 
-    color_map = {"FTC": "#2196F3", "MTC": "#4CAF50", "ITC": "#FF9800"}
+    for name, res in all_results.items():
+        cases = res["cases"]
+        dTs = np.array([c["delta_T"] for c in cases])
+        rhos = np.array([c["rho_pert"] for c in cases])
+        k_stds = np.array([c["k_pert_std"] for c in cases])
+        ks = np.array([c["k_pert"] for c in cases])
 
-    for key in ("FTC", "MTC", "ITC"):
-        if key in results and results[key] is not None:
-            labels.append(key)
-            values.append(results[key]["alpha_pcm_per_K"])
-            errors.append(results[key]["alpha_std_pcm_per_K"])
-            colors_list.append(color_map.get(key, "gray"))
+        rho_ref = _reactivity_pcm(k_ref)
+        delta_rho = rhos - rho_ref
 
-    if not labels:
-        return
+        # Propagated uncertainty on Δρ
+        sig_rho_ref = 0  # reference uncertainty already embedded in individual α uncertainties
+        sig_rhos = k_stds / (ks ** 2) * 1e5
 
+        # Sort by ΔT for clean line plot
+        sort_idx = np.argsort(dTs)
+        dTs = dTs[sort_idx]
+        delta_rho = delta_rho[sort_idx]
+        sig_rhos = sig_rhos[sort_idx]
+
+        # Linear fit
+        coeffs = np.polyfit(dTs, delta_rho, 1)
+        fit_line = np.polyval(coeffs, dTs)
+
+        fig, ax = plt.subplots(figsize=(10, 6), dpi=150)
+        ax.errorbar(dTs, delta_rho, yerr=sig_rhos, fmt="o", capsize=4, capthick=1.2,
+                     markersize=8, label="Perturbed cases", zorder=3)
+        ax.plot(dTs, fit_line, "--", color="tab:red", linewidth=1.5,
+                label=f"Linear fit: α = {coeffs[0]:.3f} pcm/K", zorder=2)
+        ax.axhline(0, color="gray", linewidth=0.8, linestyle=":")
+        ax.axvline(0, color="gray", linewidth=0.8, linestyle=":")
+
+        ax.set_xlabel("Temperature Perturbation ΔT (K)", fontsize=12)
+        ax.set_ylabel("Δρ (pcm)", fontsize=12)
+        ax.set_title(f"{res['label']}\nα = {res['average_alpha_pcm_per_K']:.3f} ± {res['average_alpha_std']:.3f} pcm/K",
+                      fontsize=13)
+        ax.legend(fontsize=11)
+        ax.grid(True, alpha=0.3)
+
+        save_path = os.path.join(output_dir, f"reactivity_coefficient_{name}.png")
+        plt.savefig(save_path, bbox_inches="tight")
+        plt.close()
+        print(f"  Plot saved: {save_path}")
+
+    # --- Combined bar chart ---
     fig, ax = plt.subplots(figsize=(8, 5), dpi=150)
-    x = np.arange(len(labels))
-    bars = ax.bar(x, values, yerr=errors, capsize=6, color=colors_list,
-                  edgecolor='black', linewidth=0.8, width=0.5)
+    names = list(all_results.keys())
+    alphas = [all_results[n]["average_alpha_pcm_per_K"] for n in names]
+    stds = [all_results[n]["average_alpha_std"] for n in names]
+    labels = [all_results[n]["label"].split("(")[0].strip() for n in names]
 
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, fontsize=12)
-    ax.set_ylabel("Reactivity Coefficient (pcm/K)", fontsize=12)
-    ax.set_title("Reactivity Coefficients - Direct Perturbation Method", fontsize=13)
-    ax.axhline(0, color='black', linewidth=0.5, linestyle='-')
-    ax.grid(axis='y', alpha=0.3)
+    colors = ["#2196F3", "#4CAF50", "#FF9800"]
+    bars = ax.bar(labels, alphas, yerr=stds, capsize=5, color=colors[:len(names)],
+                  edgecolor="black", linewidth=0.8, alpha=0.85)
 
-    # Annotate values on bars
-    for bar, val, err in zip(bars, values, errors):
-        y_pos = bar.get_height()
-        offset = max(abs(val) * 0.05, 0.3)
-        ax.text(bar.get_x() + bar.get_width() / 2,
-                y_pos + (offset if y_pos >= 0 else -offset),
-                f"{val:.2f} +/- {err:.2f}",
-                ha='center', va='bottom' if y_pos >= 0 else 'top', fontsize=10)
+    ax.axhline(0, color="black", linewidth=0.8)
+    ax.set_ylabel("α (pcm/K)", fontsize=12)
+    ax.set_title("Temperature Reactivity Coefficients", fontsize=14)
+    ax.grid(True, axis="y", alpha=0.3)
 
-    plt.tight_layout()
-    save_path = os.path.join(base_dir, "reactivity_coefficients_barplot.png")
-    plt.savefig(save_path, bbox_inches='tight')
+    # Add value labels on bars
+    for bar, val, std in zip(bars, alphas, stds):
+        y_pos = bar.get_height() + std + 0.1
+        if val < 0:
+            y_pos = bar.get_height() - std - 0.3
+        ax.text(bar.get_x() + bar.get_width() / 2, y_pos,
+                f"{val:.2f}", ha="center", va="bottom", fontsize=10, fontweight="bold")
+
+    save_path = os.path.join(output_dir, "reactivity_coefficients_summary.png")
+    plt.savefig(save_path, bbox_inches="tight")
     plt.close()
-    print(f"Plot saved:   {save_path}")
+    print(f"  Summary plot saved: {save_path}")
 
-# ====================================================================================================
-# STANDALONE REACTIVITY COEFFICIENT CALCULATION
-# ====================================================================================================
+
+# ---------------------------------------------------------------------------
+# Standalone entry point
+# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     """
-    Usage:
-        # Run the full study (simulations + post-processing):
-        python reactivity_coefficients.py
+    Standalone usage example.
 
-        # Post-process an existing study:
-        python reactivity_coefficients.py <study_directory> <delta_T>
-
-        # Post-process specific coefficients:
-        python reactivity_coefficients.py <study_directory> <delta_T> FTC,MTC
+    Expects the simulation modules (config.py, materials.py, assembly.py,
+    trisos.py, MicroHTGRNeutronics_INL_HTGTR_Inspired.py) to be on the
+    Python path or in the same directory.
     """
-    if len(sys.argv) >= 3:
-        # Post-process mode
-        study_dir = sys.argv[1]
-        dT = float(sys.argv[2])
-        coeffs = tuple(sys.argv[3].split(",")) if len(sys.argv) > 3 else ("FTC", "MTC", "ITC")
+    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+    sys.path.insert(0, SCRIPT_DIR)
 
-        results = postprocess_perturbation_study(study_dir, dT, coeffs)
-        if results:
-            plot_reactivity_coefficients(results, study_dir)
+    import config as cfg
+    from MicroHTGRNeutronics_INL_HTGTR_Inspired import run_simulation, run_post_processing
 
-    else:
-        # Full run mode - import config and run
-        SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-        sys.path.insert(0, SCRIPT_DIR)
+    now = datetime.now()
+    run_name = f"htgr_reactivity_coeffs_{now.strftime('%m.%d.%Y_%H.%M.%S')}"
 
-        import config as cfg
-        from MicroHTGRNeutronics_INL_HTGTR_Inspired import run_simulation
+    PARENT_DIR = os.path.dirname(SCRIPT_DIR)
+    OUTPUT_BASE = os.path.join(PARENT_DIR, "MicroHTGR_Output")
+    os.makedirs(OUTPUT_BASE, exist_ok=True)
 
-        # Study configuration — can be overridden in config.py
-        delta_T = getattr(cfg, 'reactivity_delta_T', 50.0)
-        coefficients = getattr(cfg, 'reactivity_coefficients', ("FTC", "MTC", "ITC"))
+    output_dir = os.path.join(OUTPUT_BASE, run_name)
+    os.makedirs(output_dir, exist_ok=True)
 
-        now = datetime.now()
-        PARENT_DIR = os.path.dirname(SCRIPT_DIR)
-        OUTPUT_BASE = os.path.join(PARENT_DIR, "MicroHTGR_Output")
-        base_dir = os.path.join(
-            OUTPUT_BASE,
-            f"htgr_run_{now.strftime('%m.%d.%Y_%H.%M.%S')}_ReactivityCoefficients"
-        )
+    # If you have an existing reference run, point to it here:
+    # base_run_dir = "/path/to/existing/nominal/run"
+    # Otherwise, set to the output_dir and it will run a fresh reference case.
+    base_run_dir = output_dir
 
-        results = run_perturbation_study(
-            base_params=cfg.params,
-            delta_T=delta_T,
-            base_dir=base_dir,
-            coefficients=coefficients,
-            run_simulation_fn=run_simulation,
-        )
+    print(f"\nOutput directory: {output_dir}")
+    print(f"Reference run directory: {base_run_dir}\n")
 
-        if results:
-            plot_reactivity_coefficients(results, base_dir)
+    results = run_reactivity_coefficients(
+        params=cfg.params,
+        core_rings=cfg.core_rings,
+        base_run_dir=base_run_dir,
+        output_base_dir=output_dir,
+        delta_T_values=[50.0, 100.0, 150.0],
+        coefficients=["FTC", "MTC", "ITC"],
+        run_simulation_fn=run_simulation,
+        run_post_processing_fn=run_post_processing,
+    )
 
-        print(f"\nStudy complete. Results in: {base_dir}")
+    print("\nDone.")

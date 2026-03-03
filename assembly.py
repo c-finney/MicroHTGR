@@ -242,8 +242,7 @@ def build_bank_assemblies(
         "fcp": fcp_univ,
     }
 
-def create_assembly_univs(params, mats, T_coolant_z, T_compact_z, T_matrix_z, T_reflector_z,
-                          triso_lattice, axial_coords, reactor_bottom, reactor_top):
+def create_assembly_univs(params, mats, T_coolant_z, T_compact_z, T_matrix_z, T_reflector_z, triso_lattice, axial_coords, reactor_bottom, reactor_top):
     """
     Create all fuel assembly variants and reflector assemblies.
 
@@ -253,6 +252,7 @@ def create_assembly_univs(params, mats, T_coolant_z, T_compact_z, T_matrix_z, T_
               fc1, fc2, fc3, fcp1, fcp2, fcp3).
               Bank-independent types have no suffix   (f, fp, fpa).
         dict: Material colors dictionary for plotting
+        float: Bundle pitch
     """
 
     m_colors = {}

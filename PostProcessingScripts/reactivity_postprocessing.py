@@ -258,7 +258,6 @@ def reprocess_from_json(json_path, output_dir=None):
 
     k_ref = data["reference"]["k_eff"]
     k_ref_std = data["reference"]["k_eff_std"]
-    rho_ref = data["reference"]["reactivity_pcm"]
 
     # Reconstruct all_results dict from JSON
     all_results = {}

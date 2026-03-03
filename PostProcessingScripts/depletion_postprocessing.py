@@ -22,6 +22,7 @@ import sys
 import json
 import numpy as np
 import matplotlib.pyplot as plt
+import openmc.deplete
 
 # Default plot groups — used only if not specified in params
 DEFAULT_PLOT_GROUPS = {
@@ -142,7 +143,7 @@ def _extract_nuclide_inventories(results, mat_id, nuclide_list, label):
 # NUCLIDE INVENTORY CSV EXPORT
 # ====================================================================================================
 
-def save_nuclide_inventory_csv(run_dir, time_days, time_years, burnup_MWd_per_MtU, fuel_data, poison_data):
+def save_nuclide_inventory_csv(output_dir, time_days, time_years, burnup_MWd_per_MtU, fuel_data, poison_data):
     """
     Save per-timestep nuclide atom inventories to CSV files.
 
@@ -155,7 +156,7 @@ def save_nuclide_inventory_csv(run_dir, time_days, time_years, burnup_MWd_per_Mt
       step, time_days, time_years[, burnup_MWd_per_MtU]
 
     Args:
-        run_dir             : output directory
+        output_dir          : output directory
         time_days           : np.ndarray, shape (n_steps,)
         time_years          : np.ndarray, shape (n_steps,)
         burnup_MWd_per_MtU  : np.ndarray or None
@@ -202,7 +203,7 @@ def save_nuclide_inventory_csv(run_dir, time_days, time_years, burnup_MWd_per_Mt
 
         all_cols  = index_cols + nuc_cols
         header    = index_header + "," + ",".join(nuclides)
-        out_path  = os.path.join(run_dir, filename)
+        out_path  = os.path.join(output_dir, filename)
 
         np.savetxt(
             out_path,
@@ -239,12 +240,13 @@ def run_depletion_postprocessing(run_dir, params):
     dict : Summary results.
     """
 
-    import openmc.deplete
-
     print(f"\n{'=' * 80}")
     print("DEPLETION POST-PROCESSING")
     print(f"{'=' * 80}")
     print(f"Run directory: {run_dir}")
+
+    POSTPROCESSING_RESULTS_DIR = os.path.join(run_dir, "parametric_study_results")
+    os.makedirs(POSTPROCESSING_RESULTS_DIR, exist_ok=True)
 
     results_path = os.path.join(run_dir, "depletion_results.h5")
     if not os.path.exists(results_path):
@@ -400,7 +402,7 @@ def run_depletion_postprocessing(run_dir, params):
     ax.set_title("k-effective vs. Burnup", fontsize=14)
     ax.legend(fontsize=10)
     ax.grid(True, alpha=0.3)
-    plt.savefig(os.path.join(run_dir, f"depletion_keff_vs_{x_label_short}.png"), bbox_inches="tight")
+    plt.savefig(os.path.join(POSTPROCESSING_RESULTS_DIR, f"depletion_keff_vs_{x_label_short}.png"), bbox_inches="tight")
     plt.close()
 
     # k_eff vs time with year secondary axis
@@ -420,7 +422,7 @@ def run_depletion_postprocessing(run_dir, params):
         ax2 = ax.twiny()
         ax2.set_xlim(ax.get_xlim()[0] / 365.25, ax.get_xlim()[1] / 365.25)
         ax2.set_xlabel("Time (years)", fontsize=11)
-        plt.savefig(os.path.join(run_dir, "depletion_keff_vs_time.png"), bbox_inches="tight")
+        plt.savefig(os.path.join(POSTPROCESSING_RESULTS_DIR, "depletion_keff_vs_time.png"), bbox_inches="tight")
         plt.close()
 
     # Reactivity (pcm)
@@ -432,7 +434,7 @@ def run_depletion_postprocessing(run_dir, params):
     ax.set_ylabel("Reactivity (pcm)", fontsize=12)
     ax.set_title("Excess Reactivity vs. Burnup", fontsize=14)
     ax.grid(True, alpha=0.3)
-    plt.savefig(os.path.join(run_dir, f"depletion_reactivity_vs_{x_label_short}.png"), bbox_inches="tight")
+    plt.savefig(os.path.join(POSTPROCESSING_RESULTS_DIR, f"depletion_reactivity_vs_{x_label_short}.png"), bbox_inches="tight")
     plt.close()
 
     # Nuclide group plots — driven entirely by params["depletion_plot_groups"]
@@ -444,7 +446,7 @@ def run_depletion_postprocessing(run_dir, params):
         if available:
             _plot_nuclide_group(
                 x_data, x_label, all_nuclide_data, available,
-                group_name, run_dir,
+                group_name, POSTPROCESSING_RESULTS_DIR,
                 f"depletion_{group_name.lower().replace('/', '').replace(' ', '_')}"
             )
             plotted_nuclides.update(available)
@@ -457,7 +459,7 @@ def run_depletion_postprocessing(run_dir, params):
     if ungrouped:
         _plot_nuclide_group(
             x_data, x_label, all_nuclide_data, ungrouped,
-            "Other Tracked Nuclides", run_dir,
+            "Other Tracked Nuclides", POSTPROCESSING_RESULTS_DIR,
             "depletion_other_nuclides"
         )
 
@@ -478,7 +480,7 @@ def run_depletion_postprocessing(run_dir, params):
             fontsize=13
         )
         ax.grid(True, alpha=0.3)
-        plt.savefig(os.path.join(run_dir, f"depletion_fissile_ratio_vs_{x_label_short}.png"),
+        plt.savefig(os.path.join(POSTPROCESSING_RESULTS_DIR, f"depletion_fissile_ratio_vs_{x_label_short}.png"),
                     bbox_inches="tight")
         plt.close()
 
@@ -502,7 +504,7 @@ def run_depletion_postprocessing(run_dir, params):
             ax2.grid(True, alpha=0.3)
             ax2.set_ylim(0, 105)
         plt.tight_layout()
-        plt.savefig(os.path.join(run_dir, "depletion_B10_burnout.png"), bbox_inches="tight")
+        plt.savefig(os.path.join(POSTPROCESSING_RESULTS_DIR, "depletion_B10_burnout.png"), bbox_inches="tight")
         plt.close()
         print(f"  Saved: depletion_B10_burnout.png")
 
@@ -529,7 +531,7 @@ def run_depletion_postprocessing(run_dir, params):
         "poison_nuclides_extracted":     list(poison_data.keys()),
     }
 
-    with open(os.path.join(run_dir, "depletion_summary.json"), "w") as f:
+    with open(os.path.join(POSTPROCESSING_RESULTS_DIR, "depletion_summary.json"), "w") as f:
         json.dump(summary, f, indent=2, default=float)
 
     # ----- k-eff CSV Report -----
@@ -539,20 +541,20 @@ def run_depletion_postprocessing(run_dir, params):
     if burnup_MWd_per_MtU is not None:
         header += ",burnup_MWd_per_MtU"
         cols.append(burnup_MWd_per_MtU)
-    np.savetxt(os.path.join(run_dir, "depletion_keff_data.csv"),
+    np.savetxt(os.path.join(POSTPROCESSING_RESULTS_DIR, "depletion_keff_data.csv"),
                np.column_stack(cols), delimiter=",", header=header, comments="")
 
     # ----- Nuclide Inventory CSV Report -----
 
     print("\nExporting nuclide inventory CSVs...")
     save_nuclide_inventory_csv(
-        run_dir, time_days, time_years, burnup_MWd_per_MtU,
+        POSTPROCESSING_RESULTS_DIR, time_days, time_years, burnup_MWd_per_MtU,
         fuel_data, poison_data
     )
 
     # ----- Text Report -----
 
-    txt_path = os.path.join(run_dir, "depletion_results.txt")
+    txt_path = os.path.join(POSTPROCESSING_RESULTS_DIR, "depletion_results.txt")
     with open(txt_path, "w") as f:
         f.write("=" * 80 + "\n")
         f.write("DEPLETION SIMULATION RESULTS\n")
@@ -624,7 +626,7 @@ def run_depletion_postprocessing(run_dir, params):
 # NUCLIDE GROUP PLOTTING
 # ====================================================================================================
 
-def _plot_nuclide_group(x_data, x_label, nuclide_data, nuclide_list, title, run_dir, filename_base):
+def _plot_nuclide_group(x_data, x_label, nuclide_data, nuclide_list, title, output_dir, filename_base):
     available = [
         n for n in nuclide_list
         if n in nuclide_data and np.any(nuclide_data[n] > 0)
@@ -645,7 +647,7 @@ def _plot_nuclide_group(x_data, x_label, nuclide_data, nuclide_list, title, run_
     ax.grid(True, alpha=0.3)
     ax.set_yscale("log")
 
-    save_path = os.path.join(run_dir, f"{filename_base}.png")
+    save_path = os.path.join(output_dir, f"{filename_base}.png")
     plt.savefig(save_path, bbox_inches="tight")
     plt.close()
     print(f"  Saved: {save_path}")
