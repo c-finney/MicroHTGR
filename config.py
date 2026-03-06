@@ -36,12 +36,12 @@ params = {
     # ----- Fuel Lattice -----
     "fuel_to_coolant_distance": 2.5,
 
-    # ----- Core Dimensions -----
+    # ----- Core Dimensions/Geometry -----
     "core_radius": 90.0,
     "core_height": 237.9,
     "reflector_thickness": 79.3, 
     "n_ax_zones": 50,
-    "use_1/6_geometry": True,
+    "use_1/6_geometry": False,
 
     # ----- Burnable Poison -----
     "B10_enrichment_poison": 0.3,
@@ -53,20 +53,27 @@ params = {
     "fuel_assembly_control_radius": 2.54,    # Radius for circular control rods in fuel assemblies
     "sheath_thickness": 0.1, 
     "guide_tube_thickness": 0.2,  
-    "bank_1_insertion": 0.76,                 # Fractional control rod insertion for bank 1 (0-1.0)
-    "bank_2_insertion": 0.76,                 # Fractional control rod insertion for bank 2 (0-1.0)
-    "bank_3_insertion": 0.76,                 # Fractional control rod insertion for bank 3 (0-1.0)
+    "bank_1_insertion": 0.0,                 # Fractional control rod insertion for bank 1 (0-1.0)
+    "bank_2_insertion": 0.0,                 # Fractional control rod insertion for bank 2 (0-1.0)
+    "bank_3_insertion": 0.0,                 # Fractional control rod insertion for bank 3 (0-1.0)
+    "secondary_SD_rods_inserted": False,     # True = all SS rods fully inserted, False = all removed
     "B10_enrichment_control": 0.6,
-    "B10_wt_percent_control": 0.001,
+    "B10_wt_percent_control": 0.448,
     "B4C_density_control": 2380,
     "Incoloy800H_density": 7940,
 
+    # ----- Beryllium Reflector -----
+    "use_beryllium_reflector": False,
+    "BeO_inner_radius": 70,                # If none defaults to lattice extent (defined as (n_rings-1)*bundle_pitch+bundle_pitch/4)
+    "BeO_thickness": 20.0,                   # Will not exceed core radius if inner radius + thickness > core radius
+    "BeO_density": 3010,
+
     # ----- Core Layout -----
     "core_rings": [
-        ["r3", "f", "f"] * 6,
-        ["f", "fc2"] * 6,
-        ["fpa"] * 6,
-        ["fcp1"],
+        ["rr", "f", "f"] * 6,
+        ["f", "fc1"] + ["f", "fc2"] * 5,
+        ["fss"] * 6,
+        ["fssp"],
     ],
     # Core Ring Assembly Options:
     #    "f"              — Fueled assembly with no control rods or burnable poison rods
@@ -74,9 +81,13 @@ params = {
     #    "fpa"            — Fueled assembly with 1 burnable poison rod in the center of the assembly
     #    "fc1/fc2/fc3"    — Fueled assembly with 1 central control rod with bank number 1, 2, or 3
     #    "fcp1/fcp2/fcp3" — Fueled assembly with 1 central control rod with bank number 1, 2, or 3 and 6 burnable poison rods on the outer corners of the assembly
+    #    "fss"            — Fueled assembly with 1 central secondary shutdown rod
+    #    "fssp"           — Fueled assembly with 1 central secondary shutdown rod and 6 burnable poison rods on the outer corners
     #    "rr"             — Reflector block with no control rods
     #    "r1/r2/r3"       — Reflector block with 1 central control rod with bank number 1, 2, or 3
     #    "ra1/ra2/ra3"    — Alt reflector block with 3 control rods in hexagonal ring with bank number 1, 2, or 3 (ONLY WORKS FOR 1/6 GEOMETRY)
+    #    "rss"            — Reflector block with 1 central secondary shutdown rod
+    #    "rssa"           — Alt reflector block with 3 secondary shutdown rods in hexagonal ring (ONLY WORKS FOR 1/6 GEOMETRY)
 
     # ----- Temperature Profile -----
     "coolant_inlet": 573.15,
@@ -99,23 +110,23 @@ params = {
     "particles": 100_000,
 
     # ----- Stochastic Volume Calculation Settings -----
-    "calculate_fuel_volume": True,
+    "calculate_fuel_volume": False,
     "volume_samples": 1_000_000_000,
 
     # ----- Parametric Study Configuration -----
-    "parametric_param": "compact_radius",
-    "parametric_values": [0.635, 0.6175, 0.6, 0.5825, 0.565, 0.5475, 0.53, 0.5125, 0.495, 0.4775, 0.46],
+    "parametric_param": "BeO_thickness",
+    "parametric_values": [0.5, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 18.0, 20.0],
 
     # ----- Reactivity Coefficient Study Configuration -----
     "reactivity_delta_T_values": [50.0, 100.0, 150.0],
     "reactivity_coefficients": ["FTC", "MTC", "ITC"],
 
     # ----- Depletion Study Configuration -----
-    "thermal_power_MW": 15.0,
+    "thermal_power_MW": 10.0,
     # "depletion_chain_file": "/home/cade/Desktop/OpenMC/CrossSections/chain_endfb81_thermal.xml",
     "depletion_chain_file": "/home/cade/Desktop/OpenMC/CrossSections/chain_casl_pwr.xml",
     "use_reduced_chain_file": True,
-    "depletion_timesteps_days": [10, 10, 10, 30, 30, 30, 60, 60, 60, 120, 120, 120, 120, 120, 120],
+    "depletion_timesteps_days": [10, 10, 10, 30, 30, 30, 60, 60, 60, 120, 120, 120, 180, 180, 180],
     "depletion_integrator": "PredictorIntegrator",
     # Integrator options:
     #    "PredictorIntegrator" — simplest, one transport solve per step

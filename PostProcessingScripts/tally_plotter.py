@@ -32,7 +32,7 @@ import gc
 # NORMALIZATION FACTOR FUNCTION
 # ====================================================================================================
 
-def get_normalization_factor(sp_path, target_power_MW=15.0):
+def get_normalization_factor(sp_path, target_power_MW):
     """
     Calculate manual power normalization factor.
 
@@ -168,10 +168,10 @@ def _load_heating_mesh_tally(sp_path, tally_name, source_per_sec, symmetry_facto
 # PLOTTING FUNCTION FOR CORE XY CROSS-SECTIONS
 # ====================================================================================================
 
-def plot_xy_slice(run_dir, batch, z_index, is_wedge=False, reconstruct=False,
-                  target_power_MW=15.0, core_radius=90.0, n_ax_zones=50):
+def plot_xy_slice(run_dir, batch, z_index, is_wedge, reconstruct, target_power_MW, core_radius, n_ax_zones, save_dir=None):
     """Plot XY slices of flux, fission, and heating at a given axial index."""
 
+    save_dir = save_dir or run_dir
     sp_path = os.path.join(run_dir, f'statepoint.{batch}.h5')
     if not os.path.exists(sp_path):
         print(f"Warning: Statepoint file not found: {sp_path}")
@@ -224,7 +224,7 @@ def plot_xy_slice(run_dir, batch, z_index, is_wedge=False, reconstruct=False,
         ax.set_xlabel('X [cm]'); ax.set_ylabel('Y [cm]')
         ax.set_title(f'{label} - {geometry_label}\nZ = {z_center:.1f} cm (index {z_index}), {target_power_MW} MW')
         ax.set_aspect('equal')
-        save_path = os.path.join(run_dir, f'batch{batch}_{score}_xy_z{z_index}{suffix}.png')
+        save_path = os.path.join(save_dir, f'batch{batch}_{score}_xy_z{z_index}{suffix}.png')
         plt.savefig(save_path, bbox_inches='tight'); plt.close()
         print(f"Saved: {save_path}")
 
@@ -269,7 +269,7 @@ def plot_xy_slice(run_dir, batch, z_index, is_wedge=False, reconstruct=False,
         ax.set_xlabel('X [cm]'); ax.set_ylabel('Y [cm]')
         ax.set_title(f'Local Heating Rate - {geom_label}\nZ = {z_center_h:.1f} cm (index {z_index}), {target_power_MW} MW')
         ax.set_aspect('equal')
-        save_path = os.path.join(run_dir, f'batch{batch}_heating_xy_z{z_index}{suffix}.png')
+        save_path = os.path.join(save_dir, f'batch{batch}_heating_xy_z{z_index}{suffix}.png')
         plt.savefig(save_path, bbox_inches='tight'); plt.close()
         print(f"Saved: {save_path}")
 
@@ -283,9 +283,10 @@ def plot_xy_slice(run_dir, batch, z_index, is_wedge=False, reconstruct=False,
 # PLOTTING FUNCTION FOR AXIAL FLUX, FISSION, AND HEATING PROFILES
 # ====================================================================================================
 
-def plot_axial_profile(run_dir, batch, is_wedge=False, target_power_MW=15.0):
+def plot_axial_profile(run_dir, batch, is_wedge, target_power_MW, save_dir=None):
     """Plot axial profiles of flux, fission rate, and heating."""
 
+    save_dir = save_dir or run_dir
     sp_path = os.path.join(run_dir, f'statepoint.{batch}.h5')
     if not os.path.exists(sp_path):
         print(f"Warning: Statepoint file not found: {sp_path}")
@@ -319,7 +320,7 @@ def plot_axial_profile(run_dir, batch, is_wedge=False, target_power_MW=15.0):
     ax2.grid(True, alpha=0.3); ax2.ticklabel_format(style='scientific', axis='y', scilimits=(0, 0))
 
     plt.tight_layout()
-    save_path = os.path.join(run_dir, f'batch{batch}_axial_profiles.png')
+    save_path = os.path.join(save_dir, f'batch{batch}_axial_profiles.png')
     plt.savefig(save_path, bbox_inches='tight'); plt.close()
     print(f"Saved: {save_path}")
 
@@ -340,7 +341,7 @@ def plot_axial_profile(run_dir, batch, is_wedge=False, target_power_MW=15.0):
         ax.set_xlabel('Axial Position [cm]'); ax.set_ylabel('Integrated Heating Rate [W]')
         ax.set_title(f'Axial Heating Profile - {geometry_label}\n{target_power_MW} MW')
         ax.grid(True, alpha=0.3); ax.ticklabel_format(style='scientific', axis='y', scilimits=(0, 0))
-        save_path = os.path.join(run_dir, f'batch{batch}_axial_heating_profile.png')
+        save_path = os.path.join(save_dir, f'batch{batch}_axial_heating_profile.png')
         plt.savefig(save_path, bbox_inches='tight'); plt.close()
         print(f"Saved: {save_path}")
         del heating_axial
@@ -353,10 +354,10 @@ def plot_axial_profile(run_dir, batch, is_wedge=False, target_power_MW=15.0):
 # PLOTTING FUNCTION FOR CORE RZ CROSS-SECTIONS
 # ====================================================================================================
 
-def plot_rz_crosssection(run_dir, batch, angle_deg=0, is_wedge=False,
-                         target_power_MW=15.0, include_reflector=True):
+def plot_rz_crosssection(run_dir, batch, angle_deg, is_wedge, target_power_MW, include_reflector, save_dir=None):
     """Plot RZ cross-section at specified angle."""
 
+    save_dir = save_dir or run_dir
     sp_path = os.path.join(run_dir, f'statepoint.{batch}.h5')
     if not os.path.exists(sp_path):
         print(f"Warning: Statepoint file not found: {sp_path}")
@@ -409,7 +410,7 @@ def plot_rz_crosssection(run_dir, batch, angle_deg=0, is_wedge=False,
         cbar.formatter.set_powerlimits((0, 0)); cbar.update_ticks()
         ax.set_xlabel('Radial Position [cm]'); ax.set_ylabel('Axial Position [cm]')
         ax.set_title(f'{label} - RZ Cross-Section at {angle_deg}\u00b0 - {geometry_label}\n{target_power_MW} MW')
-        save_path = os.path.join(run_dir, f'batch{batch}_{score}_rz_angle{angle_deg}.png')
+        save_path = os.path.join(save_dir, f'batch{batch}_{score}_rz_angle{angle_deg}.png')
         plt.savefig(save_path, bbox_inches='tight'); plt.close()
         print(f"Saved: {save_path}")
         del rz
@@ -454,7 +455,7 @@ def plot_rz_crosssection(run_dir, batch, angle_deg=0, is_wedge=False,
         cbar.formatter.set_powerlimits((0, 0)); cbar.update_ticks()
         ax.set_xlabel('Radial Position [cm]'); ax.set_ylabel('Axial Position [cm]')
         ax.set_title(f'Heating - RZ Cross-Section at {angle_deg}\u00b0 - {geometry_label}\n{target_power_MW} MW')
-        save_path = os.path.join(run_dir, f'batch{batch}_heating_rz_angle{angle_deg}.png')
+        save_path = os.path.join(save_dir, f'batch{batch}_heating_rz_angle{angle_deg}.png')
         plt.savefig(save_path, bbox_inches='tight'); plt.close()
         print(f"Saved: {save_path}")
         del heating_rz
@@ -467,9 +468,10 @@ def plot_rz_crosssection(run_dir, batch, angle_deg=0, is_wedge=False,
 # EXTRACT AND SAVE GLOBAL RATES
 # ====================================================================================================
 
-def print_global_rates(run_dir, batch, is_wedge=False, target_power_MW=15.0):
+def print_global_rates(run_dir, batch, is_wedge, target_power_MW, save_dir=None):
     """Print and save global reaction rates."""
 
+    save_dir = save_dir or run_dir
     sp_path = os.path.join(run_dir, f'statepoint.{batch}.h5')
     if not os.path.exists(sp_path):
         print(f"Warning: Statepoint file not found: {sp_path}")
@@ -522,7 +524,7 @@ def print_global_rates(run_dir, batch, is_wedge=False, target_power_MW=15.0):
     for line in output:
         print(line)
 
-    save_path = os.path.join(run_dir, f'batch{batch}_global_rates.txt')
+    save_path = os.path.join(save_dir, f'batch{batch}_global_rates.txt')
     with open(save_path, 'w') as f:
         f.write('\n'.join(output))
     print(f"Saved: {save_path}")
@@ -539,6 +541,9 @@ def run_tally_plots(run_dir, params, batch=None):
     print(f"{'='*80}")
     print(f"Run directory: {run_dir}")
 
+    results_dir = os.path.join(run_dir, 'tally_plotter_results')
+    os.makedirs(results_dir, exist_ok=True)
+
     if batch is None:
         for f in os.listdir(run_dir):
             if f.startswith('statepoint') and f.endswith('.h5'):
@@ -551,10 +556,10 @@ def run_tally_plots(run_dir, params, batch=None):
 
     print(f"Batch number: {batch}")
 
-    is_wedge = params.get("use_1/6_geometry", False)
-    target_power = params.get("thermal_power", 15.0)
-    core_radius = params.get("core_radius", 90.0)
-    n_ax_zones = params.get("n_ax_zones", 50)
+    is_wedge = params["use_1/6_geometry"]
+    target_power = params["thermal_power_MW"]
+    core_radius = params["core_radius"]
+    n_ax_zones = params["n_ax_zones"]
 
     print(f"Geometry: {'1/6 Wedge' if is_wedge else 'Full Core'}")
     print(f"Target power: {target_power} MW")
@@ -562,16 +567,16 @@ def run_tally_plots(run_dir, params, batch=None):
 
     # Global rates (lightweight — no big arrays)
     print("\nGenerating global rates...\n")
-    print_global_rates(run_dir, batch, is_wedge, target_power)
+    print_global_rates(run_dir, batch, is_wedge, target_power, save_dir=results_dir)
 
     # Axial profiles
     print("\nGenerating axial profiles...")
-    plot_axial_profile(run_dir, batch, is_wedge, target_power)
+    plot_axial_profile(run_dir, batch, is_wedge, target_power, save_dir=results_dir)
     gc.collect()
 
     # RZ cross-sections
     print("\nGenerating RZ cross-sections...")
-    plot_rz_crosssection(run_dir, batch, 0, is_wedge, target_power, True)
+    plot_rz_crosssection(run_dir, batch, 0, is_wedge, target_power, True, save_dir=results_dir)
     gc.collect()
 
     # XY slices — one at a time with gc between each
@@ -581,7 +586,7 @@ def run_tally_plots(run_dir, params, batch=None):
     for z_idx in z_indices:
         plot_xy_slice(run_dir, batch, z_idx, is_wedge, reconstruct=False,
                       target_power_MW=target_power, core_radius=core_radius,
-                      n_ax_zones=n_ax_zones)
+                      n_ax_zones=n_ax_zones, save_dir=results_dir)
         gc.collect()
 
     print(f"\n{'='*80}")

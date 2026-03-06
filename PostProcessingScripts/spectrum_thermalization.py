@@ -387,6 +387,9 @@ def run_spectrum_analysis(run_dir, params, batch=None):
     print(f"{'=' * 80}")
     print(f"Run directory: {run_dir}")
 
+    results_dir = os.path.join(run_dir, 'spectrum_thermalization_results')
+    os.makedirs(results_dir, exist_ok=True)
+
     # =========================================================================
     # Find statepoint
     # =========================================================================
@@ -461,13 +464,13 @@ def run_spectrum_analysis(run_dir, params, batch=None):
     # Generate plots
     # =========================================================================
     print("\nGenerating spectrum plots...")
-    plot_flux_spectrum(E_center, flux_per_lethargy, flux_per_bin, metrics, run_dir, batch)
+    plot_flux_spectrum(E_center, flux_per_lethargy, flux_per_bin, metrics, results_dir, batch)
 
     # =========================================================================
     # Save results
     # =========================================================================
     # JSON
-    json_path = os.path.join(run_dir, "thermalization_metrics.json")
+    json_path = os.path.join(results_dir, "thermalization_metrics.json")
     # Convert numpy types for JSON serialization
     metrics_json = {k: float(v) if isinstance(v, (np.floating, np.integer)) else v
                     for k, v in metrics.items()}
@@ -476,7 +479,7 @@ def run_spectrum_analysis(run_dir, params, batch=None):
     print(f"\n  Metrics saved to: {json_path}")
 
     # Human-readable text
-    txt_path = os.path.join(run_dir, "thermalization_metrics.txt")
+    txt_path = os.path.join(results_dir, "thermalization_metrics.txt")
     with open(txt_path, "w") as f:
         f.write("=" * 80 + "\n")
         f.write("NEUTRON ENERGY SPECTRUM & THERMALIZATION METRICS\n")
@@ -511,7 +514,7 @@ def run_spectrum_analysis(run_dir, params, batch=None):
     print(f"  Report saved to: {txt_path}")
 
     # Save raw spectrum data as CSV for external plotting
-    csv_path = os.path.join(run_dir, "neutron_spectrum_data.csv")
+    csv_path = os.path.join(results_dir, "neutron_spectrum_data.csv")
     header = "E_center_eV,flux_per_bin,flux_per_lethargy,flux_std"
     data = np.column_stack([E_center, flux_per_bin, flux_per_lethargy, flux_std])
     np.savetxt(csv_path, data, delimiter=",", header=header, comments="")

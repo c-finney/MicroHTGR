@@ -242,6 +242,176 @@ def build_bank_assemblies(
         "fcp": fcp_univ,
     }
 
+def build_ss_assemblies(
+    ss_inserted,
+    params, mats, T_coolant_z, T_matrix_z,
+    axial_coords, reactor_bottom, reactor_top,
+    axial_section_height, bundle_pitch,
+    fuel_lattice_univs, poison_lattice_univs,
+    hex_prism_fuel, hex_prism_refl,
+    min_z, max_z,
+    inf_graphite_universe, inf_graphite_refl_universe,
+    m_colors
+):
+    """
+    Build the four secondary shutdown rod assembly types: rss, rssa, fss, fssp.
+
+    Unlike control rod assemblies there is no bank insertion logic — SS rods are
+    either fully inserted (ss_inserted=True) or fully removed (ss_inserted=False).
+
+    The SS rod material is a 55% B4C / 45% He homogeneous mixture (mats.b4c_ss).
+    There is no Incoloy sheath or guide tube; the bored hole has radius
+    control_radius + guide_tube_thickness, matching the control rod guide-outer
+    diameter so graphite block hole dimensions are identical.
+
+    Returns:
+        dict with keys "rss", "rssa", "fss", "fssp" -> OpenMC Universe objects
+    """
+
+    # SS rod hole radius (no sheath/guide tube — one cylinder fills the whole hole)
+    r_ss_refl = params["control_radius"] + params["guide_tube_thickness"]
+    r_ss_fuel = params["fuel_assembly_control_radius"] + params["guide_tube_thickness"]
+
+    ss_cyl_refl = openmc.ZCylinder(r=r_ss_refl)
+    ss_cyl_fuel = openmc.ZCylinder(r=r_ss_fuel)
+
+    # ==================================================================
+    # REFLECTOR ASSEMBLY WITH SS ROD (rss)
+    # ==================================================================
+
+    ss_rod_univs = []
+    for idx in range(len(axial_coords) - 1):
+        T_matrix  = T_matrix_z[idx]
+        T_coolant = T_coolant_z[idx]
+
+        if ss_inserted:
+            ss_cell = openmc.Cell(fill=mats.b4c_ss, region=-ss_cyl_refl)
+            ss_cell.temperature = T_matrix
+        else:
+            ss_he = mats.helium.clone()
+            ss_he.temperature = T_coolant
+            m_colors[ss_he] = 'red'
+            ss_cell = openmc.Cell(fill=ss_he, region=-ss_cyl_refl)
+
+        graphite_cell = openmc.Cell(fill=mats.graphite, region=+ss_cyl_refl)
+        graphite_cell.temperature = T_matrix
+
+        ss_rod_univs.append(openmc.Universe(cells=[ss_cell, graphite_cell]))
+
+    rss_lat = openmc.HexLattice(name="Reflector Lattice with SS Rod")
+    rss_lat.orientation = 'x'
+    rss_lat.center = (0.0, 0.0, 0.5 * (reactor_bottom + reactor_top))
+    rss_lat.pitch = (bundle_pitch, axial_section_height)
+    rss_lat.universes = [[[u]] for u in ss_rod_univs]
+    rss_lat.outer = inf_graphite_refl_universe
+
+    rss_univ = openmc.Universe(cells=[
+        openmc.Cell(fill=rss_lat, region=hex_prism_refl & +min_z & -max_z)])
+
+    # ==================================================================
+    # ALT REFLECTOR ASSEMBLY WITH 6 SS RODS IN HEX RING (rssa)
+    # ==================================================================
+
+    graphite_center_cell = openmc.Cell(fill=mats.graphite)
+    graphite_center_cell.temperature = params["reflector_min"]
+    graphite_center_univ = openmc.Universe(cells=[graphite_center_cell])
+
+    rssa_lattice_univs = []
+    for idx in range(len(axial_coords) - 1):
+        ring1 = [graphite_center_univ, graphite_center_univ, graphite_center_univ,
+                 ss_rod_univs[idx], ss_rod_univs[idx], ss_rod_univs[idx]]
+        rssa_lattice_univs.append([ring1, [graphite_center_univ]])
+
+    rssa_lat = openmc.HexLattice(name="Reflector Alt Lattice with 6 SS Rods")
+    rssa_lat.orientation = 'y'
+    rssa_lat.center = (0.0, 0.0, 0.5 * (reactor_bottom + reactor_top))
+    rssa_lat.pitch = (bundle_pitch / 3.0, axial_section_height)
+    rssa_lat.universes = rssa_lattice_univs
+    rssa_lat.outer = inf_graphite_refl_universe
+
+    rssa_univ = openmc.Universe(cells=[
+        openmc.Cell(fill=rssa_lat, region=hex_prism_refl & +min_z & -max_z)])
+
+    # ==================================================================
+    # HELPER: replace center rings of fuel lattice with graphite
+    # ==================================================================
+
+    def make_ss_fuel_lattice_univs(source_lattice_univs):
+        result = []
+        for idx in range(len(axial_coords) - 1):
+            T_matrix = T_matrix_z[idx]
+            base = source_lattice_univs[idx]
+            ring4, ring3, ring2 = base[0], base[1], base[2]
+            graphite_inner_cell = openmc.Cell(fill=mats.graphite)
+            graphite_inner_cell.temperature = T_matrix
+            g_inner = openmc.Universe(cells=[graphite_inner_cell])
+            result.append([ring4, ring3, ring2, [g_inner] * 6, [g_inner]])
+        return result
+
+    # ==================================================================
+    # HELPER: per-axial-zone SS rod cells for fuel assemblies
+    # ==================================================================
+
+    def make_fuel_ss_cells(hex_region):
+        cells = []
+        for idx, (z_min, z_max) in enumerate(zip(axial_coords[:-1], axial_coords[1:])):
+            T_matrix  = T_matrix_z[idx]
+            T_coolant = T_coolant_z[idx]
+            axial_region = (+openmc.ZPlane(z0=z_min) & -openmc.ZPlane(z0=z_max)
+                            & hex_region)
+            if ss_inserted:
+                ss_cell = openmc.Cell(fill=mats.b4c_ss,
+                                      region=-ss_cyl_fuel & axial_region)
+                ss_cell.temperature = T_matrix
+                cells.append(ss_cell)
+            else:
+                ss_he = mats.helium.clone()
+                ss_he.temperature = T_coolant
+                m_colors[ss_he] = 'red'
+                cells.append(openmc.Cell(fill=ss_he,
+                                         region=-ss_cyl_fuel & axial_region))
+        return cells
+
+    # ==================================================================
+    # FUEL ASSEMBLY WITH CENTRAL SS ROD (fss)
+    # ==================================================================
+
+    hex_inner_ss = +ss_cyl_fuel & hex_prism_fuel & +min_z & -max_z
+
+    fss_lat = openmc.HexLattice(name="Fuel Lattice for SS Assembly")
+    fss_lat.orientation = 'x'
+    fss_lat.center = (0.0, 0.0, 0.5 * (reactor_bottom + reactor_top))
+    fss_lat.pitch = (params["fuel_to_coolant_distance"], axial_section_height)
+    fss_lat.universes = make_ss_fuel_lattice_univs(fuel_lattice_univs)
+    fss_lat.outer = inf_graphite_universe
+
+    fss_univ = openmc.Universe(
+        cells=make_fuel_ss_cells(hex_prism_fuel)
+              + [openmc.Cell(fill=fss_lat, region=hex_inner_ss)])
+
+    # ==================================================================
+    # FUEL ASSEMBLY WITH SS ROD AND EDGE POISON RODS (fssp)
+    # ==================================================================
+
+    fssp_lat = openmc.HexLattice(name="Fuel Lattice with Poison for SS Assembly")
+    fssp_lat.orientation = 'x'
+    fssp_lat.center = (0.0, 0.0, 0.5 * (reactor_bottom + reactor_top))
+    fssp_lat.pitch = (params["fuel_to_coolant_distance"], axial_section_height)
+    fssp_lat.universes = make_ss_fuel_lattice_univs(poison_lattice_univs)
+    fssp_lat.outer = inf_graphite_universe
+
+    fssp_univ = openmc.Universe(
+        cells=make_fuel_ss_cells(hex_prism_fuel)
+              + [openmc.Cell(fill=fssp_lat, region=hex_inner_ss)])
+
+    return {
+        "rss":  rss_univ,
+        "rssa": rssa_univ,
+        "fss":  fss_univ,
+        "fssp": fssp_univ,
+    }
+
+
 def create_assembly_univs(params, mats, T_coolant_z, T_compact_z, T_matrix_z, T_reflector_z, triso_lattice, axial_coords, reactor_bottom, reactor_top):
     """
     Create all fuel assembly variants and reflector assemblies.
@@ -459,6 +629,33 @@ def create_assembly_univs(params, mats, T_coolant_z, T_compact_z, T_matrix_z, T_
         # Store as r1/r2/r3, fc1/fc2/fc3, fcp1/fcp2/fcp3
         for assembly_type, univ in bank_assemblies.items():
             assemblies[f"{assembly_type}{bank_id}"] = univ
+
+    # ==================================================================
+    # SECONDARY SHUTDOWN ROD ASSEMBLIES (rss, rssa, fss, fssp)
+    # ==================================================================
+
+    ss_assemblies = build_ss_assemblies(
+        ss_inserted=params.get("secondary_SD_rods_inserted", False),
+        params=params,
+        mats=mats,
+        T_coolant_z=T_coolant_z,
+        T_matrix_z=T_matrix_z,
+        axial_coords=axial_coords,
+        reactor_bottom=reactor_bottom,
+        reactor_top=reactor_top,
+        axial_section_height=axial_section_height,
+        bundle_pitch=bundle_pitch,
+        fuel_lattice_univs=fuel_lattice_univs,
+        poison_lattice_univs=poison_lattice_univs,
+        hex_prism_fuel=hex_prism_fuel,
+        hex_prism_refl=hex_prism_refl,
+        min_z=min_z,
+        max_z=max_z,
+        inf_graphite_universe=inf_graphite_universe,
+        inf_graphite_refl_universe=inf_graphite_refl_universe,
+        m_colors=m_colors,
+    )
+    assemblies.update(ss_assemblies)
 
     return assemblies, m_colors, bundle_pitch
 

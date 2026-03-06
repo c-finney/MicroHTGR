@@ -88,6 +88,9 @@ def run_leakage_analysis(run_dir, params, statepoint_path=None, batch=None):
 
     print(f"\nStatepoint: {sp_path}")
 
+    results_dir = os.path.join(run_dir, 'leakage_spectrum_results')
+    os.makedirs(results_dir, exist_ok=True)
+
     sp = openmc.StatePoint(sp_path)
 
     # ================================================================================
@@ -257,7 +260,7 @@ def run_leakage_analysis(run_dir, params, statepoint_path=None, batch=None):
         ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    plot_path = os.path.join(run_dir, 'leakage_spectrum.png')
+    plot_path = os.path.join(results_dir, 'leakage_spectrum.png')
     plt.savefig(plot_path, dpi=150, bbox_inches='tight')
     plt.close()
     print(f"\nPlot saved to: {plot_path}")
@@ -266,7 +269,7 @@ def run_leakage_analysis(run_dir, params, statepoint_path=None, batch=None):
     # 6. SAVE RESULTS TO TEXT FILE
     # ================================================================================
 
-    results_file = os.path.join(run_dir, 'leakage_spectrum_results.txt')
+    results_file = os.path.join(results_dir, 'leakage_spectrum_results.txt')
     with open(results_file, 'w') as f:
         f.write("=" * 80 + "\n")
         f.write("NEUTRON LEAKAGE SPECTRUM ANALYSIS\n")
@@ -334,7 +337,7 @@ def run_leakage_analysis(run_dir, params, statepoint_path=None, batch=None):
     # ================================================================================
 
     np.savez(
-        os.path.join(run_dir, 'leakage_spectrum.npz'),
+        os.path.join(results_dir, 'leakage_spectrum.npz'),
         **{f'{name}_{k}': v for name, r in results.items() for k, v in r.items()},
         source_per_sec              = source_per_sec,
         total_abs_leakage_n_per_sec = total_abs_leakage,

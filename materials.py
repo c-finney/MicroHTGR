@@ -14,7 +14,7 @@ fuel = openmc.Material(name="Fuel")
 fuel.add_nuclide("U235", params["enrichment"])
 fuel.add_nuclide("U238", 1.0 - params["enrichment"])
 fuel.add_element("C", 1.0)
-fuel.add_element('O', 0.50)
+fuel.add_element("O", 0.50)
 fuel.set_density("kg/m3", params["kernel_density"])
 fuel.depletable = True
 
@@ -50,8 +50,8 @@ helium.set_density("kg/m3", params["coolant_density"])
 # ----- Boron Carbide Burnable Poison -----
 b4c_poison = openmc.Material(name="B4C_Poison")
 enrichment_10_poison = params["B10_enrichment_poison"]
-mass_10 = openmc.data.atomic_mass('B10')
-mass_11 = openmc.data.atomic_mass('B11')
+mass_10 = openmc.data.atomic_mass("B10")
+mass_11 = openmc.data.atomic_mass("B11")
 
 # number of atoms in one gram of boron mixture
 n_10_poison = enrichment_10_poison / mass_10
@@ -66,10 +66,10 @@ total_b10_weight_percent_poison = params["B10_wt_percent_poison"]
 total_mass_poison = grams_10_poison / total_b10_weight_percent_poison
 carbon_mass_poison = total_mass_poison - grams_10_poison - grams_11_poison
 
-b4c_poison.add_nuclide('B10', grams_10_poison / total_mass_poison, 'wo')
-b4c_poison.add_nuclide('B11', grams_11_poison / total_mass_poison, 'wo')
-b4c_poison.add_element('C', carbon_mass_poison / total_mass_poison, 'wo')
-b4c_poison.set_density('kg/m3', params["B4C_density_poison"])
+b4c_poison.add_nuclide("B10", grams_10_poison / total_mass_poison, 'wo')
+b4c_poison.add_nuclide("B11", grams_11_poison / total_mass_poison, 'wo')
+b4c_poison.add_element("C", carbon_mass_poison / total_mass_poison, 'wo')
+b4c_poison.set_density("kg/m3", params["B4C_density_poison"])
 b4c_poison.depletable = True
 
 # ----- Boron Carbide Control Rod -----
@@ -89,10 +89,18 @@ total_b10_weight_percent_control = params["B10_wt_percent_control"]
 total_mass_control = grams_10_control / total_b10_weight_percent_control
 carbon_mass_control = total_mass_control - grams_10_control - grams_11_control
 
-b4c_control.add_nuclide('B10', grams_10_control / total_mass_control, 'wo')
-b4c_control.add_nuclide('B11', grams_11_control / total_mass_control, 'wo')
-b4c_control.add_element('C', carbon_mass_control / total_mass_control, 'wo')
-b4c_control.set_density('kg/m3', params["B4C_density_control"])
+b4c_control.add_nuclide("B10", grams_10_control / total_mass_control, 'wo')
+b4c_control.add_nuclide("B11", grams_11_control / total_mass_control, 'wo')
+b4c_control.add_element("C", carbon_mass_control / total_mass_control, 'wo')
+b4c_control.set_density("kg/m3", params["B4C_density_control"])
+
+# ----- Secondary Shutdown Rod Material (55% B4C control + 45% Helium by volume) -----
+b4c_ss = openmc.Material.mix_materials(
+    [b4c_control, helium],
+    [0.55, 0.45],
+    'vo',
+    name="B4C_SS"
+)
 
 # ----- Incoloy 800H -----
 incoloy800H = openmc.Material(name='Incoloy 800H')
@@ -108,4 +116,10 @@ incoloy800H.add_element('S', 0.015, 'wo')
 incoloy800H.add_element('Cu', 0.50, 'wo')
 incoloy800H.add_element('Fe', 43.605, 'wo')
 
-materials += [fuel, buffer, pyc, sic, graphite, helium, b4c_poison, b4c_control, incoloy800H]
+# ----- BeO Reflector -----
+beo = openmc.Material(name='BeO')
+beo.add_element('Be', 1.0)
+beo.add_element('O', 1.0)
+beo.set_density('kg/m3', params["BeO_density"])
+
+materials += [fuel, buffer, pyc, sic, graphite, helium, b4c_poison, b4c_control, b4c_ss, incoloy800H, beo]

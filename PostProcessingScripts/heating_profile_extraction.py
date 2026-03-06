@@ -336,7 +336,7 @@ def extract_mesh_heating(sp_path, source_per_sec, params, symmetry_factor):
 
     # ------------------------------------------------------------------
     # Extract z-profile at each peak by summing voxels within fuel
-    # channel radius (× 1.2 to capture all intersecting voxels)
+    # channel radius (× 2 to capture all intersecting voxels)
     # ------------------------------------------------------------------
     # peaks[:, 0] = iy, peaks[:, 1] = ix  (image convention)
     x_centers = np.linspace(ll[0] + dx/2, ur[0] - dx/2, nx)
@@ -345,14 +345,14 @@ def extract_mesh_heating(sp_path, source_per_sec, params, symmetry_factor):
                             for k in range(n_channels)])
 
     compact_r = params.get("compact_radius", 0.635)
-    capture_r = compact_r * 1.2
+    capture_r = compact_r * 2
     # Max pixel offset to search (bounding box)
     search_px = int(np.ceil(capture_r / dx)) + 1
     search_py = int(np.ceil(capture_r / dy)) + 1
     capture_r2 = capture_r ** 2
 
     print(f"  Fuel compact radius: {compact_r:.3f} cm, "
-          f"capture radius (×1.2): {capture_r:.3f} cm")
+          f"capture radius (×2): {capture_r:.3f} cm")
 
     heating_profiles = np.zeros((n_channels, nz))
     voxels_per_channel = []
@@ -417,10 +417,11 @@ def extract_mesh_heating(sp_path, source_per_sec, params, symmetry_factor):
 # ANALYSIS AND PLOTTING
 # ====================================================================================================
 
-def analyze_and_plot(data, run_dir, batch, params, target_power_MW):
+def analyze_and_plot(data, out_dir, batch, params, target_power_MW):
     """
     Analyze per-channel heating profiles and generate plots.
     """
+    run_dir = out_dir   # output directory alias used throughout function
     z_centers      = data['z_centers']
     heating_2d     = data['heating_2d']       # (n_channels, nz)
     n_channels     = data['n_channels']
@@ -458,6 +459,10 @@ def analyze_and_plot(data, run_dir, batch, params, target_power_MW):
     nz_idx      = np.where(nonzero_mask)[0]
     coldest_idx = int(nz_idx[np.argmin(integrated[nz_idx])])
     coldest_profile = heating_2d[coldest_idx, :]
+
+    median_integ   = np.median(integrated[nz_idx])
+    median_idx     = int(nz_idx[np.argmin(np.abs(integrated[nz_idx] - median_integ))])
+    median_profile = heating_2d[median_idx, :]
 
     avg_profile = heating_2d[nonzero_mask, :].mean(axis=0)
     std_profile = heating_2d[nonzero_mask, :].std(axis=0)
@@ -519,12 +524,15 @@ def analyze_and_plot(data, run_dir, batch, params, target_power_MW):
     # ==================================================================
     fig, ax = plt.subplots(figsize=(8, 7), dpi=150)
     for i in nz_idx:
-        if i == hottest_idx or i == coldest_idx:
+        if i in (hottest_idx, coldest_idx, median_idx):
             continue
         ax.plot(z_centers, heating_2d[i, :], color='gray', alpha=0.15, lw=0.8)
     ax.plot(z_centers, hottest_profile, 'r-', lw=2.5,
             label=f'Hottest (ch {hottest_idx})')
     ax.plot(z_centers, avg_profile, 'b-', lw=2.5, label='Average')
+    med_x, med_y = peak_coords[median_idx]
+    ax.plot(z_centers, median_profile, color='orange', lw=2,
+            label=f'Median (ch {median_idx}, x={med_x:.1f}, y={med_y:.1f} cm)')
     ax.plot(z_centers, coldest_profile, 'g-', lw=2,
             label=f'Coldest (ch {coldest_idx})')
     ax.set_xlabel('Axial Position [cm]')
@@ -658,13 +666,43 @@ def analyze_and_plot(data, run_dir, batch, params, target_power_MW):
         hot_asm_idx = -1
 
     # ==================================================================
+    # POWER BALANCE — sum all fuel channels at each axial level
+    # ==================================================================
+    is_wedge       = params.get("use_1/6_geometry", False)
+    sym            = 6 if is_wedge else 1
+    total_qz       = heating_2d.sum(axis=0)          # (nz,) W per axial level
+    total_ch_power = total_qz.sum()                  # W, channel voxels in sim domain
+    # heating_3d is normalized to the sim domain (P_target / sym for wedge),
+    # so compare against the same domain power for a meaningful fraction.
+    domain_power_W = target_power_MW * 1e6 / sym
+    power_fraction = total_ch_power / domain_power_W if domain_power_W > 0 else 0.0
+
+    print(f"\n  --- Power balance (fuel channels) ---")
+    print(f"  Geometry:                     {'1/6 Wedge' if is_wedge else 'Full Core'}")
+    print(f"  Full-core target power:       {target_power_MW * 1e6:.4e} W")
+    print(f"  Sim-domain target power:      {domain_power_W:.4e} W  (÷{sym})")
+    print(f"  Sum of all channel heating:   {total_ch_power:.4e} W")
+    print(f"  Fraction of domain target:    {power_fraction:.4f}  "
+          f"({power_fraction*100:.2f}%)")
+    print(f"  (Note: channel sum uses compact-radius voxels; "
+          f"moderator/reflector heating excluded)")
+
+    # CSV — total q(z) summed over all channels
+    total_qz_csv = os.path.join(run_dir, f'batch{batch}_total_channel_qz.csv')
+    hdr_tot = 'z_center_cm,total_all_channels_q_W'
+    np.savetxt(total_qz_csv,
+               np.column_stack([z_centers, total_qz]),
+               delimiter=',', header=hdr_tot, comments='')
+    print(f"  Saved: {total_qz_csv}")
+
+    # ==================================================================
     # CSV — axial profiles
     # ==================================================================
     csv_path = os.path.join(run_dir, f'batch{batch}_axial_heating_profiles.csv')
-    hdr = 'z_center_cm,hottest_channel_q_W,average_channel_q_W,std_channel_q_W,coldest_channel_q_W'
+    hdr = 'z_center_cm,hottest_channel_q_W,average_channel_q_W,std_channel_q_W,median_channel_q_W,coldest_channel_q_W'
     np.savetxt(csv_path,
                np.column_stack([z_centers, hottest_profile, avg_profile,
-                                std_profile, coldest_profile]),
+                                std_profile, median_profile, coldest_profile]),
                delimiter=',', header=hdr, comments='')
     print(f"  Saved: {csv_path}")
 
@@ -709,12 +747,38 @@ def analyze_and_plot(data, run_dir, batch, params, target_power_MW):
         f.write(f'  Peak axial heating:    {peak[coldest_idx]:.4e} W\n\n')
 
         f.write('-' * 60 + '\n')
+        f.write('MEDIAN FUEL CHANNEL\n')
+        f.write('-' * 60 + '\n')
+        f.write(f'  Channel index:         {median_idx}\n')
+        f.write(f'  Position:              ({med_x:.2f}, {med_y:.2f}) cm\n')
+        f.write(f'  Integrated heating:    {integrated[median_idx]:.4e} W\n')
+        f.write(f'  Peak axial heating:    {peak[median_idx]:.4e} W\n')
+        f.write(f'  Median integrated q:   {median_integ:.4e} W  '
+                f'(channel nearest to median)\n\n')
+
+        f.write('-' * 60 + '\n')
         f.write('PEAKING FACTORS\n')
         f.write('-' * 60 + '\n')
         f.write(f'  Radial  (Fxy):        {Fxy:.4f}\n')
         f.write(f'  Axial   (Fz, hot):    {Fz_hot:.4f}\n')
         f.write(f'  Axial   (Fz, avg):    {Fz_avg:.4f}\n')
         f.write(f'  Total   (Fq):         {Fq:.4f}\n\n')
+
+        f.write('-' * 60 + '\n')
+        f.write('POWER BALANCE — ALL FUEL CHANNELS\n')
+        f.write('-' * 60 + '\n')
+        f.write(f'  Geometry:                     {"1/6 Wedge" if is_wedge else "Full Core"}\n')
+        f.write(f'  Full-core target power:       {target_power_MW * 1e6:.4e} W\n')
+        f.write(f'  Sim-domain target power:      {domain_power_W:.4e} W  (÷{sym})\n')
+        f.write(f'  Sum of all channel heating:   {total_ch_power:.4e} W\n')
+        f.write(f'  Fraction of domain target:    {power_fraction:.4f} '
+                f'({power_fraction*100:.2f}%)\n')
+        f.write(f'  Note: channel sum uses compact-radius voxels only;\n')
+        f.write(f'        moderator/reflector heating is not included.\n\n')
+        f.write(f'  Total channel q(z) [W per axial level, all channels summed]:\n')
+        for iz in range(n_ax):
+            f.write(f'    z={z_centers[iz]:7.2f} cm:  {total_qz[iz]:.4e} W\n')
+        f.write('\n')
 
         if hot_asm_q is not None:
             f.write('-' * 60 + '\n')
@@ -829,7 +893,10 @@ def run_heating_profile_extraction(run_dir, params, batch=None):
         import traceback; traceback.print_exc(); return
 
     # --- Analyze ---
-    analyze_and_plot(data, run_dir, batch, params, target_power)
+    out_dir = os.path.join(run_dir, "heating_profile_results")
+    os.makedirs(out_dir, exist_ok=True)
+    print(f"Output directory: {out_dir}")
+    analyze_and_plot(data, out_dir, batch, params, target_power)
 
     del data; gc.collect()
 

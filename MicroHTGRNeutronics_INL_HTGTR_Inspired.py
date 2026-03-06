@@ -169,7 +169,7 @@ def build_model(params, run_dir):
     # CREATE ASSEMBLIES
     # ==================================================================
 
-    assemblies, m_colors, bundle_pitch, = asm.create_assembly_univs(
+    assemblies, m_colors, bundle_pitch = asm.create_assembly_univs(
         params = params,
         mats = mats,
         T_coolant_z = T_coolant_z,
@@ -193,25 +193,26 @@ def build_model(params, run_dir):
     )
 
     # ==================================================================
-    # FULL CORE AND OUTER PERMANENT REFLECTOR CREATION
+    # FULL CORE AND RADIAL REFLECTOR CREATION
     # ==================================================================
 
-    outer_refl_cells = []
-    for idx, (z_min, z_max) in enumerate(zip(axial_coords[0:-1], axial_coords[1:])):
-        T_reflector = T_reflector_z[idx]
-        graphite_clone = mats.graphite.clone()
-        m_colors[graphite_clone] = 'darkblue'
-        graphite_clone.temperature = T_reflector
-        outer_refl_cell = openmc.Cell(fill=graphite_clone)
-        outer_refl_cells.append(outer_refl_cell)
-
-    core_outer_univ = openmc.Universe(cells=outer_refl_cells)
-    core_lattice.outer = core_outer_univ
+    # The lattice.outer universe fills inter-hex gaps at the lattice edge.
+    # Use a single graphite cell at average reflector temperature for this;
+    # the actual radial reflector with axial temperature zoning is built
+    # from explicit cells below.
+    T_refl_avg = 0.5 * (params["reflector_min"] + params["reflector_max"])
+    graphite_outer = mats.graphite.clone()
+    m_colors[graphite_outer] = 'darkblue'
+    graphite_outer.temperature = T_refl_avg
+    core_lattice.outer = openmc.Universe(cells=[openmc.Cell(fill=graphite_outer)])
 
     core_cyl = openmc.ZCylinder(r=params["core_radius"], boundary_type='vacuum')
     min_z = openmc.ZPlane(z0=reactor_bottom)
     max_z = openmc.ZPlane(z0=reactor_top)
 
+    # Wedge planes (defined for both full and 1/6 so downstream code can reference them)
+    plane_1 = None
+    plane_2 = None
     if params["use_1/6_geometry"]:
         plane_1 = openmc.Plane(a=0, b=1, c=0, d=0, boundary_type='reflective')
         angle_deg = 60.0
@@ -223,16 +224,121 @@ def build_model(params, run_dir):
             d=0, 
             boundary_type='reflective'
         )
-        wedge_region = (
-            -core_cyl & 
-            +min_z & 
-            -max_z & 
-            +plane_1 &
-            -plane_2
-        )
-        core_cell = openmc.Cell(fill=core_lattice, region=wedge_region)
+
+    def _apply_wedge(region):
+        """Intersect region with wedge planes if using 1/6 geometry."""
+        if params["use_1/6_geometry"]:
+            return region & +plane_1 & -plane_2
+        return region
+
+    # Hex lattice circumscribed radius (outer edge of outermost assemblies)
+    n_core_rings = len(params["core_rings"])
+    lattice_extent_r = (n_core_rings - 1) * bundle_pitch + bundle_pitch / 4
+    lattice_cyl = openmc.ZCylinder(r=lattice_extent_r)
+
+    # Z-planes for axial zoning (reuse min_z / max_z at boundaries)
+    z_planes = []
+    for i, z in enumerate(axial_coords):
+        if i == 0:
+            z_planes.append(min_z)
+        elif i == len(axial_coords) - 1:
+            z_planes.append(max_z)
+        else:
+            z_planes.append(openmc.ZPlane(z0=z))
+
+    # Core cell bounded by lattice extent cylinder
+    core_cell = openmc.Cell(
+        fill=core_lattice,
+        region=_apply_wedge(-lattice_cyl & +min_z & -max_z))
+
+    # ==================================================================
+    # BERYLLIUM OXIDE REFLECTOR  (optional annular BeO region)
+    # ==================================================================
+
+    inner_graphite_cells = []
+    beo_cells = []
+    outer_graphite_cells = []
+
+    use_beo = params.get("use_beryllium_reflector", False)
+    if use_beo:
+        beo_inner_r = params.get("BeO_inner_radius")
+        if beo_inner_r is None:
+            beo_inner_r = lattice_extent_r
+        beo_thickness = params.get("BeO_thickness", 0.5)
+        beo_outer_r = min(beo_inner_r + beo_thickness, params["core_radius"])
+
+        print(f"\nBeO reflector enabled:")
+        print(f"  Lattice extent:  {lattice_extent_r:.2f} cm  "
+              f"({n_core_rings} rings)")
+
+        beo_inner_cyl = openmc.ZCylinder(r=beo_inner_r)
+
+        # Inner graphite reflector: lattice_cyl -> beo_inner_cyl (if gap exists)
+        need_inner_graphite = beo_inner_r > lattice_extent_r
+        if need_inner_graphite:
+            print(f"  Inner graphite:  {lattice_extent_r:.2f} -> "
+                  f"{beo_inner_r:.2f} cm")
+            for idx in range(len(axial_coords) - 1):
+                T_refl = T_reflector_z[idx]
+                gr_mat = mats.graphite.clone()
+                gr_mat.temperature = T_refl
+                m_colors[gr_mat] = 'darkblue'
+                region = (+lattice_cyl & -beo_inner_cyl
+                          & +z_planes[idx] & -z_planes[idx + 1])
+                inner_graphite_cells.append(
+                    openmc.Cell(fill=gr_mat, region=_apply_wedge(region)))
+        else:
+            print(f"  No inner graphite (BeO starts at lattice edge)")
+
+        print(f"  BeO annulus:     {beo_inner_r:.2f} -> "
+              f"{beo_outer_r:.2f} cm  "
+              f"(thickness = {beo_outer_r - beo_inner_r:.2f} cm)")
+
+        # Determine outer boundary of BeO region
+        need_outer_graphite = beo_outer_r < params["core_radius"]
+        if need_outer_graphite:
+            beo_outer_cyl = openmc.ZCylinder(r=beo_outer_r)
+            beo_outer_surf = beo_outer_cyl
+            print(f"  Outer graphite:  {beo_outer_r:.2f} -> "
+                  f"{params['core_radius']:.2f} cm")
+        else:
+            beo_outer_surf = core_cyl
+            print(f"  BeO extends to core boundary (no outer graphite)")
+
+        # BeO annular cells: beo_inner_cyl -> beo_outer_surf
+        for idx in range(len(axial_coords) - 1):
+            T_refl = T_reflector_z[idx]
+            beo_mat = mats.beo.clone()
+            beo_mat.temperature = T_refl
+            m_colors[beo_mat] = 'lightblue'
+            region = (+beo_inner_cyl & -beo_outer_surf
+                      & +z_planes[idx] & -z_planes[idx + 1])
+            beo_cells.append(openmc.Cell(fill=beo_mat,
+                                         region=_apply_wedge(region)))
+
+        # Outer graphite: beo_outer_cyl -> core_cyl (if needed)
+        if need_outer_graphite:
+            for idx in range(len(axial_coords) - 1):
+                T_refl = T_reflector_z[idx]
+                gr_mat = mats.graphite.clone()
+                gr_mat.temperature = T_refl
+                m_colors[gr_mat] = 'darkblue'
+                region = (+beo_outer_cyl & -core_cyl
+                          & +z_planes[idx] & -z_planes[idx + 1])
+                outer_graphite_cells.append(
+                    openmc.Cell(fill=gr_mat, region=_apply_wedge(region)))
+
     else:
-        core_cell = openmc.Cell(fill=core_lattice, region=-core_cyl & +min_z & -max_z)
+        # No BeO — axially-zoned graphite from lattice edge to core_cyl
+        for idx in range(len(axial_coords) - 1):
+            T_refl = T_reflector_z[idx]
+            gr_mat = mats.graphite.clone()
+            gr_mat.temperature = T_refl
+            m_colors[gr_mat] = 'darkblue'
+            region = (+lattice_cyl & -core_cyl
+                      & +z_planes[idx] & -z_planes[idx + 1])
+            outer_graphite_cells.append(
+                openmc.Cell(fill=gr_mat, region=_apply_wedge(region)))
 
     # Top and bottom reflectors
     top_refl_z = reactor_top + params["reflector_thickness"]
@@ -248,26 +354,19 @@ def build_model(params, run_dir):
     m_colors[graphite_bottom] = 'darkblue'
     graphite_bottom.temperature = T_reflector_axial
 
-    if params["use_1/6_geometry"]:
-        top_refl_cell = openmc.Cell(
-            fill=graphite_top, 
-            region=-core_cyl & +max_z & -top_refl & +plane_1 & -plane_2
-        )
-        bottom_refl_cell = openmc.Cell(
-            fill=graphite_bottom, 
-            region=-core_cyl & +bottom_refl & -min_z & +plane_1 & -plane_2
-        )
-    else:
-        top_refl_cell = openmc.Cell(
-            fill=graphite_top, 
-            region=-core_cyl & +max_z & -top_refl
-        )
-        bottom_refl_cell = openmc.Cell(
-            fill=graphite_bottom, 
-            region=-core_cyl & +bottom_refl & -min_z
-        )
+    top_refl_cell = openmc.Cell(
+        fill=graphite_top, 
+        region=_apply_wedge(-core_cyl & +max_z & -top_refl))
+    bottom_refl_cell = openmc.Cell(
+        fill=graphite_bottom, 
+        region=_apply_wedge(-core_cyl & +bottom_refl & -min_z))
 
-    geometry = openmc.Geometry([core_cell, top_refl_cell, bottom_refl_cell])
+    all_geometry_cells = ([core_cell]
+                          + inner_graphite_cells
+                          + beo_cells
+                          + outer_graphite_cells
+                          + [top_refl_cell, bottom_refl_cell])
+    geometry = openmc.Geometry(all_geometry_cells)
     model.geometry = geometry
 
     # ==================================================================
@@ -280,9 +379,11 @@ def build_model(params, run_dir):
     m_colors[mats.sic] = 'yellow'
     m_colors[mats.graphite] = 'darkblue'
     m_colors[mats.b4c_poison] = 'purple'
+    m_colors[mats.b4c_ss] = 'orange'
     if params["bank_1_insertion"] > 0 or params["bank_2_insertion"] > 0 or params["bank_3_insertion"] > 0:
         m_colors[mats.b4c_control] = 'black'
     m_colors[mats.incoloy800H] = 'gray'
+    m_colors[mats.beo] = 'lightblue'
 
     sin60 = np.sin(np.radians(60))
 

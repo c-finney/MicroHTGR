@@ -104,19 +104,21 @@ def _find_material_id(results, params, mat_key, search_nuclide, label):
 # NUCLIDE DATA EXTRACTION
 # ====================================================================================================
 
-def _extract_nuclide_inventories(results, mat_id, nuclide_list, label):
+def _extract_nuclide_inventories(results, mat_id, nuclide_list, label, symmetry_factor=1):
     """
     Extract atom inventories for a list of nuclides from a single material.
 
     Args:
-        results:      openmc.deplete.Results object
-        mat_id:       material ID string
-        nuclide_list: list of nuclide name strings
-        label:        human-readable label for print messages
+        results:          openmc.deplete.Results object
+        mat_id:           material ID string
+        nuclide_list:     list of nuclide name strings
+        label:            human-readable label for print messages
+        symmetry_factor:  geometry multiplier (6 for 1/6 wedge, 1 for full core)
 
     Returns:
         dict: {nuclide_name: np.ndarray of atom counts per timestep}
               Only nuclides with at least one nonzero value are included.
+              Atom counts are scaled to full core by symmetry_factor.
     """
 
     if mat_id is None:
@@ -128,15 +130,17 @@ def _extract_nuclide_inventories(results, mat_id, nuclide_list, label):
     for nuc in nuclide_list:
         try:
             _time, atoms = results.get_atoms(mat_id, nuc)
+            atoms = np.array(atoms) * symmetry_factor
             if np.any(atoms > 0):
-                nuclide_data[nuc] = np.array(atoms)
+                nuclide_data[nuc] = atoms
         except Exception:
             failed.append(nuc)
 
     if failed:
         print(f"   [{label}] Not found in chain/results: {failed}")
 
-    print(f"   [{label}] Extracted {len(nuclide_data)} / {len(nuclide_list)} nuclides")
+    scale_note = f" (×{symmetry_factor} for full core)" if symmetry_factor > 1 else ""
+    print(f"   [{label}] Extracted {len(nuclide_data)} / {len(nuclide_list)} nuclides{scale_note}")
     return nuclide_data
 
 # ====================================================================================================
@@ -245,7 +249,7 @@ def run_depletion_postprocessing(run_dir, params):
     print(f"{'=' * 80}")
     print(f"Run directory: {run_dir}")
 
-    POSTPROCESSING_RESULTS_DIR = os.path.join(run_dir, "parametric_study_results")
+    POSTPROCESSING_RESULTS_DIR = os.path.join(run_dir, "depletion_results")
     os.makedirs(POSTPROCESSING_RESULTS_DIR, exist_ok=True)
 
     results_path = os.path.join(run_dir, "depletion_results.h5")
@@ -254,6 +258,13 @@ def run_depletion_postprocessing(run_dir, params):
         return None
 
     results = openmc.deplete.Results(results_path)
+
+    # ================================================================================
+    # 0. GEOMETRY SYMMETRY FACTOR
+    # ================================================================================
+
+    is_wedge = params.get("use_1/6_geometry", False)
+    symmetry_factor = 6 if is_wedge else 1
 
     # ================================================================================
     # 1. K-EFFECTIVE VS. TIME/BURNUP
@@ -284,8 +295,6 @@ def run_depletion_postprocessing(run_dir, params):
         burnup_MWd_per_MtU    = cumulative_energy_MWd / (total_HM_mass_kg / 1000.0)
     else:
         burnup_MWd_per_MtU = None
-
-    x_data        = burnup_MWd_per_MtU if burnup_MWd_per_MtU is not None else time_days
 
     x_data        = burnup_MWd_per_MtU if burnup_MWd_per_MtU is not None else time_days
     x_label       = "Burnup (MWd/MtU)"  if burnup_MWd_per_MtU is not None else "Time (days)"
@@ -328,10 +337,12 @@ def run_depletion_postprocessing(run_dir, params):
     fuel_nuclides = [n for n in tracked_nuclides if n not in poison_tracked_nuclides]
 
     print(f"\n   Extracting fuel inventories ({len(fuel_nuclides)} nuclides)...")
-    fuel_data   = _extract_nuclide_inventories(results, fuel_mat_id,   fuel_nuclides,        "Fuel")
+    fuel_data   = _extract_nuclide_inventories(results, fuel_mat_id,   fuel_nuclides,
+                                                "Fuel", symmetry_factor)
 
     print(f"\n   Extracting burnable poison inventories ({len(poison_tracked_nuclides)} nuclides)...")
-    poison_data = _extract_nuclide_inventories(results, poison_mat_id, poison_tracked_nuclides, "Poison")
+    poison_data = _extract_nuclide_inventories(results, poison_mat_id, poison_tracked_nuclides,
+                                                "Poison", symmetry_factor)
 
     # Merge for plotting — poison data keyed separately to avoid name collision
     # B10 from poison material is canonical; if also in fuel, prefer poison
@@ -344,9 +355,12 @@ def run_depletion_postprocessing(run_dir, params):
     # 4. PRINT SUMMARY
     # ================================================================================
 
+    geom_label = "1/6 wedge" if is_wedge else "full core"
+
     print(f"\n{'─' * 60}")
     print("  DEPLETION RESULTS SUMMARY")
     print(f"{'─' * 60}")
+    print(f"  Geometry:           {geom_label}")
     print(f"  Depletion steps:    {len(keff_mean)}")
     print(f"  Total time:         {time_days[-1]:.1f} days ({time_years[-1]:.2f} years)")
     print(f"  Initial k_eff:      {keff_mean[0]:.5f} ± {keff_std[0]:.5f}")
@@ -354,9 +368,9 @@ def run_depletion_postprocessing(run_dir, params):
     if burnup_MWd_per_MtU is not None:
         print(f"  Final burnup:       {burnup_MWd_per_MtU[-1]:.0f} MWd/MtU")
     if total_HM_mass_kg:
-        print(f"  Initial HM mass:    {total_HM_mass_kg:.2f} kg")
+        print(f"  Initial HM mass:    {total_HM_mass_kg:.2f} kg ")
     if total_B10_mass_kg:
-        print(f"  Initial B-10 mass:  {total_B10_mass_kg:.4f} kg")
+        print(f"  Initial B-10 mass:  {total_B10_mass_kg:.4f} kg ")
 
     if discharge_time_days is not None:
         print(f"\n  Discharge (k_eff = 1.0):")
@@ -375,7 +389,7 @@ def run_depletion_postprocessing(run_dir, params):
             if initial > 0:
                 pct = (1.0 - final / initial) * 100
                 print(f"\n  {nuc} [{source_label}]: {initial:.4e} → {final:.4e} atoms  "
-                      f"({pct:.1f}% depleted)")
+                      f"({pct:.1f}% depleted)  ")
 
     if "Pu239" in fuel_data and "U235" in fuel_data and fuel_data["U235"][0] > 0:
         pu_ratio = fuel_data["Pu239"][-1] / fuel_data["U235"][0] * 100
@@ -447,7 +461,8 @@ def run_depletion_postprocessing(run_dir, params):
             _plot_nuclide_group(
                 x_data, x_label, all_nuclide_data, available,
                 group_name, POSTPROCESSING_RESULTS_DIR,
-                f"depletion_{group_name.lower().replace('/', '').replace(' ', '_')}"
+                f"depletion_{group_name.lower().replace('/', '').replace(' ', '_')}",
+                is_wedge=is_wedge
             )
             plotted_nuclides.update(available)
 
@@ -460,7 +475,8 @@ def run_depletion_postprocessing(run_dir, params):
         _plot_nuclide_group(
             x_data, x_label, all_nuclide_data, ungrouped,
             "Other Tracked Nuclides", POSTPROCESSING_RESULTS_DIR,
-            "depletion_other_nuclides"
+            "depletion_other_nuclides",
+            is_wedge=is_wedge
         )
 
     # Fissile inventory ratio
@@ -514,6 +530,8 @@ def run_depletion_postprocessing(run_dir, params):
 
     summary = {
         "n_steps":                       len(keff_mean),
+        "geometry":                      "1/6 wedge" if is_wedge else "full core",
+        "symmetry_factor":               symmetry_factor,
         "time_days":                     time_days.tolist(),
         "time_years":                    time_years.tolist(),
         "keff_mean":                     keff_mean.tolist(),
@@ -559,11 +577,12 @@ def run_depletion_postprocessing(run_dir, params):
         f.write("=" * 80 + "\n")
         f.write("DEPLETION SIMULATION RESULTS\n")
         f.write("=" * 80 + "\n\n")
+        f.write(f"Geometry:         {geom_label}\n")
         f.write(f"Thermal power:    {thermal_power_MW} MW\n")
         if total_HM_mass_kg:
-            f.write(f"Initial HM mass:  {total_HM_mass_kg:.2f} kg\n")
+            f.write(f"Initial HM mass:  {total_HM_mass_kg:.2f} kg \n")
         if total_B10_mass_kg:
-            f.write(f"Initial B-10:     {total_B10_mass_kg:.4f} kg\n")
+            f.write(f"Initial B-10:     {total_B10_mass_kg:.4f} kg \n")
         f.write(f"Depletion steps:  {len(keff_mean)}\n")
         f.write(f"Total time:       {time_days[-1]:.1f} days ({time_years[-1]:.2f} years)\n\n")
         f.write(f"Initial k_eff:    {keff_mean[0]:.5f} ± {keff_std[0]:.5f}\n")
@@ -626,7 +645,7 @@ def run_depletion_postprocessing(run_dir, params):
 # NUCLIDE GROUP PLOTTING
 # ====================================================================================================
 
-def _plot_nuclide_group(x_data, x_label, nuclide_data, nuclide_list, title, output_dir, filename_base):
+def _plot_nuclide_group(x_data, x_label, nuclide_data, nuclide_list, title, output_dir, filename_base, is_wedge=False):
     available = [
         n for n in nuclide_list
         if n in nuclide_data and np.any(nuclide_data[n] > 0)
@@ -641,7 +660,8 @@ def _plot_nuclide_group(x_data, x_label, nuclide_data, nuclide_list, title, outp
         ax.plot(x_data[:n], atoms[:n], "o-", markersize=4, linewidth=1.5, label=nuc)
 
     ax.set_xlabel(x_label, fontsize=12)
-    ax.set_ylabel("Number of Atoms", fontsize=12)
+    ylabel = "Number of Atoms"
+    ax.set_ylabel(ylabel, fontsize=12)
     ax.set_title(title, fontsize=14)
     ax.legend(fontsize=9, ncol=min(4, len(available)))
     ax.grid(True, alpha=0.3)
