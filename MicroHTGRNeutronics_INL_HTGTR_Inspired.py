@@ -1,4 +1,5 @@
 import os
+import math
 import shutil
 import openmc
 import numpy as np
@@ -7,6 +8,7 @@ from datetime import datetime
 import sys
 import subprocess
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Add parent directory to path to find modules
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -104,15 +106,36 @@ def build_model(params, run_dir):
     This is the shared model construction used by both run_simulation() and
     run_depletion_simulation().
 
+    Spatial burnup and fuel representation are controlled by two parameters:
+
+        use_spatial_burnup (bool):
+            True  — one fuel material clone per (ring × burnup band); enables
+                    radial and axial burnup variation. Required for depletion
+                    accuracy. Each burnup region gets its own TRISO lattice
+                    (or homogenized cell if use_homogenized_fuel=True).
+            False — single shared fuel material for the whole core. Minimal
+                    memory and cell count. Useful for k-eff scoping runs.
+
+        use_homogenized_fuel (bool):
+            True  — each fuel compact is represented as a single homogenized
+                    cell (volume-averaged TRISO layers + matrix graphite).
+                    Eliminates all TRISO lattice geometry. ~30,000x fewer cells
+                    per compact. Typical Δk vs. explicit TRISO: 50–200 pcm.
+                    Standard approach for burnup / depletion studies.
+            False — explicit TRISO particle lattice geometry. Reference accuracy
+                    for resonance self-shielding. High memory and cell count.
+
     Args:
         params: Simulation parameters dictionary
         run_dir: Directory for output files
 
     Returns:
-        tuple: (model, n_trisos, m_colors)
-            - model: openmc.model.Model ready to export or deplete
-            - n_trisos: Number of TRISO particles per axial zone
-            - m_colors: Material color dictionary for plotting
+        tuple: (model, n_trisos, m_colors, fuel_clones)
+            - model:       openmc.model.Model ready to export or deplete
+            - n_trisos:    Number of TRISO particles per axial zone
+                           (0 when use_homogenized_fuel=True)
+            - m_colors:    Material color dictionary for plotting
+            - fuel_clones: list[list[openmc.Material]] — fuel_clones[ring][bax]
     """
 
     os.makedirs(run_dir, exist_ok=True)
@@ -125,6 +148,14 @@ def build_model(params, run_dir):
     shutil.copy2(cross_sections_path, os.path.join(run_dir, 'cross_sections.xml'))
 
     model = openmc.model.Model()
+
+    # Read feature flags (default to safe/legacy values if absent)
+    use_spatial_burnup    = params.get("use_spatial_burnup",    True)
+    use_homogenized_fuel  = params.get("use_homogenized_fuel",  False)
+
+    print(f"\nFuel representation:")
+    print(f"  use_spatial_burnup:   {use_spatial_burnup}")
+    print(f"  use_homogenized_fuel: {use_homogenized_fuel}")
     
     # ==================================================================    
     # INITIALIZE TEMPERATURE PROFILES
@@ -156,30 +187,298 @@ def build_model(params, run_dir):
     axial_coords = np.linspace(reactor_bottom, reactor_top, params["n_ax_zones"] + 1)
 
     # ==================================================================
-    # CREATE TRISO LATTICE
+    # GENERATE TRISO POSITIONS OR SKIP IF HOMOGENIZED
     # ==================================================================
 
-    triso_lattice, n_trisos = trisos.create_triso_lattice(
-        params = params,
-        mats = mats,
-        axial_section_height = axial_section_height
+    if use_homogenized_fuel:
+        # No TRISO geometry — positions are never needed.
+        # Set sentinel values so downstream volume calculations still work.
+        safe_trisos         = []
+        n_trisos            = 0
+        r_opyc              = None
+        llc                 = None
+        triso_pitch         = None
+        triso_lattice_shape = None
+        print("\nUsing Homogenized Fuel: Skipping TRISO position generation.")
+    else:
+        safe_trisos, n_trisos, r_opyc, llc, triso_pitch, triso_lattice_shape = \
+            trisos.generate_triso_positions(
+                params=params,
+                axial_section_height=axial_section_height
+            )
+
+    # ==================================================================
+    # CREATE FUEL MATERIAL CLONES
+    # ==================================================================
+
+    n_rings          = len(params["core_rings"])
+    n_ax             = params["n_ax_zones"]
+
+    if use_spatial_burnup:
+        zones_per_region = params.get("ax_zones_per_burnup_region", 1)
+        n_burnup_ax      = math.ceil(n_ax / zones_per_region)
+    else:
+        # Non-spatial: entire core is one burnup band
+        zones_per_region = n_ax
+        n_burnup_ax      = 1
+
+    print(f"\nSpatial burnup tracking: {n_rings} rings × {n_burnup_ax} burnup bands "
+          f"({'spatial' if use_spatial_burnup else 'non-spatial, single shared material'}) "
+          f"= {n_rings * n_burnup_ax if use_spatial_burnup else 1} fuel material region(s)")
+
+    if use_homogenized_fuel:
+        # Two-region RPT model: inner cylinder (r < rpt_radius) filled with homogenized
+        # mixture of all TRISO layers + proportional graphite at pf_inner = pf*(r_compact/rpt_radius)^2.
+        # The outer graphite annulus is added in build_homogenized_compact_fill().
+        r_rpt = params.get("rpt_radius")
+        if r_rpt is None:
+            raise ValueError(
+                "use_homogenized_fuel=True requires 'rpt_radius' to be set in params. "
+                "Run study_execution_mode='RPTCalibration' first to determine the value, "
+                "then set rpt_radius in config.py."
+            )
+
+        if use_spatial_burnup:
+            fuel_clones = []
+            for ring_idx in range(n_rings):
+                ring_fuels = []
+                for bax_idx in range(n_burnup_ax):
+                    f = mats.make_rpt_inner_material(
+                        params, r_rpt, name=f"RPTInner_ring{ring_idx}_bax{bax_idx}"
+                    )
+                    ring_fuels.append(f)
+                fuel_clones.append(ring_fuels)
+        else:
+            # Single shared RPT inner material for all rings and axial zones
+            f_single = mats.make_rpt_inner_material(params, r_rpt, name="RPTInner_global")
+            fuel_clones = [[f_single] for _ in range(n_rings)]
+
+    else:
+        # Explicit TRISO: clone the kernel-only fuel material as before
+        if use_spatial_burnup:
+            fuel_clones = []
+            for ring_idx in range(n_rings):
+                ring_fuels = []
+                for bax_idx in range(n_burnup_ax):
+                    f = mats.fuel.clone()
+                    f.name = f"Fuel_ring{ring_idx}_bax{bax_idx}"
+                    f.depletable = True
+                    ring_fuels.append(f)
+                fuel_clones.append(ring_fuels)
+        else:
+            # Single shared fuel material for all rings and axial zones
+            f_single = mats.fuel.clone()
+            f_single.name = "Fuel_global"
+            f_single.depletable = True
+            fuel_clones = [[f_single] for _ in range(n_rings)]
+
+    # ==================================================================
+    # BUILD FUEL FILLS (TRISO LATTICES OR HOMOGENIZED UNIVERSES)
+    # ==================================================================
+    #
+    # ring_triso_lattices[ring_idx][ax_idx] holds the object used as the
+    # fill for a fuel compact cell in assembly.py.  For explicit TRISO this
+    # is an openmc.RectLattice; for homogenized fuel it is an openmc.Universe
+    # wrapping a single material cell.  assembly.py uses the fill object
+    # identically in both cases.
+
+    if use_homogenized_fuel:
+        # Build one homogenized-compact universe per (ring, burnup band)
+        # and expand to full axial-zone mapping — fast, no lattice construction.
+
+        if use_spatial_burnup:
+            n_lattices = n_rings * n_burnup_ax
+            print(f"Building {n_lattices} homogenized compact universes "
+                  f"({n_rings} rings × {n_burnup_ax} burnup bands)...")
+
+            burnup_fills = {r: {} for r in range(n_rings)}
+            for ring_idx in range(n_rings):
+                for bax_idx in range(n_burnup_ax):
+                    burnup_fills[ring_idx][bax_idx] = trisos.build_homogenized_compact_fill(
+                        fuel_material = fuel_clones[ring_idx][bax_idx],
+                        params        = params,
+                        mats          = mats,
+                    )
+        else:
+            # Single shared homogenized universe for the whole core
+            print("Building 1 shared homogenized compact universe (non-spatial burnup)...")
+            shared_fill = trisos.build_homogenized_compact_fill(
+                fuel_material = fuel_clones[0][0],
+                params        = params,
+                mats          = mats,
+            )
+            burnup_fills = {r: {0: shared_fill} for r in range(n_rings)}
+
+        ring_triso_lattices = {
+            ring_idx: {
+                ax_idx: burnup_fills[ring_idx][ax_idx // zones_per_region]
+                for ax_idx in range(n_ax)
+            }
+            for ring_idx in range(n_rings)
+        }
+        print("Done building homogenized compact universes.")
+
+    else:
+        # Explicit TRISO path — build one lattice per (ring, burnup band),
+        # parallelised with threads as before.
+
+        if use_spatial_burnup:
+            n_lattices = n_rings * n_burnup_ax
+        else:
+            n_lattices = 1  # single shared lattice
+
+        n_workers = min(n_lattices, os.cpu_count() or 4)
+        print(f"Building {n_lattices} TRISO lattice(s) using {n_workers} thread(s)...")
+
+        def _build_one(ring_idx, bax_idx):
+            return ring_idx, bax_idx, trisos.build_triso_lattice_for_material(
+                fuel_material       = fuel_clones[ring_idx][bax_idx],
+                mats                = mats,
+                params              = params,
+                safe_trisos         = safe_trisos,
+                r_opyc              = r_opyc,
+                llc                 = llc,
+                pitch               = triso_pitch,
+                triso_lattice_shape = triso_lattice_shape,
+            )
+
+        if use_spatial_burnup:
+            burnup_triso_lattices = {r: {} for r in range(n_rings)}
+            with ThreadPoolExecutor(max_workers=n_workers) as pool:
+                futures = [
+                    pool.submit(_build_one, ring_idx, bax_idx)
+                    for ring_idx in range(n_rings)
+                    for bax_idx in range(n_burnup_ax)
+                ]
+                for i, fut in enumerate(as_completed(futures), 1):
+                    ring_idx, bax_idx, lattice = fut.result()
+                    burnup_triso_lattices[ring_idx][bax_idx] = lattice
+                    if i % 10 == 0 or i == n_lattices:
+                        print(f"  {i}/{n_lattices} lattices built")
+        else:
+            # Build exactly one lattice and reuse it everywhere
+            _, _, shared_lattice = _build_one(0, 0)
+            burnup_triso_lattices = {r: {0: shared_lattice} for r in range(n_rings)}
+            print(f"  1/1 lattices built (shared across all rings and axial zones)")
+
+        print("Done building TRISO lattices.")
+
+        # Expand burnup-band mapping to full axial-zone mapping
+        ring_triso_lattices = {
+            ring_idx: {
+                ax_idx: burnup_triso_lattices[ring_idx][ax_idx // zones_per_region]
+                for ax_idx in range(n_ax)
+            }
+            for ring_idx in range(n_rings)
+        }
+
+    # ==================================================================
+    # SET FUEL KERNEL VOLUMES ANALYTICALLY
+    # ==================================================================
+    #
+    # For homogenized fuel the "fuel kernel volume" in a burnup band is
+    # the volume of all fuel kernels within the homogenized compact
+    # cylinders in that band, computed from the kernel volume fraction:
+    #   vf_kernel = pf * (r_kernel / r_opyc)^3
+    #   V_kernel_in_compact = vf_kernel * pi * r_compact^2 * h_compact
+    #
+    # For explicit TRISO the existing n_trisos * V_kernel formula is used.
+
+    def _n_fuel_compacts_for_code(code):
+        if not code.startswith('f'):
+            return 0
+        if 'cp' in code:
+            return 30
+        if 'ss' in code and code.endswith('p'):
+            return 30
+        if 'c' in code or 'ss' in code:
+            return 36
+        if code == 'fp':
+            return 36
+        return 42   # "f" or "fpa"
+
+    V_kernel        = (4.0 / 3.0) * np.pi * params["kernel_radius"]**3
+    geometry_factor = 6 if params["use_1/6_geometry"] else 1
+
+    if use_homogenized_fuel:
+        # The RPT inner material fills a cylinder of radius rpt_radius, so its
+        # volume per compact per zone is V_inner = pi * rpt_radius^2 * h.
+        r_rpt = params["rpt_radius"]
+        V_inner_cross_section = np.pi * r_rpt**2
+
+        if use_spatial_burnup:
+            for ring_idx, ring_def in enumerate(params["core_rings"]):
+                n_fuel_compacts = sum(_n_fuel_compacts_for_code(c) for c in ring_def)
+                V_inner_per_zone = (V_inner_cross_section
+                                    * axial_section_height * n_fuel_compacts
+                                    / geometry_factor)
+                for bax_idx in range(n_burnup_ax):
+                    band_start   = bax_idx * zones_per_region
+                    actual_zones = min(zones_per_region, n_ax - band_start)
+                    fuel_clones[ring_idx][bax_idx].volume = actual_zones * V_inner_per_zone
+        else:
+            total_volume = 0.0
+            for ring_idx, ring_def in enumerate(params["core_rings"]):
+                n_fuel_compacts = sum(_n_fuel_compacts_for_code(c) for c in ring_def)
+                V_inner_per_zone = (V_inner_cross_section
+                                    * axial_section_height * n_fuel_compacts
+                                    / geometry_factor)
+                actual_zones = min(zones_per_region, n_ax)
+                total_volume += actual_zones * V_inner_per_zone
+            fuel_clones[0][0].volume = total_volume
+
+    else:
+        if use_spatial_burnup:
+            for ring_idx, ring_def in enumerate(params["core_rings"]):
+                n_fuel_compacts = sum(_n_fuel_compacts_for_code(c) for c in ring_def)
+                V_per_zone = (n_trisos * V_kernel * n_fuel_compacts) / geometry_factor
+                for bax_idx in range(n_burnup_ax):
+                    band_start   = bax_idx * zones_per_region
+                    actual_zones = min(zones_per_region, n_ax - band_start)
+                    fuel_clones[ring_idx][bax_idx].volume = actual_zones * V_per_zone
+        else:
+            total_volume = 0.0
+            for ring_idx, ring_def in enumerate(params["core_rings"]):
+                n_fuel_compacts = sum(_n_fuel_compacts_for_code(c) for c in ring_def)
+                V_per_zone = (n_trisos * V_kernel * n_fuel_compacts) / geometry_factor
+                actual_zones = min(zones_per_region, n_ax)
+                total_volume += actual_zones * V_per_zone
+            fuel_clones[0][0].volume = total_volume
+
+    # Set poison volume analytically
+    def _n_poison_compacts_for_code(code):
+        if not code.startswith('f'):
+            return 0
+        if code == 'fpa':
+            return 1
+        if 'p' in code:
+            return 6
+        return 0
+
+    n_poison_compacts = sum(
+        _n_poison_compacts_for_code(c)
+        for ring_def in params["core_rings"]
+        for c in ring_def
     )
+    V_poison_column  = np.pi * params["compact_radius"]**2 * params["core_height"]
+    poison_volume    = n_poison_compacts * V_poison_column / geometry_factor
+    mats.b4c_poison.volume = poison_volume
 
     # ==================================================================
     # CREATE ASSEMBLIES
     # ==================================================================
 
     assemblies, m_colors, bundle_pitch = asm.create_assembly_univs(
-        params = params,
-        mats = mats,
-        T_coolant_z = T_coolant_z,
-        T_compact_z = T_compact_z,
-        T_matrix_z = T_matrix_z,
-        T_reflector_z = T_reflector_z,
-        triso_lattice = triso_lattice,
-        axial_coords = axial_coords,
-        reactor_bottom = reactor_bottom,
-        reactor_top = reactor_top
+        params             = params,
+        mats               = mats,
+        T_coolant_z        = T_coolant_z,
+        T_compact_z        = T_compact_z,
+        T_matrix_z         = T_matrix_z,
+        T_reflector_z      = T_reflector_z,
+        ring_triso_lattices = ring_triso_lattices,
+        axial_coords       = axial_coords,
+        reactor_bottom     = reactor_bottom,
+        reactor_top        = reactor_top
     )
 
     # ==================================================================
@@ -196,15 +495,11 @@ def build_model(params, run_dir):
     # FULL CORE AND RADIAL REFLECTOR CREATION
     # ==================================================================
 
-    # The lattice.outer universe fills inter-hex gaps at the lattice edge.
-    # Use a single graphite cell at average reflector temperature for this;
-    # the actual radial reflector with axial temperature zoning is built
-    # from explicit cells below.
     T_refl_avg = 0.5 * (params["reflector_min"] + params["reflector_max"])
-    graphite_outer = mats.graphite.clone()
-    m_colors[graphite_outer] = 'darkblue'
-    graphite_outer.temperature = T_refl_avg
-    core_lattice.outer = openmc.Universe(cells=[openmc.Cell(fill=graphite_outer)])
+    m_colors[mats.graphite] = 'darkblue'
+    outer_graphite_cell = openmc.Cell(fill=mats.graphite)
+    outer_graphite_cell.temperature = T_refl_avg
+    core_lattice.outer = openmc.Universe(cells=[outer_graphite_cell])
 
     core_cyl = openmc.ZCylinder(r=params["core_radius"], boundary_type='vacuum')
     min_z = openmc.ZPlane(z0=reactor_bottom)
@@ -246,7 +541,6 @@ def build_model(params, run_dir):
         else:
             z_planes.append(openmc.ZPlane(z0=z))
 
-    # Core cell bounded by lattice extent cylinder
     core_cell = openmc.Cell(
         fill=core_lattice,
         region=_apply_wedge(-lattice_cyl & +min_z & -max_z))
@@ -259,12 +553,12 @@ def build_model(params, run_dir):
     beo_cells = []
     outer_graphite_cells = []
 
-    use_beo = params["use_beryllium_reflector"]
+    use_beo = params["use_BeO_reflector"]
     if use_beo:
         beo_inner_r = params["BeO_inner_radius"]
         if beo_inner_r is None:
             beo_inner_r = lattice_extent_r
-        beo_thickness = params["BeO_thickness", 0.5]
+        beo_thickness = params["BeO_thickness"]
         beo_outer_r = min(beo_inner_r + beo_thickness, params["core_radius"])
 
         print(f"\nBeO reflector enabled:")
@@ -273,20 +567,17 @@ def build_model(params, run_dir):
 
         beo_inner_cyl = openmc.ZCylinder(r=beo_inner_r)
 
-        # Inner graphite reflector: lattice_cyl -> beo_inner_cyl (if gap exists)
         need_inner_graphite = beo_inner_r > lattice_extent_r
         if need_inner_graphite:
             print(f"  Inner graphite:  {lattice_extent_r:.2f} -> "
                   f"{beo_inner_r:.2f} cm")
             for idx in range(len(axial_coords) - 1):
                 T_refl = T_reflector_z[idx]
-                gr_mat = mats.graphite.clone()
-                gr_mat.temperature = T_refl
-                m_colors[gr_mat] = 'darkblue'
                 region = (+lattice_cyl & -beo_inner_cyl
                           & +z_planes[idx] & -z_planes[idx + 1])
-                inner_graphite_cells.append(
-                    openmc.Cell(fill=gr_mat, region=_apply_wedge(region)))
+                cell = openmc.Cell(fill=mats.graphite, region=_apply_wedge(region))
+                cell.temperature = T_refl
+                inner_graphite_cells.append(cell)
         else:
             print(f"  No inner graphite (BeO starts at lattice edge)")
 
@@ -294,7 +585,6 @@ def build_model(params, run_dir):
               f"{beo_outer_r:.2f} cm  "
               f"(thickness = {beo_outer_r - beo_inner_r:.2f} cm)")
 
-        # Determine outer boundary of BeO region
         need_outer_graphite = beo_outer_r < params["core_radius"]
         if need_outer_graphite:
             beo_outer_cyl = openmc.ZCylinder(r=beo_outer_r)
@@ -305,61 +595,46 @@ def build_model(params, run_dir):
             beo_outer_surf = core_cyl
             print(f"  BeO extends to core boundary (no outer graphite)")
 
-        # BeO annular cells: beo_inner_cyl -> beo_outer_surf
+        m_colors[mats.beo] = 'lightblue'
         for idx in range(len(axial_coords) - 1):
             T_refl = T_reflector_z[idx]
-            beo_mat = mats.beo.clone()
-            beo_mat.temperature = T_refl
-            m_colors[beo_mat] = 'lightblue'
             region = (+beo_inner_cyl & -beo_outer_surf
                       & +z_planes[idx] & -z_planes[idx + 1])
-            beo_cells.append(openmc.Cell(fill=beo_mat,
-                                         region=_apply_wedge(region)))
+            cell = openmc.Cell(fill=mats.beo, region=_apply_wedge(region))
+            cell.temperature = T_refl
+            beo_cells.append(cell)
 
-        # Outer graphite: beo_outer_cyl -> core_cyl (if needed)
         if need_outer_graphite:
             for idx in range(len(axial_coords) - 1):
                 T_refl = T_reflector_z[idx]
-                gr_mat = mats.graphite.clone()
-                gr_mat.temperature = T_refl
-                m_colors[gr_mat] = 'darkblue'
                 region = (+beo_outer_cyl & -core_cyl
                           & +z_planes[idx] & -z_planes[idx + 1])
-                outer_graphite_cells.append(
-                    openmc.Cell(fill=gr_mat, region=_apply_wedge(region)))
+                cell = openmc.Cell(fill=mats.graphite, region=_apply_wedge(region))
+                cell.temperature = T_refl
+                outer_graphite_cells.append(cell)
 
     else:
-        # No BeO — axially-zoned graphite from lattice edge to core_cyl
         for idx in range(len(axial_coords) - 1):
             T_refl = T_reflector_z[idx]
-            gr_mat = mats.graphite.clone()
-            gr_mat.temperature = T_refl
-            m_colors[gr_mat] = 'darkblue'
             region = (+lattice_cyl & -core_cyl
                       & +z_planes[idx] & -z_planes[idx + 1])
-            outer_graphite_cells.append(
-                openmc.Cell(fill=gr_mat, region=_apply_wedge(region)))
+            cell = openmc.Cell(fill=mats.graphite, region=_apply_wedge(region))
+            cell.temperature = T_refl
+            outer_graphite_cells.append(cell)
 
-    # Top and bottom reflectors
     top_refl_z = reactor_top + params["reflector_thickness"]
     bottom_refl_z = reactor_bottom - params["reflector_thickness"]
     top_refl = openmc.ZPlane(z0=top_refl_z, boundary_type='vacuum')
     bottom_refl = openmc.ZPlane(z0=bottom_refl_z, boundary_type='vacuum')
 
-    graphite_top = mats.graphite.clone()
-    m_colors[graphite_top] = 'darkblue'
-    graphite_top.temperature = T_reflector_axial
-    
-    graphite_bottom = mats.graphite.clone()
-    m_colors[graphite_bottom] = 'darkblue'
-    graphite_bottom.temperature = T_reflector_axial
-
     top_refl_cell = openmc.Cell(
-        fill=graphite_top, 
+        fill=mats.graphite,
         region=_apply_wedge(-core_cyl & +max_z & -top_refl))
+    top_refl_cell.temperature = T_reflector_axial
     bottom_refl_cell = openmc.Cell(
-        fill=graphite_bottom, 
+        fill=mats.graphite,
         region=_apply_wedge(-core_cyl & +bottom_refl & -min_z))
+    bottom_refl_cell.temperature = T_reflector_axial
 
     all_geometry_cells = ([core_cell]
                           + inner_graphite_cells
@@ -373,7 +648,10 @@ def build_model(params, run_dir):
     # GEOMETRY PLOT GENERATION
     # ==================================================================
 
-    m_colors[mats.fuel] = 'palegreen'
+    # Assign plotting colors
+    for ring_fuels in fuel_clones:
+        for f in ring_fuels:
+            m_colors[f] = 'palegreen'
     m_colors[mats.buffer] = 'sandybrown'
     m_colors[mats.pyc] = 'orange'
     m_colors[mats.sic] = 'yellow'
@@ -504,6 +782,7 @@ def build_model(params, run_dir):
             mesh_y_max = params["core_radius"]
             mesh_ny = params["n_XY_mesh_zones_full_core"]
 
+        # --- Flux/Fission Mesh Tally (active core only) ---
         mesh = openmc.RegularMesh()
         mesh.dimension = [mesh_nx, mesh_ny, params["n_ax_zones"]]
         mesh.lower_left = [mesh_x_min, mesh_y_min, reactor_bottom]
@@ -514,7 +793,7 @@ def build_model(params, run_dir):
         mesh_tally_active.filters = [mesh_filter]
         mesh_tally_active.scores = ['flux', 'fission']
 
-        # ----- Heating Mesh Tally (active core only) -----
+        # --- Heating Mesh Tally (active core only) ---
         mesh_heating_tally = openmc.Tally(name='mesh_heating')
         mesh_heating_tally.filters = [mesh_filter]
         mesh_heating_tally.scores = ['heating-local']
@@ -522,6 +801,7 @@ def build_model(params, run_dir):
         n_reflector_zones = 33
         n_total_zones = n_reflector_zones + params["n_ax_zones"] + n_reflector_zones
 
+        # --- Flux/Fission Mesh Tally (full core) ---
         mesh_full = openmc.RegularMesh()
         mesh_full.dimension = [mesh_nx, mesh_ny, n_total_zones]
         mesh_bottom = reactor_bottom - params["reflector_thickness"]
@@ -534,18 +814,17 @@ def build_model(params, run_dir):
         mesh_tally_full.filters = [mesh_full_filter]
         mesh_tally_full.scores = ['flux', 'fission']
 
-        # ----- Heating Mesh Tally (full core with reflectors) -----
+        # --- Heating Mesh Tally (full core) ---
         mesh_heating_tally_full = openmc.Tally(name='mesh_heating_full')
         mesh_heating_tally_full.filters = [mesh_full_filter]
         mesh_heating_tally_full.scores = ['heating-local']
 
         tallies += [mesh_tally_active, mesh_heating_tally, mesh_tally_full, mesh_heating_tally_full]
 
-    # ----- Leakage Spectrum Tallies -----
+    # ----- Neutron Leakage Tallies -----
 
     if params["use_leakage_tallies"]:
-        # Surface filters
-        radial_surf_filter  = openmc.SurfaceFilter(core_cyl)
+        radial_surf_filter    = openmc.SurfaceFilter(core_cyl)
         axial_top_surf_filter = openmc.SurfaceFilter(top_refl)
         axial_bot_surf_filter = openmc.SurfaceFilter(bottom_refl)
 
@@ -562,24 +841,26 @@ def build_model(params, run_dir):
         axial_bot_current_tally.scores  = ['current']
 
         tallies += [radial_current_tally, axial_top_current_tally, axial_bot_current_tally]
-    
-    # ----- BeO Reflector Flux Tallies -----
 
-    if params["use_beo_flux_tally"] and params["use_beryllium_reflector"]:
+    # ----- BeO Reflector Tallies -----
+
+    if params["use_BeO_tallies"] and params["use_BeO_reflector"]:
         if len(beo_cells) > 0:
             beo_inner_r = params["BeO_inner_radius"] if params["BeO_inner_radius"] is not None else lattice_extent_r
             beo_outer_r = min(beo_inner_r + params["BeO_thickness"], params["core_radius"])
 
             num_bins = round(params["n_XY_mesh_zones_full_core"] / 180 * params["BeO_thickness"])
 
-            beo_cyl_mesh = openmc.CylindricalMesh()
-            beo_cyl_mesh.r_grid = np.linspace(beo_inner_r, beo_outer_r, num_bins+1)
-            beo_cyl_mesh.z_grid = axial_coords
-
             if params["use_1/6_geometry"]:
-                beo_cyl_mesh.phi_grid = np.linspace(0, np.pi / 3, 7)  # 6 azimuthal bins over 60-degree wedge
+                phi_grid = np.linspace(0, np.pi / 3, 7)
             else:
-                beo_cyl_mesh.phi_grid = np.linspace(0, 2 * np.pi, 13) # 12 azimuthal bins over full core
+                phi_grid = np.linspace(0, 2 * np.pi, 13)
+
+            beo_cyl_mesh = openmc.CylindricalMesh(
+                r_grid   = np.linspace(beo_inner_r, beo_outer_r, num_bins + 1),
+                z_grid   = axial_coords,
+                phi_grid = phi_grid
+            )
 
             beo_mesh_filter = openmc.MeshFilter(beo_cyl_mesh)
 
@@ -593,9 +874,9 @@ def build_model(params, run_dir):
             print(f"  Axial bins:     {len(axial_coords) - 1} (reusing core axial zones)")
             print(f"  Azimuthal bins: {'6 over 60-degree wedge (1/6 geometry)' if params['use_1/6_geometry'] else '12 over full core'}")
         else:
-            print("\nWARNING: use_beo_flux_tally=True but no BeO cells were created (check BeO geometry params).")
-    elif params["use_beo_flux_tally"]:
-        print("\nWARNING: BeO flux tallies skipped, use_beo_flux_tally=True but no BeO reflector was used (check BeO geometry params).")
+            print("\nWARNING: use_BeO_tallies=True but no BeO cells were created.")
+    elif params["use_BeO_tallies"]:
+        print("\nWARNING: BeO flux tallies skipped — no BeO reflector was used.")
 
     model.tallies = tallies
 
@@ -629,31 +910,216 @@ def build_model(params, run_dir):
     )
     settings.source = source
 
-    # Stochastic volume calculation
-    if params["calculate_fuel_volume"]:        
-        vol_calc = openmc.VolumeCalculation(
-            domains=[mats.fuel, mats.b4c_poison],
-            samples=params["volume_samples"],
-            lower_left=[mesh_x_min, mesh_y_min, reactor_bottom],
-            upper_right=[mesh_x_max, mesh_y_max, reactor_top]
-        )
-        settings.volume_calculations = [vol_calc]
-
     model.settings = settings
 
-    # Finalize materials
-    all_mats = model.geometry.get_all_materials()
-    model.materials = openmc.Materials(all_mats.values())
-
-    active_ids = set(all_mats.keys())
-    m_colors_active = {mat: color for mat, color in m_colors.items()
-                       if mat.id in active_ids}
+    # Finalize materials list
+    explicit_mats = list(mats.materials)
+    for ring_fuels in fuel_clones:
+        explicit_mats.extend(ring_fuels)
+    # Homogenized fuel uses temporary constituent materials internally via
+    # mix_materials(); those are not tracked separately and do not need to
+    # be added here — mix_materials returns a single combined material.
+    model.materials = openmc.Materials(explicit_mats)
 
     for plot in model.plots:
         if plot.color_by == 'material':
-            plot.colors = m_colors_active
+            plot.colors = m_colors
 
-    return model, n_trisos, m_colors
+    return model, n_trisos, m_colors, fuel_clones
+
+# ====================================================================================================
+# RPT CALIBRATION HELPERS
+# ====================================================================================================
+
+def _extract_keff(run_dir):
+    """
+    Read the final k_eff and its standard deviation from the statepoint in run_dir.
+
+    Returns:
+        (k_eff_mean, k_eff_std): floats
+    """
+    import glob
+    sp_files = sorted(glob.glob(os.path.join(run_dir, "statepoint.*.h5")))
+    if not sp_files:
+        raise FileNotFoundError(f"No statepoint file found in {run_dir}")
+    sp = openmc.StatePoint(sp_files[-1])
+    return float(sp.keff.n), float(sp.keff.s)
+
+
+def run_rpt_calibration(params, output_base_dir, run_simulation_fn):
+    """
+    Find the RPT inner radius (rpt_radius) that matches explicit-TRISO k_eff.
+
+    Algorithm
+    ---------
+    1. Run an explicit-TRISO reference simulation (use_homogenized_fuel=False)
+       to obtain k_eff_ref.
+    2. Scan rpt_calibration_n_points values of r_rpt linearly from
+         r_min = compact_radius * sqrt(triso_pf)   (maximum self-shielding)
+       to
+         r_max = compact_radius                    (flat homogenization baseline)
+    3. Interpolate linearly between the two bracketing points to estimate the
+       r_rpt at which k_eff(RPT) = k_eff_ref.
+    4. Save results to rpt_calibration_results.json and print a summary table.
+
+    Because k_eff is monotonically increasing as r_rpt decreases, the scan
+    is guaranteed to find at most one crossing.
+
+    After running, set  rpt_radius = <optimal value>  in config.py, then use
+    study_execution_mode = "SingleStudy" or "DepletionStudy" with
+    use_homogenized_fuel = True.
+
+    Args:
+        params:            Simulation parameters dictionary (from config.py).
+        output_base_dir:   Root directory for all calibration run sub-directories.
+        run_simulation_fn: Callable matching the signature of run_simulation().
+
+    Returns:
+        dict: Full calibration results (also saved as JSON).
+    """
+    import copy
+
+    r_compact = params["compact_radius"]
+    pf        = params["triso_pf"]
+    r_min     = r_compact * pf**0.5         # minimum r_rpt (pf_inner = 1)
+    r_max     = r_compact                    # maximum r_rpt (flat homogenization)
+    n_pts     = params.get("rpt_calibration_n_points", 8)
+
+    print(f"\n{'='*80}")
+    print("RPT CALIBRATION STUDY")
+    print(f"  compact_radius  = {r_compact:.4f} cm")
+    print(f"  triso_pf        = {pf:.3f}")
+    print(f"  r_rpt scan      = [{r_min:.4f}, {r_max:.4f}] cm  ({n_pts} points)")
+    print(f"  Output dir      = {output_base_dir}")
+    print(f"{'='*80}")
+
+    os.makedirs(output_base_dir, exist_ok=True)
+
+    # ------------------------------------------------------------------
+    # Step 1: explicit-TRISO reference
+    # ------------------------------------------------------------------
+    print(f"\n--- Step 1: Explicit-TRISO reference run ---")
+    ref_params = copy.copy(params)
+    ref_params["use_homogenized_fuel"] = False
+    ref_params["make_geometry_plots"]  = False
+    ref_dir = os.path.join(output_base_dir, "rpt_ref_explicit_TRISO")
+
+    run_simulation_fn(ref_params, ref_dir)
+    k_eff_ref, k_eff_ref_std = _extract_keff(ref_dir)
+
+    print(f"\nReference k_eff (explicit TRISO): {k_eff_ref:.5f} ± {k_eff_ref_std:.5f}")
+
+    # ------------------------------------------------------------------
+    # Step 2: scan r_rpt values with early exit on bracket
+    #
+    # k_eff is monotonically DECREASING as r_rpt increases (r_min → r_max):
+    #   r_min → pf_inner = 1  → maximum self-shielding → highest k_eff
+    #   r_max → pf_inner = pf → flat homogenization   → lowest  k_eff
+    #
+    # As soon as two consecutive points straddle k_eff_ref we have a
+    # bracket and can interpolate immediately — no further runs needed.
+    # ------------------------------------------------------------------
+    r_rpt_values    = np.linspace(r_min, r_max, n_pts)
+    rpt_results     = []
+    optimal_r_rpt   = None
+    optimal_delta_k = None
+    bracket_found   = False
+
+    for i, r_rpt in enumerate(r_rpt_values):
+        pf_inner = pf * (r_compact / r_rpt)**2
+        print(f"\n--- RPT Case {i+1}/{n_pts}: r_rpt = {r_rpt:.4f} cm  "
+              f"(pf_inner = {pf_inner:.4f}) ---")
+
+        rpt_params = copy.copy(params)
+        rpt_params["use_homogenized_fuel"] = True
+        rpt_params["rpt_radius"]           = r_rpt
+        rpt_params["make_geometry_plots"]  = False
+
+        case_dir = os.path.join(output_base_dir,
+                                f"rpt_case_{i+1:02d}_r{r_rpt:.4f}cm")
+        run_simulation_fn(rpt_params, case_dir)
+
+        k_eff, k_eff_std = _extract_keff(case_dir)
+        delta_k_pcm = (k_eff - k_eff_ref) * 1e5
+        print(f"  k_eff = {k_eff:.5f} ± {k_eff_std:.5f}  "
+              f"(Δk = {delta_k_pcm:+.0f} pcm vs. reference)")
+
+        rpt_results.append({
+            "r_rpt":       float(r_rpt),
+            "pf_inner":    float(pf_inner),
+            "k_eff":       float(k_eff),
+            "k_eff_std":   float(k_eff_std),
+            "delta_k_pcm": float(delta_k_pcm),
+        })
+
+        # Early exit: check if the last two points bracket k_eff_ref
+        if len(rpt_results) >= 2:
+            k_prev = rpt_results[-2]["k_eff"]
+            r_prev = rpt_results[-2]["r_rpt"]
+            if (k_prev - k_eff_ref) * (k_eff - k_eff_ref) <= 0:
+                # Linear interpolation within the bracket
+                optimal_r_rpt   = r_prev + (k_eff_ref - k_prev) / (k_eff - k_prev) * (r_rpt - r_prev)
+                optimal_delta_k = 0.0
+                bracket_found   = True
+                remaining       = n_pts - i - 1
+                print(f"\n  >>> Bracket found between cases {i} and {i+1}. "
+                      f"Interpolated r_rpt = {optimal_r_rpt:.4f} cm")
+                if remaining > 0:
+                    print(f"  Early exit: skipping remaining {remaining} case(s).")
+                break
+
+    # ------------------------------------------------------------------
+    # Step 3: fallback if no bracket was found in the scan range
+    # ------------------------------------------------------------------
+    if not bracket_found:
+        best = min(rpt_results, key=lambda r: abs(r["k_eff"] - k_eff_ref))
+        optimal_r_rpt   = best["r_rpt"]
+        optimal_delta_k = best["delta_k_pcm"]
+        print(f"\nWARNING: No bracketing crossing found across the full scan range "
+              f"[{r_min:.4f}, {r_max:.4f}] cm.")
+        print(f"  Nearest point ({optimal_r_rpt:.4f} cm, Δk = {optimal_delta_k:+.0f} pcm) "
+              f"used as best estimate.")
+        print(f"  Consider increasing rpt_calibration_n_points or checking whether "
+              f"the explicit-TRISO k_eff lies within the RPT model's achievable range.")
+
+    # ------------------------------------------------------------------
+    # Step 4: save results and print summary
+    # ------------------------------------------------------------------
+    calibration_results = {
+        "reference_k_eff":         k_eff_ref,
+        "reference_k_eff_std":     k_eff_ref_std,
+        "r_compact":               r_compact,
+        "triso_pf":                pf,
+        "r_rpt_min":               float(r_min),
+        "r_rpt_max":               float(r_max),
+        "n_points":                n_pts,
+        "rpt_cases":               rpt_results,
+        "optimal_r_rpt":           float(optimal_r_rpt),
+        "optimal_delta_k_pcm":     float(optimal_delta_k) if optimal_delta_k is not None else None,
+    }
+
+    results_path = os.path.join(output_base_dir, "rpt_calibration_results.json")
+    with open(results_path, 'w') as f:
+        json.dump(calibration_results, f, indent=2)
+
+    print(f"\n{'='*80}")
+    print("RPT CALIBRATION SUMMARY")
+    print(f"{'='*80}")
+    print(f"Reference k_eff (explicit TRISO): {k_eff_ref:.5f} ± {k_eff_ref_std:.5f}\n")
+    print(f"  {'r_rpt (cm)':>12}  {'pf_inner':>9}  {'k_eff':>10}  {'±':>1}  {'std':>8}  {'Δk (pcm)':>10}")
+    print(f"  {'-'*60}")
+    for r in rpt_results:
+        print(f"  {r['r_rpt']:>12.4f}  {r['pf_inner']:>9.4f}  "
+              f"{r['k_eff']:>10.5f}  ±  {r['k_eff_std']:>8.5f}  "
+              f"{r['delta_k_pcm']:>+10.0f}")
+    print(f"\n  >>> Estimated optimal r_rpt = {optimal_r_rpt:.4f} cm")
+    print(f"\n  Set the following in config.py:")
+    print(f"    \"rpt_radius\": {optimal_r_rpt:.4f},")
+    print(f"\n  Full results saved to: {results_path}")
+    print(f"{'='*80}\n")
+
+    return calibration_results
+
 
 # ====================================================================================================
 # MAIN SIMULATION FUNCTION
@@ -665,95 +1131,87 @@ def run_simulation(params, run_dir):
     
     Returns:
         n_trisos: Number of TRISO particles per axial zone
+                  (0 when use_homogenized_fuel=True)
     """
 
-    model, n_trisos, m_colors = build_model(params, run_dir)
+    model, n_trisos, m_colors, fuel_clones = build_model(params, run_dir)
     model.export_to_xml()
 
-    openmc.plot_geometry(output=False, cwd=run_dir)
+    if params.get("make_geometry_plots", False):
+        n_plot_threads = str(params.get("plot_threads", os.cpu_count() or 4))
+        old_omp = os.environ.get("OMP_NUM_THREADS")
+        os.environ["OMP_NUM_THREADS"] = n_plot_threads
+        try:
+            openmc.plot_geometry(output=False, cwd=run_dir)
+        finally:
+            if old_omp is None:
+                os.environ.pop("OMP_NUM_THREADS", None)
+            else:
+                os.environ["OMP_NUM_THREADS"] = old_omp
 
-    # Stochastic volume calculation
-    if params["calculate_fuel_volume"]:
-        print("\nRunning stochastic volume calculation for fuel and burnable poison...\n")
+    geometry_factor           = 6 if params["use_1/6_geometry"] else 1
+    poison_volume             = mats.b4c_poison.volume
+    total_poison_volume       = poison_volume * geometry_factor
+    
+    # Deduplicate by material ID before summing
+    # When use_spatial_burnup=False all rings share the same material object so we must not double-count it
+    seen_ids = set()
+    fuel_volume_simulated = 0.0
+    for ri in range(len(fuel_clones)):
+        for ai in range(len(fuel_clones[ri])):
+            mat = fuel_clones[ri][ai]
+            if mat.id not in seen_ids:
+                seen_ids.add(mat.id)
+                fuel_volume_simulated += mat.volume
+    total_fuel_volume = fuel_volume_simulated * geometry_factor
 
-        openmc.calculate_volumes(
-            cwd=run_dir,
-            threads=24,
-            output=True
-        )
+    uco_density_g_cm3  = params["kernel_density"] / 1000.0
+    u_mass_fraction    = 238.0 / 268.0
+    total_HM_mass_kg   = total_fuel_volume * uco_density_g_cm3 * u_mass_fraction / 1000.0
 
-        vol_calc_results = openmc.VolumeCalculation.from_hdf5(
-            os.path.join(run_dir, 'volume_1.h5')
-        )
+    b4c_density_g_cm3  = params["B4C_density_poison"] / 1000.0
+    b10_enrichment     = params["B10_enrichment_poison"]
+    mass_10            = openmc.data.atomic_mass('B10')
+    mass_11            = openmc.data.atomic_mass('B11')
+    b10_mass_fraction  = (b10_enrichment * mass_10) / (
+        b10_enrichment * mass_10 + (1.0 - b10_enrichment) * mass_11
+    )
+    total_B10_mass_kg  = total_poison_volume * b4c_density_g_cm3 * b10_mass_fraction / 1000.0
 
-        geometry_factor = 6 if params["use_1/6_geometry"] else 1
-        fuel_volume_simulated = 0.0
-        poison_volume_simulated = 0.0
+    print(f"\nFuel volume   (simulated geometry): {fuel_volume_simulated:.4f} cm³")
+    print(f"Fuel volume   (full core):          {total_fuel_volume:.4f} cm³")
+    print(f"Uranium mass  (full core):          {total_HM_mass_kg:.2f} kg")
+    print(f"B4C poison    (simulated geometry): {poison_volume:.4f} cm³")
+    print(f"B4C poison    (full core):          {total_poison_volume:.4f} cm³")
+    print(f"B-10 mass     (full core):          {total_B10_mass_kg:.4f} kg")
 
-        for domain_id, vol_var in vol_calc_results.volumes.items():
-            vol = vol_var.nominal_value
-            vol_std = vol_var.std_dev
+    params_path = os.path.join(run_dir, 'run_params.json')
+    saved_params = json.load(open(params_path)) if os.path.exists(params_path) else {}
+    saved_params.update({
+        'n_trisos':                    n_trisos,
+        'use_homogenized_fuel':        params.get("use_homogenized_fuel", False),
+        'use_spatial_burnup':          params.get("use_spatial_burnup", True),
+        'poison_material_id':          mats.b4c_poison.id,
+        'fuel_volume_simulated_cm3':   fuel_volume_simulated,
+        'fuel_volume_full_core_cm3':   total_fuel_volume,
+        'total_HM_mass_kg':            total_HM_mass_kg,
+        'poison_volume_simulated_cm3': poison_volume,
+        'poison_volume_full_core_cm3': total_poison_volume,
+        'total_B10_mass_kg':           total_B10_mass_kg,
+        'fuel_mat_volumes': {
+            str(fuel_clones[ri][ai].id): fuel_clones[ri][ai].volume
+            for ri in range(len(fuel_clones))
+            for ai in range(len(fuel_clones[ri]))
+        },
+        'fuel_mat_ids': [
+            [fuel_clones[ri][ai].id for ai in range(len(fuel_clones[ri]))]
+            for ri in range(len(fuel_clones))
+        ],
+    })
+    with open(params_path, 'w') as f:
+        json.dump(saved_params, f, indent=2)
+    print(f"Volume data saved to run_params.json\n")
 
-            if domain_id == mats.fuel.id:
-                fuel_volume_simulated += vol
-                print(f"\nFuel domain {domain_id}: {vol:.4f} ± {vol_std:.4f} cm³")
-            elif domain_id == mats.b4c_poison.id:
-                poison_volume_simulated += vol
-                print(f"B4C poison domain {domain_id}: {vol:.4f} ± {vol_std:.4f} cm³")
-
-        # Fuel reporting
-        total_fuel_volume_full_core = fuel_volume_simulated * geometry_factor
-        uco_density_g_cm3 = params["kernel_density"] / 1000.0
-        u_mass_fraction = 238.0 / 268.0
-        total_HM_mass_kg = (total_fuel_volume_full_core * uco_density_g_cm3 * u_mass_fraction) / 1000.0
-
-        # B4C poison reporting
-        total_poison_volume_full_core = poison_volume_simulated * geometry_factor
-        b4c_density_g_cm3 = params["B4C_density_poison"] / 1000.0
-        b10_enrichment = params["B10_enrichment_poison"]
-        mass_10 = openmc.data.atomic_mass('B10')
-        mass_11 = openmc.data.atomic_mass('B11')
-        b10_mass_fraction = (b10_enrichment * mass_10) / (
-            b10_enrichment * mass_10 + (1.0 - b10_enrichment) * mass_11
-        )
-        total_B10_mass_kg = (total_poison_volume_full_core * b4c_density_g_cm3 * b10_mass_fraction) / 1000.0
-
-        print(f"\nFuel volume (simulated geometry):       {fuel_volume_simulated:.4f} cm³")
-        print(f"Fuel volume (full core):                  {total_fuel_volume_full_core:.4f} cm³")
-        print(f"Estimated uranium mass:                   {total_HM_mass_kg:.2f} kg")
-        print(f"\nB4C poison volume (simulated geometry): {poison_volume_simulated:.4f} cm³")
-        print(f"B4C poison volume (full core):            {total_poison_volume_full_core:.4f} cm³")
-        print(f"Estimated B-10 mass:                      {total_B10_mass_kg:.4f} kg\n")
-
-        # Save to run_params.json
-        params_path = os.path.join(run_dir, 'run_params.json')
-        if os.path.exists(params_path):
-            with open(params_path, 'r') as f:
-                saved_params = json.load(f)
-        else:
-            saved_params = {}
-
-        saved_params['n_trisos']                    = n_trisos
-        saved_params['fuel_material_id']            = mats.fuel.id
-        saved_params['poison_material_id']          = mats.b4c_poison.id
-        saved_params['fuel_volume_simulated_cm3']   = fuel_volume_simulated
-        saved_params['fuel_volume_full_core_cm3']   = total_fuel_volume_full_core
-        saved_params['total_HM_mass_kg']            = total_HM_mass_kg
-        saved_params['total_HM_mass_kg']            = total_HM_mass_kg
-        saved_params['poison_volume_simulated_cm3'] = poison_volume_simulated
-        saved_params['poison_volume_full_core_cm3'] = total_poison_volume_full_core
-        saved_params['total_B10_mass_kg']           = total_B10_mass_kg
-        saved_params['total_B10_mass_kg']           = total_B10_mass_kg
-
-        with open(params_path, 'w') as f:
-            json.dump(saved_params, f, indent=2)
-
-        print(f"\nVolume results saved to run_params.json")
-
-    else:
-        print("\nSkipping volume calculation.")
-
-    # Run OpenMC and save output to text file
     openmc_output_file = os.path.join(run_dir, 'openmc_output.txt')
 
     with open(openmc_output_file, 'w', buffering=1) as outf:
@@ -775,7 +1233,6 @@ def run_simulation(params, run_dir):
 
         return_code = process.wait()
 
-    # Print errors OpenMC runs into
     if return_code != 0:
         raise RuntimeError(f"OpenMC failed with return code {return_code}")
 
@@ -803,6 +1260,7 @@ def run_depletion_simulation(params, run_dir):
 
     Returns:
         n_trisos: Number of TRISO particles per axial zone
+                  (0 when use_homogenized_fuel=True)
     """
 
     print(f"\n{'=' * 80}")
@@ -812,19 +1270,13 @@ def run_depletion_simulation(params, run_dir):
     is_restart = params["restart_depletion"]
 
     # ==================================================================
-    # RESTART PATH — load existing model from original run directory
-    # ==================================================================
-    # Rebuilding the model from scratch assigns new material IDs, which
-    # breaks the mapping between depletion_results.h5 and the model.
-    # Instead, load the XML files that were written during the original
-    # run so that material IDs are guaranteed to match.
+    # RESTART PATH
     # ==================================================================
 
     if is_restart:
         restart_dir = params["restart_run_dir"]
         prev_h5 = os.path.join(restart_dir, "depletion_results.h5")
 
-        # Validate restart directory contents
         required_files = {
             "depletion_results.h5": prev_h5,
             "materials.xml":       os.path.join(restart_dir, "materials.xml"),
@@ -845,8 +1297,6 @@ def run_depletion_simulation(params, run_dir):
 
         os.chdir(restart_dir)
 
-        # Clear OpenMC's global ID registries to avoid collisions with objects created at import time by the materials module
-        # Without this, from_xml() cannot reclaim the same IDs, which breaks the mapping between prev_results and the model
         for cls in [openmc.Material, openmc.Cell, openmc.Universe,
                     openmc.Surface, openmc.Lattice]:
             if hasattr(cls, 'used_ids'):
@@ -854,10 +1304,6 @@ def run_depletion_simulation(params, run_dir):
         if hasattr(openmc, 'reset_auto_ids'):
             openmc.reset_auto_ids()
 
-        # Load the original model (preserves material IDs).
-        # NOTE: This assumes materials.xml and depletion_results.h5 are consistent (i.e. both reflect the same completed timestep)
-        # If the original run crashed mid-step, materials.xml may contain compositions from a step not yet recorded in depletion_results.h5
-        # In that case, manually fix materials.xml before restarting (e.g. using Results.export_to_materials())
         materials = openmc.Materials.from_xml(
             os.path.join(restart_dir, "materials.xml")
         )
@@ -875,31 +1321,31 @@ def run_depletion_simulation(params, run_dir):
             settings = settings
         )
 
-        # Load saved run parameters for volumes and material IDs
         with open(required_files["run_params.json"], 'r') as f:
             saved_params = json.load(f)
 
-        n_trisos = saved_params["n_trisos"]
-        fuel_mat_id = saved_params["fuel_material_id"]
+        n_trisos      = saved_params["n_trisos"]
         poison_mat_id = saved_params["poison_material_id"]
-        fuel_volume = saved_params["fuel_volume_simulated_cm3"]
         poison_volume = saved_params["poison_volume_simulated_cm3"]
 
-        # Set volumes on the loaded materials (CoupledOperator needs them)
+        fuel_mat_volumes = {
+            int(k): v for k, v in saved_params.get("fuel_mat_volumes", {}).items()
+        }
+
+        n_fuel_vols_set = 0
         for mat in materials:
-            if mat.id == fuel_mat_id:
-                mat.volume = fuel_volume
-                print(f"Fuel material (id={mat.id}): volume = {fuel_volume:.4f} cm³")
+            if mat.id in fuel_mat_volumes:
+                mat.volume = fuel_mat_volumes[mat.id]
+                n_fuel_vols_set += 1
             elif mat.id == poison_mat_id:
                 mat.volume = poison_volume
                 print(f"Poison material (id={mat.id}): volume = {poison_volume:.4f} cm³")
+        print(f"Set volumes on {n_fuel_vols_set} fuel material clones from saved run_params.json")
 
-        # Load previous depletion results
         prev_results = openmc.deplete.Results(prev_h5)
-        n_completed = len(prev_results) - 1   # Results includes the t=0 entry
+        n_completed = len(prev_results) - 1
         print(f"Completed depletion steps: {n_completed}")
 
-        # Determine remaining timesteps
         restart_ts = params["restart_timesteps_days"]
         if restart_ts is not None and len(restart_ts) > 0:
             timesteps_days = restart_ts
@@ -913,7 +1359,6 @@ def run_depletion_simulation(params, run_dir):
             print(f"Original timesteps ({len(original_ts)}): {original_ts}")
             print(f"Remaining timesteps ({len(timesteps_days)}): {timesteps_days}")
 
-        # Use chain file from restart directory if it exists, otherwise regenerate
         reduced_chain_in_dir = os.path.join(restart_dir, "chain_reduced.xml")
         if os.path.exists(reduced_chain_in_dir):
             chain_file = reduced_chain_in_dir
@@ -926,129 +1371,100 @@ def run_depletion_simulation(params, run_dir):
             print(f"  Using full chain file: {chain_file}")
 
     # ==================================================================
-    # FRESH RUN PATH — build model from scratch
+    # FRESH RUN PATH
     # ==================================================================
 
     else:
         prev_results = None
         n_completed = 0
 
-        # Force volume calculation on for depletion (operator needs fuel volume)
-        depletion_params = params.copy()
-        depletion_params["calculate_fuel_volume"] = True
-
-        model, n_trisos, m_colors = build_model(depletion_params, run_dir)
-
-        # ==================================================================
-        # EXPORT MODEL AND RUN STOCHASTIC VOLUME CALCULATION
-        # ==================================================================
-
+        model, n_trisos, m_colors, fuel_clones = build_model(params, run_dir)
         model.export_to_xml()
 
-        openmc.plot_geometry(output=False, cwd=run_dir)
+        if params.get("make_geometry_plots", False):
+            n_plot_threads = str(params.get("plot_threads", os.cpu_count() or 4))
+            old_omp = os.environ.get("OMP_NUM_THREADS")
+            os.environ["OMP_NUM_THREADS"] = n_plot_threads
+            try:
+                openmc.plot_geometry(output=False, cwd=run_dir)
+            finally:
+                if old_omp is None:
+                    os.environ.pop("OMP_NUM_THREADS", None)
+                else:
+                    os.environ["OMP_NUM_THREADS"] = old_omp
 
-        print("\nRunning stochastic volume calculation for fuel and burnable poison...")
-        print(f"Samples: {depletion_params['volume_samples']:,}\n")
+        geometry_factor       = 6 if params["use_1/6_geometry"] else 1
+        poison_volume         = mats.b4c_poison.volume
+        total_poison_volume   = poison_volume * geometry_factor
 
-        openmc.calculate_volumes(
-            cwd = run_dir,
-            threads = 24,
-            output = True
-        )
-
-        vol_calc_results = openmc.VolumeCalculation.from_hdf5(
-            os.path.join(run_dir, 'volume_1.h5')
-        )
-
-        # ==================================================================
-        # SET FUEL AND POISON MATERIAL VOLUMES FROM STOCHASTIC CALCULATION
-        # ==================================================================
-
-        geometry_factor = 6 if params["use_1/6_geometry"] else 1
+        # Deduplicate by material ID before summing
+        # When use_spatial_burnup=False all rings share the same material object so we must not double-count it
+        seen_ids = set()
         fuel_volume_simulated = 0.0
-        poison_volume_simulated = 0.0
+        for ri in range(len(fuel_clones)):
+            for ai in range(len(fuel_clones[ri])):
+                mat = fuel_clones[ri][ai]
+                if mat.id not in seen_ids:
+                    seen_ids.add(mat.id)
+                    fuel_volume_simulated += mat.volume
+        total_fuel_volume = fuel_volume_simulated * geometry_factor
 
-        for domain_id, vol_var in vol_calc_results.volumes.items():
-            vol = vol_var.nominal_value
-            vol_std = vol_var.std_dev
+        uco_density_g_cm3  = params["kernel_density"] / 1000.0
+        u_mass_fraction    = 238.0 / 268.0
+        total_HM_mass_kg   = total_fuel_volume * uco_density_g_cm3 * u_mass_fraction / 1000.0
 
-            if domain_id == mats.fuel.id:
-                fuel_volume_simulated += vol
-                print(f"\nFuel domain {domain_id}: {vol:.4f} ± {vol_std:.4f} cm³")
-            elif domain_id == mats.b4c_poison.id:
-                poison_volume_simulated += vol
-                print(f"B4C poison domain {domain_id}: {vol:.4f} ± {vol_std:.4f} cm³")
-
-        if fuel_volume_simulated <= 0:
-            raise RuntimeError("Stochastic volume calculation returned zero fuel volume. "
-                               "Check that the volume calculation bounds overlap the fuel region.")
-        if poison_volume_simulated <= 0:
-            raise RuntimeError("Stochastic volume calculation returned zero B4C poison volume. "
-                               "Check that the volume calculation bounds overlap the poison region.")
-
-        # Set volumes on depletable materials
-        mats.fuel.volume = fuel_volume_simulated
-        mats.b4c_poison.volume = poison_volume_simulated
-
-        # Fuel mass reporting
-        total_fuel_volume_full_core = fuel_volume_simulated * geometry_factor
-        uco_density_g_cm3 = params["kernel_density"] / 1000.0
-        u_mass_fraction = 238.0 / 268.0
-        total_HM_mass_kg = (total_fuel_volume_full_core * uco_density_g_cm3 * u_mass_fraction) / 1000.0
-
-        # B4C poison mass reporting
-        total_poison_volume_full_core = poison_volume_simulated * geometry_factor
-        b4c_density_g_cm3 = params["B4C_density_poison"] / 1000.0
-        mass_10 = openmc.data.atomic_mass('B10')
-        mass_11 = openmc.data.atomic_mass('B11')
-        b10_enrichment = params["B10_enrichment_poison"]
-        b10_atom_fraction = b10_enrichment
-        b10_mass_fraction = (b10_atom_fraction * mass_10) / (
-            b10_atom_fraction * mass_10 + (1 - b10_atom_fraction) * mass_11
+        b4c_density_g_cm3  = params["B4C_density_poison"] / 1000.0
+        b10_enrichment     = params["B10_enrichment_poison"]
+        mass_10            = openmc.data.atomic_mass('B10')
+        mass_11            = openmc.data.atomic_mass('B11')
+        b10_mass_fraction  = (b10_enrichment * mass_10) / (
+            b10_enrichment * mass_10 + (1.0 - b10_enrichment) * mass_11
         )
-        total_B10_mass_kg = (total_poison_volume_full_core * b4c_density_g_cm3 * b10_mass_fraction) / 1000.0
+        total_B10_mass_kg  = total_poison_volume * b4c_density_g_cm3 * b10_mass_fraction / 1000.0
 
-        print(f"\nFuel volume (simulated geometry):        {fuel_volume_simulated:.4f} cm³")
-        print(f"Fuel volume (full core):                 {total_fuel_volume_full_core:.4f} cm³")
-        print(f"Estimated uranium mass:                  {total_HM_mass_kg:.2f} kg")
-        print(f"\nB4C poison volume (simulated geometry):  {poison_volume_simulated:.4f} cm³")
-        print(f"B4C poison volume (full core):           {total_poison_volume_full_core:.4f} cm³")
-        print(f"Estimated B-10 mass:                     {total_B10_mass_kg:.4f} kg")
+        print(f"\nFuel volume   (simulated geometry): {fuel_volume_simulated:.4f} cm³")
+        print(f"Fuel volume   (full core):          {total_fuel_volume:.4f} cm³")
+        print(f"Uranium mass  (full core):          {total_HM_mass_kg:.2f} kg")
+        print(f"  ({len(params['core_rings'])} rings × {params['n_ax_zones']} axial zones, "
+              f"{sum(len(r) for r in fuel_clones)} fuel material regions)")
+        print(f"B4C poison    (simulated geometry): {poison_volume:.4f} cm³")
+        print(f"B4C poison    (full core):          {total_poison_volume:.4f} cm³")
+        print(f"B-10 mass     (full core):          {total_B10_mass_kg:.4f} kg")
 
-        # Store masses in params for post-processing
-        params["total_HM_mass_kg"] = total_HM_mass_kg
+        params["total_HM_mass_kg"]  = total_HM_mass_kg
         params["total_B10_mass_kg"] = total_B10_mass_kg
 
-        # Update run_params.json with depletion-specific info
-        params_path = os.path.join(run_dir, 'run_params.json')
-        if os.path.exists(params_path):
-            with open(params_path, 'r') as f:
-                saved_params = json.load(f)
-        else:
-            saved_params = {}
-        saved_params['n_trisos'] = n_trisos
-        saved_params['fuel_volume_simulated_cm3'] = fuel_volume_simulated
-        saved_params['fuel_volume_full_core_cm3'] = total_fuel_volume_full_core
-        saved_params['total_HM_mass_kg'] = total_HM_mass_kg
-        saved_params['poison_volume_simulated_cm3'] = poison_volume_simulated
-        saved_params['poison_volume_full_core_cm3'] = total_poison_volume_full_core
-        saved_params['total_B10_mass_kg'] = total_B10_mass_kg
-        saved_params['fuel_material_id'] = mats.fuel.id
-        saved_params['poison_material_id'] = mats.b4c_poison.id
+        params_path  = os.path.join(run_dir, 'run_params.json')
+        saved_params = json.load(open(params_path)) if os.path.exists(params_path) else {}
+        saved_params.update({
+            'n_trisos':                    n_trisos,
+            'use_homogenized_fuel':        params.get("use_homogenized_fuel", False),
+            'use_spatial_burnup':          params.get("use_spatial_burnup", True),
+            'poison_material_id':          mats.b4c_poison.id,
+            'fuel_volume_simulated_cm3':   fuel_volume_simulated,
+            'fuel_volume_full_core_cm3':   total_fuel_volume,
+            'total_HM_mass_kg':            total_HM_mass_kg,
+            'poison_volume_simulated_cm3': poison_volume,
+            'poison_volume_full_core_cm3': total_poison_volume,
+            'total_B10_mass_kg':           total_B10_mass_kg,
+            'fuel_mat_volumes': {
+                str(fuel_clones[ri][ai].id): fuel_clones[ri][ai].volume
+                for ri in range(len(fuel_clones))
+                for ai in range(len(fuel_clones[ri]))
+            },
+            'fuel_mat_ids': [
+                [fuel_clones[ri][ai].id for ai in range(len(fuel_clones[ri]))]
+                for ri in range(len(fuel_clones))
+            ],
+        })
         with open(params_path, 'w') as f:
             json.dump(saved_params, f, indent=2)
 
-        model.export_to_xml()
-
-        # ==================================================================
-        # CONFIGURE DEPLETION CHAIN
-        # ==================================================================
-
+        # Configure depletion chain
         full_chain_file = params["depletion_chain_file"]
         if full_chain_file is None or not os.path.exists(full_chain_file):
             raise FileNotFoundError(f"Depletion chain file not found: {full_chain_file}")
 
-        # Always generate reduced chain into the run directory
         reduced_chain_file = os.path.join(run_dir, "chain_reduced.xml")
 
         if params["use_reduced_chain_file"] and len(params["tracked_nuclides"]) > 0:
@@ -1064,12 +1480,11 @@ def run_depletion_simulation(params, run_dir):
         timesteps_days = params["depletion_timesteps_days"]
 
     # ==================================================================
-    # CONFIGURE DEPLETION TIMESTEPS AND POWER (shared by both paths)
+    # CONFIGURE TIMESTEPS AND POWER
     # ==================================================================
 
     thermal_power_W = params["thermal_power_MW"] * 1e6
 
-    # Scale power for 1/6 geometry (operator sees only the simulated fraction)
     if params["use_1/6_geometry"]:
         operator_power_W = thermal_power_W / 6.0
         print(f"\n1/6 geometry: scaling power from {thermal_power_W/1e6:.1f} MW to {operator_power_W/1e6:.3f} MW")
@@ -1270,7 +1685,6 @@ def run_parametric_post_processing(parametric_dir):
 # ====================================================================================================
 
 if __name__ == "__main__":
-    # ----- Create base directory structure -----
     now = datetime.now()
     run_name = f"htgr_run_{now.strftime('%m.%d.%Y_%H.%M.%S')}"
     
@@ -1280,25 +1694,24 @@ if __name__ == "__main__":
     
     BASE_DIR = os.path.join(OUTPUT_BASE, run_name)
     
-    # ----- Run Parametric Study -----
     if cfg.params["study_execution_mode"] == "ParametricStudy":
-        BASE_DIR = os.path.join(OUTPUT_BASE, run_name + "_ParametricStudy" + f"_{cfg.params["parametric_param"]}")
+        BASE_DIR = os.path.join(OUTPUT_BASE, run_name + "_ParametricStudy" + f"_{cfg.params['parametric_param']}")
         os.makedirs(BASE_DIR, exist_ok=True)
 
         print(f"\n{'='*80}")
-        print(f"PARAMETRIC STUDY: {cfg.params["parametric_param"]}")
-        print(f"Values: {cfg.params["parametric_values"]}")
+        print(f"PARAMETRIC STUDY: {cfg.params['parametric_param']}")
+        print(f"Values: {cfg.params['parametric_values']}")
         print(f"Base Directory: {BASE_DIR}")
         print(f"{'='*80}")
         
         for i, val in enumerate(cfg.params["parametric_values"]):
             caseNum = i + 1
-            caseNumFormatted = f"{caseNum:0{len(str(len(cfg.params["parametric_values"])))+1}d}"
-            runName = f"{cfg.params["parametric_param"]}_Case_{caseNumFormatted}_{val}"
+            caseNumFormatted = f"{caseNum:0{len(str(len(cfg.params['parametric_values'])))+1}d}"
+            runName = f"{cfg.params['parametric_param']}_Case_{caseNumFormatted}_{val}"
             run_dir = os.path.join(BASE_DIR, runName)
 
             print(f"\n{'='*80}")
-            print(f"Running Case {caseNumFormatted}: {cfg.params["parametric_param"]} = {val}")
+            print(f"Running Case {caseNumFormatted}: {cfg.params['parametric_param']} = {val}")
             print(f"Run Directory: {run_dir}")
             print(f"{'='*80}")
 
@@ -1317,7 +1730,21 @@ if __name__ == "__main__":
         print(f"Results Directory: {BASE_DIR}")
         print(f"{'='*80}\n")
     
-    # ----- Run Reactivity Study -----
+    elif cfg.params["study_execution_mode"] == "RPTCalibration":
+        BASE_DIR_RPT = os.path.join(OUTPUT_BASE, run_name + "_RPTCalibration")
+        os.makedirs(BASE_DIR_RPT, exist_ok=True)
+
+        run_rpt_calibration(
+            params           = cfg.params,
+            output_base_dir  = BASE_DIR_RPT,
+            run_simulation_fn = run_simulation,
+        )
+
+        print(f"\n{'='*80}")
+        print("RPT CALIBRATION COMPLETE")
+        print(f"Results Directory: {BASE_DIR_RPT}")
+        print(f"{'='*80}\n")
+
     elif cfg.params["study_execution_mode"] == "ReactivityStudy":
         from reactivity_coefficients import run_reactivity_coefficients
 
@@ -1334,10 +1761,8 @@ if __name__ == "__main__":
             run_post_processing_fn = run_post_processing if cfg.params["run_post_processing"] else None,
         )
 
-    # ----- Run Depletion Study -----
     elif cfg.params["study_execution_mode"] == "DepletionStudy":
 
-        # If restarting, run inside the original directory instead of creating a new one
         if cfg.params["restart_depletion"] and cfg.params["restart_run_dir"] is not None:
             BASE_DIR = cfg.params["restart_run_dir"]
             print(f"\n{'='*80}")
@@ -1362,6 +1787,7 @@ if __name__ == "__main__":
         print(f"{'='*80}")
 
     # ----- Run Single Study -----   
+
     elif cfg.params["study_execution_mode"] == "SingleStudy":
         BASE_DIR = os.path.join(OUTPUT_BASE, run_name + "_SingleStudy")
         
@@ -1382,5 +1808,5 @@ if __name__ == "__main__":
 
     else:
         print(f"\nERROR: Unknown study_execution_mode: '{cfg.params['study_execution_mode']}'")
-        print("Valid modes: SingleStudy, ParametricStudy, ReactivityStudy, DepletionStudy")
+        print("Valid modes: SingleStudy, ParametricStudy, ReactivityStudy, DepletionStudy, RPTCalibration")
         sys.exit(1)

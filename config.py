@@ -41,7 +41,7 @@ params = {
     "core_height": 237.9,
     "reflector_thickness": 79.3, 
     "n_ax_zones": 50,
-    "use_1/6_geometry": False,
+    "use_1/6_geometry": True,
 
     # ----- Burnable Poison -----
     "B10_enrichment_poison": 0.3,
@@ -57,13 +57,13 @@ params = {
     "bank_2_insertion": 0.0,                 # Fractional control rod insertion for bank 2 (0-1.0)
     "bank_3_insertion": 0.0,                 # Fractional control rod insertion for bank 3 (0-1.0)
     "secondary_SD_rods_inserted": False,     # True = all SS rods fully inserted, False = all removed
-    "B10_enrichment_control": 0.6,
-    "B10_wt_percent_control": 0.448,
+    "B10_enrichment_control": 0.9,
+    "B10_wt_percent_control": 0.687,
     "B4C_density_control": 2380,
     "Incoloy800H_density": 7940,
 
     # ----- Beryllium Reflector -----
-    "use_beryllium_reflector": False,
+    "use_BeO_reflector": True,
     "BeO_inner_radius": 70,                # If none defaults to lattice extent (defined as (n_rings-1)*bundle_pitch+bundle_pitch/4)
     "BeO_thickness": 20.0,                   # Will not exceed core radius if inner radius + thickness > core radius
     "BeO_density": 3010,
@@ -71,9 +71,9 @@ params = {
     # ----- Core Layout -----
     "core_rings": [
         ["rr", "f", "f"] * 6,
-        ["f", "fc1"] + ["f", "fc2"] * 5,
+        ["f", "fc2"] * 6,
         ["fss"] * 6,
-        ["fssp"],
+        ["fcp1"],
     ],
     # Core Ring Assembly Options:
     #    "f"              — Fueled assembly with no control rods or burnable poison rods
@@ -107,13 +107,33 @@ params = {
     "use_BeO_tallies": True,
 
     # ----- OpenMC Monte Carlo Settings -----
-    "total_batches": 20,
-    "inactive_batches": 10,
+    "total_batches": 300,
+    "inactive_batches": 100,
     "particles": 100_000,
 
-    # ----- Stochastic Volume Calculation Settings -----
-    "calculate_fuel_volume": False,
-    "volume_samples": 1_000_000_000,
+    # ----- Geometry Plots -----
+    "make_geometry_plots": True,
+    "plot_threads": 24,           # OpenMP threads used by openmc --plot
+
+    # ----- Spatial Burnup Resolution -----
+    "ax_zones_per_burnup_region": 1,
+    "use_spatial_burnup": False,
+    "use_homogenized_fuel": False,
+
+    # ----- RPT Homogenization (Reactivity Equivalent Physical Transform) -----
+    # Set use_homogenized_fuel=True to activate the two-region RPT model.
+    # rpt_radius must be calibrated first via study_execution_mode="RPTCalibration".
+    #
+    # Physics: inner cylinder of radius rpt_radius is filled with a homogenized
+    # mixture of all TRISO layers + proportional graphite at effective packing
+    # fraction pf_inner = triso_pf * (compact_radius / rpt_radius)^2.
+    # The outer annulus (rpt_radius < r < compact_radius) is pure graphite.
+    #
+    # Calibration scan range: [compact_radius*sqrt(triso_pf), compact_radius]
+    #   Lower bound: maximum self-shielding (all TRISO volume in inner cylinder)
+    #   Upper bound: flat homogenization (no benefit over simple mixing)
+    "rpt_radius": None,                  # Calibrated inner cylinder radius (cm). None = not yet calibrated.
+    "rpt_calibration_n_points": 10,       # Number of r_rpt values to scan in RPTCalibration study.
 
     # ----- Parametric Study Configuration -----
     "parametric_param": "BeO_thickness",
@@ -127,7 +147,7 @@ params = {
     "thermal_power_MW": 10.0,
     # "depletion_chain_file": "/home/cade/Desktop/OpenMC/CrossSections/chain_endfb81_thermal.xml",
     "depletion_chain_file": "/home/cade/Desktop/OpenMC/CrossSections/chain_casl_pwr.xml",
-    "use_reduced_chain_file": True,
+    "use_reduced_chain_file": False,
     "depletion_timesteps_days": [10, 10, 10, 30, 30, 30, 60, 60, 60, 120, 120, 120, 180, 180, 180],
     "depletion_integrator": "PredictorIntegrator",
     # Integrator options:
@@ -220,10 +240,12 @@ params = {
     # ----- Study Execution Mode Configuration -----
     "study_execution_mode": "SingleStudy",
     # Study Execution Mode Options:
-    #    "SingleStudy"     — Singular steady state monte carlo simulation of specified core layout 
+    #    "SingleStudy"     — Singular steady state monte carlo simulation of specified core layout
     #    "ParametricStudy" — Creates multiple steady state monte carlo simulations varying a single core parameter
     #    "ReactivityStudy" — Calculates reactivity coefficients via multiple steady state monte carlo simulations and specified temperature perturbations
     #    "DepletionStudy"  — Performs depletion run on specified core layout using specified depletion timesteps
+    #    "RPTCalibration"  — Finds the RPT inner radius (rpt_radius) that matches explicit-TRISO k_eff.
+    #                        Runs one explicit-TRISO reference then scans rpt_calibration_n_points RPT models.
+    #                        After running, set rpt_radius in this file to the reported optimal value.
     "run_post_processing": True, # Note this controls individual study post-processing for ParametricStudy runs as parametric post-processing is always run
-
 }
