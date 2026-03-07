@@ -259,12 +259,12 @@ def build_model(params, run_dir):
     beo_cells = []
     outer_graphite_cells = []
 
-    use_beo = params.get("use_beryllium_reflector", False)
+    use_beo = params["use_beryllium_reflector"]
     if use_beo:
-        beo_inner_r = params.get("BeO_inner_radius")
+        beo_inner_r = params["BeO_inner_radius"]
         if beo_inner_r is None:
             beo_inner_r = lattice_extent_r
-        beo_thickness = params.get("BeO_thickness", 0.5)
+        beo_thickness = params["BeO_thickness", 0.5]
         beo_outer_r = min(beo_inner_r + beo_thickness, params["core_radius"])
 
         print(f"\nBeO reflector enabled:")
@@ -499,10 +499,10 @@ def build_model(params, run_dir):
         else:
             mesh_x_min = -params["core_radius"]
             mesh_x_max = params["core_radius"]
-            mesh_nx = 500
+            mesh_nx = params["n_XY_mesh_zones_full_core"]
             mesh_y_min = -params["core_radius"]
             mesh_y_max = params["core_radius"]
-            mesh_ny = 500
+            mesh_ny = params["n_XY_mesh_zones_full_core"]
 
         mesh = openmc.RegularMesh()
         mesh.dimension = [mesh_nx, mesh_ny, params["n_ax_zones"]]
@@ -562,6 +562,40 @@ def build_model(params, run_dir):
         axial_bot_current_tally.scores  = ['current']
 
         tallies += [radial_current_tally, axial_top_current_tally, axial_bot_current_tally]
+    
+    # ----- BeO Reflector Flux Tallies -----
+
+    if params["use_beo_flux_tally"] and params["use_beryllium_reflector"]:
+        if len(beo_cells) > 0:
+            beo_inner_r = params["BeO_inner_radius"] if params["BeO_inner_radius"] is not None else lattice_extent_r
+            beo_outer_r = min(beo_inner_r + params["BeO_thickness"], params["core_radius"])
+
+            num_bins = round(params["n_XY_mesh_zones_full_core"] / 180 * params["BeO_thickness"])
+
+            beo_cyl_mesh = openmc.CylindricalMesh()
+            beo_cyl_mesh.r_grid = np.linspace(beo_inner_r, beo_outer_r, num_bins+1)
+            beo_cyl_mesh.z_grid = axial_coords
+
+            if params["use_1/6_geometry"]:
+                beo_cyl_mesh.phi_grid = np.linspace(0, np.pi / 3, 7)  # 6 azimuthal bins over 60-degree wedge
+            else:
+                beo_cyl_mesh.phi_grid = np.linspace(0, 2 * np.pi, 13) # 12 azimuthal bins over full core
+
+            beo_mesh_filter = openmc.MeshFilter(beo_cyl_mesh)
+
+            beo_flux_tally = openmc.Tally(name='beo_flux_radial')
+            beo_flux_tally.filters = [beo_mesh_filter]
+            beo_flux_tally.scores = ['flux']
+
+            tallies += [beo_flux_tally]
+            print(f"\nBeO flux tally enabled:")
+            print(f"  Radial bins:    {num_bins} from r = {beo_inner_r:.2f} to {beo_outer_r:.2f} cm")
+            print(f"  Axial bins:     {len(axial_coords) - 1} (reusing core axial zones)")
+            print(f"  Azimuthal bins: {'6 over 60-degree wedge (1/6 geometry)' if params['use_1/6_geometry'] else '12 over full core'}")
+        else:
+            print("\nWARNING: use_beo_flux_tally=True but no BeO cells were created (check BeO geometry params).")
+    elif params["use_beo_flux_tally"]:
+        print("\nWARNING: BeO flux tallies skipped, use_beo_flux_tally=True but no BeO reflector was used (check BeO geometry params).")
 
     model.tallies = tallies
 
@@ -571,9 +605,9 @@ def build_model(params, run_dir):
 
     settings = openmc.Settings()
     settings.run_mode = "eigenvalue"
-    settings.batches = params.get("total_batches", 300)
-    settings.inactive = params.get("inactive_batches", 100)
-    settings.particles = params.get("particles", 100_000)
+    settings.batches = params["total_batches"]
+    settings.inactive = params["inactive_batches"]
+    settings.particles = params["particles"]
     settings.temperature = {
         'method': 'interpolation',
         'range': (293.0, 1800.0),
@@ -596,10 +630,10 @@ def build_model(params, run_dir):
     settings.source = source
 
     # Stochastic volume calculation
-    if params.get("calculate_fuel_volume", False):        
+    if params["calculate_fuel_volume"]:        
         vol_calc = openmc.VolumeCalculation(
             domains=[mats.fuel, mats.b4c_poison],
-            samples=params.get("volume_samples", 1_000_000),
+            samples=params["volume_samples"],
             lower_left=[mesh_x_min, mesh_y_min, reactor_bottom],
             upper_right=[mesh_x_max, mesh_y_max, reactor_top]
         )
@@ -639,7 +673,7 @@ def run_simulation(params, run_dir):
     openmc.plot_geometry(output=False, cwd=run_dir)
 
     # Stochastic volume calculation
-    if params.get("calculate_fuel_volume", False):
+    if params["calculate_fuel_volume"]:
         print("\nRunning stochastic volume calculation for fuel and burnable poison...\n")
 
         openmc.calculate_volumes(
@@ -775,7 +809,7 @@ def run_depletion_simulation(params, run_dir):
     print("DEPLETION SIMULATION")
     print(f"{'=' * 80}")
 
-    is_restart = params.get("restart_depletion", False)
+    is_restart = params["restart_depletion"]
 
     # ==================================================================
     # RESTART PATH — load existing model from original run directory
@@ -787,7 +821,7 @@ def run_depletion_simulation(params, run_dir):
     # ==================================================================
 
     if is_restart:
-        restart_dir = params.get("restart_run_dir", run_dir)
+        restart_dir = params["restart_run_dir"]
         prev_h5 = os.path.join(restart_dir, "depletion_results.h5")
 
         # Validate restart directory contents
@@ -845,7 +879,7 @@ def run_depletion_simulation(params, run_dir):
         with open(required_files["run_params.json"], 'r') as f:
             saved_params = json.load(f)
 
-        n_trisos = saved_params.get("n_trisos", 0)
+        n_trisos = saved_params["n_trisos"]
         fuel_mat_id = saved_params["fuel_material_id"]
         poison_mat_id = saved_params["poison_material_id"]
         fuel_volume = saved_params["fuel_volume_simulated_cm3"]
@@ -866,12 +900,12 @@ def run_depletion_simulation(params, run_dir):
         print(f"Completed depletion steps: {n_completed}")
 
         # Determine remaining timesteps
-        restart_ts = params.get("restart_timesteps_days", None)
+        restart_ts = params["restart_timesteps_days"]
         if restart_ts is not None and len(restart_ts) > 0:
             timesteps_days = restart_ts
             print(f"Using user-specified restart timesteps: {timesteps_days}")
         else:
-            original_ts = params.get("depletion_timesteps_days", [30] * 12)
+            original_ts = params["depletion_timesteps_days"]
             timesteps_days = original_ts[n_completed:]
             if len(timesteps_days) == 0:
                 print("All original timesteps already completed — nothing to do.")
@@ -885,7 +919,7 @@ def run_depletion_simulation(params, run_dir):
             chain_file = reduced_chain_in_dir
             print(f"Using existing reduced chain: {chain_file}")
         else:
-            full_chain_file = params.get("depletion_chain_file", None)
+            full_chain_file = params["depletion_chain_file"]
             if full_chain_file is None or not os.path.exists(full_chain_file):
                 raise FileNotFoundError(f"Depletion chain file not found: {full_chain_file}")
             chain_file = full_chain_file
@@ -914,7 +948,7 @@ def run_depletion_simulation(params, run_dir):
         openmc.plot_geometry(output=False, cwd=run_dir)
 
         print("\nRunning stochastic volume calculation for fuel and burnable poison...")
-        print(f"Samples: {depletion_params.get('volume_samples', 1_000_000):,}\n")
+        print(f"Samples: {depletion_params['volume_samples']:,}\n")
 
         openmc.calculate_volumes(
             cwd = run_dir,
@@ -1010,7 +1044,7 @@ def run_depletion_simulation(params, run_dir):
         # CONFIGURE DEPLETION CHAIN
         # ==================================================================
 
-        full_chain_file = params.get("depletion_chain_file", None)
+        full_chain_file = params["depletion_chain_file"]
         if full_chain_file is None or not os.path.exists(full_chain_file):
             raise FileNotFoundError(f"Depletion chain file not found: {full_chain_file}")
 
@@ -1027,13 +1061,13 @@ def run_depletion_simulation(params, run_dir):
             print("\nUsing full depletion chain file.")
             chain_file = full_chain_file
 
-        timesteps_days = params.get("depletion_timesteps_days", [30] * 12)
+        timesteps_days = params["depletion_timesteps_days"]
 
     # ==================================================================
     # CONFIGURE DEPLETION TIMESTEPS AND POWER (shared by both paths)
     # ==================================================================
 
-    thermal_power_W = params.get("thermal_power_MW", 15.0) * 1e6
+    thermal_power_W = params["thermal_power_MW"] * 1e6
 
     # Scale power for 1/6 geometry (operator sees only the simulated fraction)
     if params["use_1/6_geometry"]:
@@ -1062,7 +1096,7 @@ def run_depletion_simulation(params, run_dir):
         prev_results = prev_results
     )
 
-    integrator_name = params.get("depletion_integrator", "PredictorIntegrator")
+    integrator_name = params["depletion_integrator"]
 
     integrator_map = {
         "PredictorIntegrator": openmc.deplete.PredictorIntegrator,
@@ -1304,7 +1338,7 @@ if __name__ == "__main__":
     elif cfg.params["study_execution_mode"] == "DepletionStudy":
 
         # If restarting, run inside the original directory instead of creating a new one
-        if cfg.params.get("restart_depletion", False) and cfg.params.get("restart_run_dir"):
+        if cfg.params["restart_depletion"] and cfg.params["restart_run_dir"] is not None:
             BASE_DIR = cfg.params["restart_run_dir"]
             print(f"\n{'='*80}")
             print("DEPLETION RESTART MODE")

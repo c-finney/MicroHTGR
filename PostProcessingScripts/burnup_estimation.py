@@ -61,7 +61,7 @@ def run_burnup_estimation(run_dir, params, burnup_limit=160_000):
         content = f.read()
 
     for line in content.split('\n'):
-        if 'k-effective (Collision)' in line and '=' in line:
+        if 'Combined k-effective' in line and '=' in line:
             parts = line.split('=')[1].strip().split('+/-')
             keff = float(parts[0].strip())
             if len(parts) > 1:

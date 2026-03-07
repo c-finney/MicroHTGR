@@ -100,9 +100,11 @@ params = {
     "reflector_max": 968.15,
 
     # ----- Tally Configuration -----
+    "n_XY_mesh_zones_full_core": 500,
     "use_global_tallies": True,
     "use_mesh_tallies": True,
     "use_leakage_tallies": True,
+    "use_BeO_tallies": True,
 
     # ----- OpenMC Monte Carlo Settings -----
     "total_batches": 20,
