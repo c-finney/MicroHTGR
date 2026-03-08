@@ -912,10 +912,11 @@ def build_model(params, run_dir):
 
     model.settings = settings
 
-    # Finalize materials list
-    explicit_mats = list(mats.materials)
+    # Exclude the base fuel template — only the depletable clones should be in the model
+    explicit_mats = [m for m in mats.materials if m is not mats.fuel]
     for ring_fuels in fuel_clones:
         explicit_mats.extend(ring_fuels)
+
     # Homogenized fuel uses temporary constituent materials internally via
     # mix_materials(); those are not tracked separately and do not need to
     # be added here — mix_materials returns a single combined material.
@@ -1138,7 +1139,7 @@ def run_simulation(params, run_dir):
     model.export_to_xml()
 
     if params.get("make_geometry_plots", False):
-        n_plot_threads = str(params.get("plot_threads", os.cpu_count() or 4))
+        n_plot_threads = str(params.get("plot_threads", os.cpu_count()))
         old_omp = os.environ.get("OMP_NUM_THREADS")
         os.environ["OMP_NUM_THREADS"] = n_plot_threads
         try:
@@ -1222,7 +1223,7 @@ def run_simulation(params, run_dir):
             stderr=subprocess.STDOUT,
             universal_newlines=True,
             bufsize=1,
-            env={**os.environ, 'OMP_NUM_THREADS': '24'}
+            env={**os.environ, 'OMP_NUM_THREADS': '128'}
         )
 
         for line in process.stdout:
