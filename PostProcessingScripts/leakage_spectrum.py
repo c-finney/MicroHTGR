@@ -345,6 +345,49 @@ def run_leakage_analysis(run_dir, params, statepoint_path=None, batch=None):
     )
     print(f"Numerical results saved to: leakage_spectrum.npz\n")
 
+    # ================================================================================
+    # 8. SAVE PER-ENERGY-BIN CSV
+    # ================================================================================
+
+    csv_path = os.path.join(results_dir, 'leakage_spectrum.csv')
+    surface_labels = {
+        'radial':    'radial',
+        'axial_top': 'axial_top',
+        'axial_bot': 'axial_bot',
+    }
+
+    with open(csv_path, 'w') as f:
+        header = 'surface,E_low_eV,E_high_eV,E_mid_eV,current_per_source,current_std,surface_fraction'
+        if normalization_ok:
+            header += ',abs_current_n_per_s'
+        f.write(header + '\n')
+
+        for name, r in results.items():
+            bins        = r['energy_bins']
+            mids        = r['energy_mids']
+            mean        = r['current_mean']
+            std         = r['current_std']
+            total       = r['total_current']
+            label       = surface_labels[name]
+
+            for i in range(len(mids)):
+                frac = mean[i] / total if total > 0 else 0.0
+                row = (
+                    f"{label},"
+                    f"{bins[i,0]:.6e},"
+                    f"{bins[i,1]:.6e},"
+                    f"{mids[i]:.6e},"
+                    f"{mean[i]:.6e},"
+                    f"{std[i]:.6e},"
+                    f"{frac:.6e}"
+                )
+                if normalization_ok:
+                    abs_bin = mean[i] * geometry_factor * source_per_sec
+                    row += f",{abs_bin:.6e}"
+                f.write(row + '\n')
+
+    print(f"Per-bin CSV saved to: {csv_path}\n")
+
     return results
 
 # ====================================================================================================
@@ -352,7 +395,7 @@ def run_leakage_analysis(run_dir, params, statepoint_path=None, batch=None):
 # ====================================================================================================
 
 if __name__ == "__main__":
-    if len(sys.argv) < 3:
+    if len(sys.argv) < 2:
         print("Usage: python leakage_spectrum.py <run_directory> [batch_number]")
         print("\nExtracts neutron leakage energy spectra from the leakage current tallies")
         print("and computes absolute leakage rates normalized to thermal power.")

@@ -105,37 +105,37 @@ def build_bank_assemblies(
 
         else:
             # Rod tip falls inside this zone — split at the exact plane
-            # Inserted sub-region: from zone bottom up to rod tip
-            inserted_region  = +min_z_plane & -control_bottom_plane
-            # Withdrawn sub-region: from rod tip up to zone top
-            withdrawn_region = +control_bottom_plane & -max_z_plane
+            # Rod body occupies above control_bottom (rod inserts from the top)
+            rod_region = +control_bottom_plane & -max_z_plane
+            # Gap (no rod) occupies below control_bottom
+            gap_region = +min_z_plane & -control_bottom_plane
 
-            b4c_cell = openmc.Cell(fill=mats.b4c_control, region=-control_cyl_b4c & inserted_region)
+            b4c_cell = openmc.Cell(fill=mats.b4c_control, region=-control_cyl_b4c & rod_region)
             b4c_cell.temperature = T_matrix
 
             sheath_ins = openmc.Cell(
                 fill=mats.incoloy800H,
-                region=+control_cyl_b4c & -control_cyl_sheath_outer & inserted_region)
+                region=+control_cyl_b4c & -control_cyl_sheath_outer & rod_region)
             sheath_ins.temperature = T_matrix
 
             guide_ins = openmc.Cell(
                 fill=mats.incoloy800H,
-                region=+control_cyl_sheath_outer & -control_cyl_guide_outer & inserted_region)
+                region=+control_cyl_sheath_outer & -control_cyl_guide_outer & rod_region)
             guide_ins.temperature = T_matrix
 
-            matrix_ins = openmc.Cell(fill=mats.graphite, region=+control_cyl_guide_outer & inserted_region)
+            matrix_ins = openmc.Cell(fill=mats.graphite, region=+control_cyl_guide_outer & rod_region)
             matrix_ins.temperature = T_matrix
 
-            he_cell = openmc.Cell(fill=mats.helium, region=-control_cyl_sheath_outer & withdrawn_region)
+            he_cell = openmc.Cell(fill=mats.helium, region=-control_cyl_sheath_outer & gap_region)
             he_cell.temperature = T_coolant
             m_colors[mats.helium] = 'red'
 
             guide_wit = openmc.Cell(
                 fill=mats.incoloy800H,
-                region=+control_cyl_sheath_outer & -control_cyl_guide_outer & withdrawn_region)
+                region=+control_cyl_sheath_outer & -control_cyl_guide_outer & gap_region)
             guide_wit.temperature = T_matrix
 
-            matrix_wit = openmc.Cell(fill=mats.graphite, region=+control_cyl_guide_outer & withdrawn_region)
+            matrix_wit = openmc.Cell(fill=mats.graphite, region=+control_cyl_guide_outer & gap_region)
             matrix_wit.temperature = T_matrix
 
             control_univ = openmc.Universe(
@@ -254,33 +254,35 @@ def build_bank_assemblies(
 
             else:
                 # Rod tip inside this zone — split at the exact plane
-                inserted_region  = +min_z_plane & -control_bottom_plane & hex_region_with_outer_cyl
-                withdrawn_region = +control_bottom_plane & -max_z_plane & hex_region_with_outer_cyl
+                # Rod body occupies above control_bottom (rod inserts from the top)
+                rod_region = +control_bottom_plane & -max_z_plane & hex_region_with_outer_cyl
+                # Gap (no rod) occupies below control_bottom
+                gap_region = +min_z_plane & -control_bottom_plane & hex_region_with_outer_cyl
 
                 b4c = openmc.Cell(
                     fill=mats.b4c_control,
-                    region=-fuel_control_cyl_b4c & inserted_region)
+                    region=-fuel_control_cyl_b4c & rod_region)
                 b4c.temperature = T_matrix
 
                 sheath_ins = openmc.Cell(
                     fill=mats.incoloy800H,
-                    region=+fuel_control_cyl_b4c & -fuel_control_cyl_sheath_outer & inserted_region)
+                    region=+fuel_control_cyl_b4c & -fuel_control_cyl_sheath_outer & rod_region)
                 sheath_ins.temperature = T_matrix
 
                 guide_ins = openmc.Cell(
                     fill=mats.incoloy800H,
-                    region=+fuel_control_cyl_sheath_outer & -fuel_control_cyl_guide_outer & inserted_region)
+                    region=+fuel_control_cyl_sheath_outer & -fuel_control_cyl_guide_outer & rod_region)
                 guide_ins.temperature = T_matrix
 
                 he_cell = openmc.Cell(
                     fill=mats.helium,
-                    region=-fuel_control_cyl_sheath_outer & withdrawn_region)
+                    region=-fuel_control_cyl_sheath_outer & gap_region)
                 he_cell.temperature = T_coolant
                 m_colors[mats.helium] = 'red'
 
                 guide_wit = openmc.Cell(
                     fill=mats.incoloy800H,
-                    region=+fuel_control_cyl_sheath_outer & -fuel_control_cyl_guide_outer & withdrawn_region)
+                    region=+fuel_control_cyl_sheath_outer & -fuel_control_cyl_guide_outer & gap_region)
                 guide_wit.temperature = T_matrix
 
                 cells.extend([b4c, sheath_ins, guide_ins, he_cell, guide_wit])

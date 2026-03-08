@@ -102,13 +102,13 @@ params = {
     # ----- Tally Configuration -----
     "n_XY_mesh_zones_full_core": 500,
     "use_global_tallies": True,
-    "use_mesh_tallies": True,
-    "use_leakage_tallies": True,
-    "use_BeO_tallies": True,
+    "use_mesh_tallies": False,
+    "use_leakage_tallies": False,
+    "use_BeO_tallies": False,
 
     # ----- OpenMC Monte Carlo Settings -----
-    "total_batches": 300,
-    "inactive_batches": 100,
+    "total_batches": 100,
+    "inactive_batches": 40,
     "particles": 100_000,
 
     # ----- Geometry Plots -----
@@ -132,12 +132,15 @@ params = {
     # Calibration scan range: [compact_radius*sqrt(triso_pf), compact_radius]
     #   Lower bound: maximum self-shielding (all TRISO volume in inner cylinder)
     #   Upper bound: flat homogenization (no benefit over simple mixing)
-    "rpt_radius": None,                  # Calibrated inner cylinder radius (cm). None = not yet calibrated.
-    "rpt_calibration_n_points": 10,       # Number of r_rpt values to scan in RPTCalibration study.
+    "rpt_radius": None,                   # Calibrated inner cylinder radius (cm). None = not yet calibrated.
+    "rpt_calibration_n_points": 20,       # Number of r_rpt values to scan in RPTCalibration study.
 
     # ----- Parametric Study Configuration -----
-    "parametric_param": "BeO_thickness",
-    "parametric_values": [0.5, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 18.0, 20.0],
+    # "parametric_param": "BeO_thickness",
+    # "parametric_values": [0.5, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 18.0, 20.0],
+    "parametric_param": "bank_3_insertion",
+    "parametric_values": [0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
+                          0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1.0],
 
     # ----- Reactivity Coefficient Study Configuration -----
     "reactivity_delta_T_values": [50.0, 100.0, 150.0],
@@ -238,7 +241,7 @@ params = {
     },
 
     # ----- Study Execution Mode Configuration -----
-    "study_execution_mode": "SingleStudy",
+    "study_execution_mode": "RPTCalibration",
     # Study Execution Mode Options:
     #    "SingleStudy"     — Singular steady state monte carlo simulation of specified core layout
     #    "ParametricStudy" — Creates multiple steady state monte carlo simulations varying a single core parameter
