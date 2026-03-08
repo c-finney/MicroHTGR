@@ -203,7 +203,7 @@ def run_parametric_postprocessing(parametric_dir, batch_number=None):
     df.to_csv(output_csv, index=False)
     
     # Generate plots
-    generate_parametric_plots(df, POSTPROCESSING_RESULTS_DIR)
+    generate_parametric_plots(df, POSTPROCESSING_RESULTS_DIR, show_titles=True)
     
     # Print summary
     print(f"\n{'='*80}")
@@ -222,7 +222,7 @@ def run_parametric_postprocessing(parametric_dir, batch_number=None):
     
     return df
 
-def generate_parametric_plots(df, output_dir):
+def generate_parametric_plots(df, output_dir, show_titles=True):
     """
     Generate plots for parametric study results.
     
@@ -246,7 +246,8 @@ def generate_parametric_plots(df, output_dir):
                 fmt='o-', capsize=3, capthick=1, markersize=8)
     ax.set_xlabel(param_name.replace('_', ' ') + " (cm)")
     ax.set_ylabel('k-effective')
-    ax.set_title(f'k-effective vs {param_name.replace("_", " ")}')
+    if show_titles:
+        ax.set_title(f'k-effective vs {param_name.replace("_", " ")}')
     ax.grid(True, alpha=0.3)
     
     # Add horizontal line at k=1
@@ -263,7 +264,8 @@ def generate_parametric_plots(df, output_dir):
     ax.plot(param_values, leakage * 100, 'o-', markersize=8)
     ax.set_xlabel(param_name.replace('_', ' ') + " (cm)")
     ax.set_ylabel('Leakage Fraction (%)')
-    ax.set_title(f'Neutron Leakage vs {param_name.replace("_", " ")}')
+    if show_titles:
+        ax.set_title(f'Neutron Leakage vs {param_name.replace("_", " ")}')
     ax.grid(True, alpha=0.3)
     
     save_path = os.path.join(output_dir, f'parametric_leakage_vs_{param_name}.png')
@@ -280,7 +282,8 @@ def generate_parametric_plots(df, output_dir):
                 fmt='o-', capsize=3, capthick=1, markersize=8)
     ax.set_xlabel(param_name.replace('_', ' ') + " (cm)")
     ax.set_ylabel('Reactivity (pcm)')
-    ax.set_title(f'Reactivity vs {param_name.replace("_", " ")}')
+    if show_titles:
+        ax.set_title(f'Reactivity vs {param_name.replace("_", " ")}')
     ax.grid(True, alpha=0.3)
     ax.axhline(y=0, color='r', linestyle='--', alpha=0.5, label='ρ = 0')
     ax.legend()

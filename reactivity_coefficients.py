@@ -151,7 +151,6 @@ COEFF_LABELS = {
 
 def run_reactivity_coefficients(
     params,
-    core_rings,
     base_run_dir,
     output_base_dir,
     delta_T_values=None,
@@ -413,7 +412,6 @@ if __name__ == "__main__":
 
     results = run_reactivity_coefficients(
         params=cfg.params,
-        core_rings=cfg.core_rings,
         base_run_dir=base_run_dir,
         output_base_dir=output_dir,
         delta_T_values=[50.0, 100.0, 150.0],

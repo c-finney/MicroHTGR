@@ -553,7 +553,7 @@ def build_model(params, run_dir):
     beo_cells = []
     outer_graphite_cells = []
 
-    use_beo = params["use_BeO_reflector"]
+    use_beo = params["use_BeO_reflector"] and params["BeO_thickness"] > 0.0
     if use_beo:
         beo_inner_r = params["BeO_inner_radius"]
         if beo_inner_r is None:

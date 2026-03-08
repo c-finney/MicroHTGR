@@ -168,7 +168,7 @@ def _load_heating_mesh_tally(sp_path, tally_name, source_per_sec, symmetry_facto
 # PLOTTING FUNCTION FOR CORE XY CROSS-SECTIONS
 # ====================================================================================================
 
-def plot_xy_slice(run_dir, batch, z_index, is_wedge, reconstruct, target_power_MW, core_radius, n_ax_zones, save_dir=None):
+def plot_xy_slice(run_dir, batch, z_index, is_wedge, reconstruct, target_power_MW, core_radius, n_ax_zones, save_dir=None, show_titles=True):
     """Plot XY slices of flux, fission, and heating at a given axial index."""
 
     save_dir = save_dir or run_dir
@@ -222,7 +222,8 @@ def plot_xy_slice(run_dir, batch, z_index, is_wedge, reconstruct, target_power_M
         cbar = plt.colorbar(pcm, ax=ax, label=unit)
         cbar.formatter.set_powerlimits((0, 0)); cbar.update_ticks()
         ax.set_xlabel('X [cm]'); ax.set_ylabel('Y [cm]')
-        ax.set_title(f'{label} - {geometry_label}\nZ = {z_center:.1f} cm (index {z_index}), {target_power_MW} MW')
+        if show_titles:
+            ax.set_title(f'{label} - {geometry_label}\nZ = {z_center:.1f} cm (index {z_index}), {target_power_MW} MW')
         ax.set_aspect('equal')
         save_path = os.path.join(save_dir, f'batch{batch}_{score}_xy_z{z_index}{suffix}.png')
         plt.savefig(save_path, bbox_inches='tight'); plt.close()
@@ -267,7 +268,8 @@ def plot_xy_slice(run_dir, batch, z_index, is_wedge, reconstruct, target_power_M
         cbar = plt.colorbar(pcm, ax=ax, label='Heating Rate [W/mesh element]')
         cbar.formatter.set_powerlimits((0, 0)); cbar.update_ticks()
         ax.set_xlabel('X [cm]'); ax.set_ylabel('Y [cm]')
-        ax.set_title(f'Local Heating Rate - {geom_label}\nZ = {z_center_h:.1f} cm (index {z_index}), {target_power_MW} MW')
+        if show_titles:
+            ax.set_title(f'Local Heating Rate - {geom_label}\nZ = {z_center_h:.1f} cm (index {z_index}), {target_power_MW} MW')
         ax.set_aspect('equal')
         save_path = os.path.join(save_dir, f'batch{batch}_heating_xy_z{z_index}{suffix}.png')
         plt.savefig(save_path, bbox_inches='tight'); plt.close()
@@ -283,7 +285,7 @@ def plot_xy_slice(run_dir, batch, z_index, is_wedge, reconstruct, target_power_M
 # PLOTTING FUNCTION FOR AXIAL FLUX, FISSION, AND HEATING PROFILES
 # ====================================================================================================
 
-def plot_axial_profile(run_dir, batch, is_wedge, target_power_MW, save_dir=None):
+def plot_axial_profile(run_dir, batch, is_wedge, target_power_MW, save_dir=None, show_titles=True):
     """Plot axial profiles of flux, fission rate, and heating."""
 
     save_dir = save_dir or run_dir
@@ -311,12 +313,14 @@ def plot_axial_profile(run_dir, batch, is_wedge, target_power_MW, save_dir=None)
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6), dpi=150)
     ax1.plot(z_centers, flux_axial, 'b-', linewidth=2)
     ax1.set_xlabel('Axial Position [cm]'); ax1.set_ylabel('Average Flux [n/(cm\u00b2 \u00b7 s)]')
-    ax1.set_title(f'Axial Flux Profile - {geometry_label}\n{target_power_MW} MW')
+    if show_titles:
+        ax1.set_title(f'Axial Flux Profile - {geometry_label}\n{target_power_MW} MW')
     ax1.grid(True, alpha=0.3); ax1.ticklabel_format(style='scientific', axis='y', scilimits=(0, 0))
 
     ax2.plot(z_centers, fission_axial, 'r-', linewidth=2)
     ax2.set_xlabel('Axial Position [cm]'); ax2.set_ylabel('Average Fission Rate [fissions/s]')
-    ax2.set_title(f'Axial Fission Profile - {geometry_label}\n{target_power_MW} MW')
+    if show_titles:
+        ax2.set_title(f'Axial Fission Profile - {geometry_label}\n{target_power_MW} MW')
     ax2.grid(True, alpha=0.3); ax2.ticklabel_format(style='scientific', axis='y', scilimits=(0, 0))
 
     plt.tight_layout()
@@ -339,7 +343,8 @@ def plot_axial_profile(run_dir, batch, is_wedge, target_power_MW, save_dir=None)
         fig, ax = plt.subplots(figsize=(7, 6), dpi=150)
         ax.plot(hz_centers, heating_axial, 'darkorange', linewidth=2)
         ax.set_xlabel('Axial Position [cm]'); ax.set_ylabel('Integrated Heating Rate [W]')
-        ax.set_title(f'Axial Heating Profile - {geometry_label}\n{target_power_MW} MW')
+        if show_titles:
+            ax.set_title(f'Axial Heating Profile - {geometry_label}\n{target_power_MW} MW')
         ax.grid(True, alpha=0.3); ax.ticklabel_format(style='scientific', axis='y', scilimits=(0, 0))
         save_path = os.path.join(save_dir, f'batch{batch}_axial_heating_profile.png')
         plt.savefig(save_path, bbox_inches='tight'); plt.close()
@@ -354,7 +359,7 @@ def plot_axial_profile(run_dir, batch, is_wedge, target_power_MW, save_dir=None)
 # PLOTTING FUNCTION FOR CORE RZ CROSS-SECTIONS
 # ====================================================================================================
 
-def plot_rz_crosssection(run_dir, batch, angle_deg, is_wedge, target_power_MW, include_reflector, save_dir=None):
+def plot_rz_crosssection(run_dir, batch, angle_deg, is_wedge, target_power_MW, include_reflector, save_dir=None, show_titles=True):
     """Plot RZ cross-section at specified angle."""
 
     save_dir = save_dir or run_dir
@@ -409,7 +414,8 @@ def plot_rz_crosssection(run_dir, batch, angle_deg, is_wedge, target_power_MW, i
         cbar = plt.colorbar(pcm, ax=ax, label=unit)
         cbar.formatter.set_powerlimits((0, 0)); cbar.update_ticks()
         ax.set_xlabel('Radial Position [cm]'); ax.set_ylabel('Axial Position [cm]')
-        ax.set_title(f'{label} - RZ Cross-Section at {angle_deg}\u00b0 - {geometry_label}\n{target_power_MW} MW')
+        if show_titles:
+            ax.set_title(f'{label} - RZ Cross-Section at {angle_deg}\u00b0 - {geometry_label}\n{target_power_MW} MW')
         save_path = os.path.join(save_dir, f'batch{batch}_{score}_rz_angle{angle_deg}.png')
         plt.savefig(save_path, bbox_inches='tight'); plt.close()
         print(f"Saved: {save_path}")
@@ -454,7 +460,8 @@ def plot_rz_crosssection(run_dir, batch, angle_deg, is_wedge, target_power_MW, i
         cbar = plt.colorbar(pcm, ax=ax, label='Heating Rate [W/mesh element]')
         cbar.formatter.set_powerlimits((0, 0)); cbar.update_ticks()
         ax.set_xlabel('Radial Position [cm]'); ax.set_ylabel('Axial Position [cm]')
-        ax.set_title(f'Heating - RZ Cross-Section at {angle_deg}\u00b0 - {geometry_label}\n{target_power_MW} MW')
+        if show_titles:
+            ax.set_title(f'Heating - RZ Cross-Section at {angle_deg}\u00b0 - {geometry_label}\n{target_power_MW} MW')
         save_path = os.path.join(save_dir, f'batch{batch}_heating_rz_angle{angle_deg}.png')
         plt.savefig(save_path, bbox_inches='tight'); plt.close()
         print(f"Saved: {save_path}")
@@ -560,6 +567,7 @@ def run_tally_plots(run_dir, params, batch=None):
     target_power = params["thermal_power_MW"]
     core_radius = params["core_radius"]
     n_ax_zones = params["n_ax_zones"]
+    show_titles = params.get("show_titles", True)
 
     print(f"Geometry: {'1/6 Wedge' if is_wedge else 'Full Core'}")
     print(f"Target power: {target_power} MW")
@@ -571,12 +579,14 @@ def run_tally_plots(run_dir, params, batch=None):
 
     # Axial profiles
     print("\nGenerating axial profiles...")
-    plot_axial_profile(run_dir, batch, is_wedge, target_power, save_dir=results_dir)
+    plot_axial_profile(run_dir, batch, is_wedge, target_power, save_dir=results_dir,
+                       show_titles=show_titles)
     gc.collect()
 
     # RZ cross-sections
     print("\nGenerating RZ cross-sections...")
-    plot_rz_crosssection(run_dir, batch, 0, is_wedge, target_power, True, save_dir=results_dir)
+    plot_rz_crosssection(run_dir, batch, 0, is_wedge, target_power, True, save_dir=results_dir,
+                          show_titles=show_titles)
     gc.collect()
 
     # XY slices — one at a time with gc between each
@@ -586,7 +596,8 @@ def run_tally_plots(run_dir, params, batch=None):
     for z_idx in z_indices:
         plot_xy_slice(run_dir, batch, z_idx, is_wedge, reconstruct=False,
                       target_power_MW=target_power, core_radius=core_radius,
-                      n_ax_zones=n_ax_zones, save_dir=results_dir)
+                      n_ax_zones=n_ax_zones, save_dir=results_dir,
+                      show_titles=show_titles)
         gc.collect()
 
     print(f"\n{'='*80}")

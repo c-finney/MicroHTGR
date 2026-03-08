@@ -99,6 +99,7 @@ def run_leakage_analysis(run_dir, params, statepoint_path=None, batch=None):
 
     thermal_power_MW = params.get("thermal_power_MW", params.get("thermal_power", 15.0))
     geometry_factor  = 6 if params.get("use_1/6_geometry", False) else 1
+    show_titles      = params.get("show_titles", True)
 
     try:
         source_per_sec, heating_rate_ev, heating_rate_j = get_normalization_factor(
@@ -255,7 +256,8 @@ def run_leakage_analysis(run_dir, params, statepoint_path=None, batch=None):
         ]
         if normalization_ok:
             title_lines.append(f"({r['abs_leakage_n_per_sec']:.3e} n/s)")
-        ax.set_title("\n".join(title_lines), fontsize=9)
+        if show_titles:
+            ax.set_title("\n".join(title_lines), fontsize=9)
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
 

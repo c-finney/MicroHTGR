@@ -96,7 +96,7 @@ def save_results(all_results, k_ref, k_ref_std, rho_ref, output_dir):
     print(f"Results saved to: {txt_path}")
 
 
-def plot_results(all_results, k_ref, output_dir):
+def plot_results(all_results, k_ref, output_dir, show_titles=True):
     """Generate publication-quality plots of reactivity vs. temperature perturbation."""
 
     for name, res in all_results.items():
@@ -129,11 +129,12 @@ def plot_results(all_results, k_ref, output_dir):
 
         ax.set_xlabel("Temperature Perturbation ΔT (K)", fontsize=12)
         ax.set_ylabel("Δρ (pcm)", fontsize=12)
-        ax.set_title(
-            f"{res['label']}\n"
-            f"α = {res['average_alpha_pcm_per_K']:.3f} ± {res['average_alpha_std']:.3f} pcm/K",
-            fontsize=13,
-        )
+        if show_titles:
+            ax.set_title(
+                f"{res['label']}\n"
+                f"α = {res['average_alpha_pcm_per_K']:.3f} ± {res['average_alpha_std']:.3f} pcm/K",
+                fontsize=13,
+            )
         ax.legend(fontsize=11)
         ax.grid(True, alpha=0.3)
 
@@ -155,7 +156,8 @@ def plot_results(all_results, k_ref, output_dir):
 
     ax.axhline(0, color="black", linewidth=0.8)
     ax.set_ylabel("α (pcm/K)", fontsize=12)
-    ax.set_title("Temperature Reactivity Coefficients", fontsize=14)
+    if show_titles:
+        ax.set_title("Temperature Reactivity Coefficients", fontsize=14)
     ax.grid(True, axis="y", alpha=0.3)
 
     for bar, val, std in zip(bars, alphas, stds):

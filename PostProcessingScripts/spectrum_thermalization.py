@@ -200,7 +200,7 @@ def analyze_spectrum(energy_edges, flux_per_bin):
 # Plotting
 # ===========================================================================
 
-def plot_flux_spectrum(E_center, flux_per_lethargy, flux_per_bin, metrics, run_dir, batch=None):
+def plot_flux_spectrum(E_center, flux_per_lethargy, flux_per_bin, metrics, run_dir, batch=None, show_titles=True):
     """Generate neutron energy spectrum plots."""
 
     batch_label = f" (Batch {batch})" if batch else ""
@@ -234,7 +234,8 @@ def plot_flux_spectrum(E_center, flux_per_lethargy, flux_per_bin, metrics, run_d
     ax.set_yscale("log")
     ax.set_xlabel("Neutron Energy (eV)", fontsize=12)
     ax.set_ylabel("Flux per Unit Lethargy (arb. units)", fontsize=12)
-    ax.set_title(f"Neutron Energy Spectrum{batch_label}", fontsize=14)
+    if show_titles:
+        ax.set_title(f"Neutron Energy Spectrum{batch_label}", fontsize=14)
     ax.legend(fontsize=10, loc="upper left")
     ax.grid(True, which="major", alpha=0.3)
     ax.grid(True, which="minor", alpha=0.1)
@@ -264,7 +265,8 @@ def plot_flux_spectrum(E_center, flux_per_lethargy, flux_per_bin, metrics, run_d
     ax.set_xscale("log")
     ax.set_xlabel("Neutron Energy (eV)", fontsize=12)
     ax.set_ylabel("Cumulative Flux Fraction (%)", fontsize=12)
-    ax.set_title(f"Cumulative Neutron Flux Distribution{batch_label}", fontsize=13)
+    if show_titles:
+        ax.set_title(f"Cumulative Neutron Flux Distribution{batch_label}", fontsize=13)
     ax.legend(fontsize=10)
     ax.grid(True, which="major", alpha=0.3)
     ax.set_ylim(0, 105)
@@ -288,14 +290,15 @@ def plot_flux_spectrum(E_center, flux_per_lethargy, flux_per_bin, metrics, run_d
         ax.axvline(E_THERMAL_UPPER, color="red", linestyle="--", linewidth=1, alpha=0.7,
                    label="Cd cutoff (0.625 eV)")
 
-        if metrics["T_neutron_thermal_K"] > 0:
-            ax.set_title(
-                f"Thermal Flux Region{batch_label}\n"
-                f"Effective thermal neutron temperature ≈ {metrics['T_neutron_thermal_K']:.0f} K",
-                fontsize=13,
-            )
-        else:
-            ax.set_title(f"Thermal Flux Region{batch_label}", fontsize=13)
+        if show_titles:
+            if metrics["T_neutron_thermal_K"] > 0:
+                ax.set_title(
+                    f"Thermal Flux Region{batch_label}\n"
+                    f"Effective thermal neutron temperature ≈ {metrics['T_neutron_thermal_K']:.0f} K",
+                    fontsize=13,
+                )
+            else:
+                ax.set_title(f"Thermal Flux Region{batch_label}", fontsize=13)
 
         ax.set_xscale("log")
         ax.set_xlabel("Neutron Energy (eV)", fontsize=12)
@@ -390,6 +393,8 @@ def run_spectrum_analysis(run_dir, params, batch=None):
     results_dir = os.path.join(run_dir, 'spectrum_thermalization_results')
     os.makedirs(results_dir, exist_ok=True)
 
+    show_titles = params.get("show_titles", True)
+
     # =========================================================================
     # Find statepoint
     # =========================================================================
@@ -464,7 +469,8 @@ def run_spectrum_analysis(run_dir, params, batch=None):
     # Generate plots
     # =========================================================================
     print("\nGenerating spectrum plots...")
-    plot_flux_spectrum(E_center, flux_per_lethargy, flux_per_bin, metrics, results_dir, batch)
+    plot_flux_spectrum(E_center, flux_per_lethargy, flux_per_bin, metrics, results_dir, batch,
+                       show_titles=show_titles)
 
     # =========================================================================
     # Save results

@@ -421,6 +421,7 @@ def analyze_and_plot(data, out_dir, batch, params, target_power_MW):
     """
     Analyze per-channel heating profiles and generate plots.
     """
+    show_titles = params.get("show_titles", True)
     run_dir = out_dir   # output directory alias used throughout function
     z_centers      = data['z_centers']
     heating_2d     = data['heating_2d']       # (n_channels, nz)
@@ -493,8 +494,9 @@ def analyze_and_plot(data, out_dir, batch, params, target_power_MW):
                     alpha=0.2, color='blue', label='\u00b11\u03c3')
     ax.set_xlabel('Axial Position [cm]')
     ax.set_ylabel('Channel Heating q(z) [W]')
-    ax.set_title(f'Axial Heating \u2014 Hottest vs Average\n'
-                 f'{target_power_MW} MW | Fxy={Fxy:.3f} | Fz(hot)={Fz_hot:.3f}')
+    if show_titles:
+        ax.set_title(f'Axial Heating \u2014 Hottest vs Average\n'
+                     f'{target_power_MW} MW | Fxy={Fxy:.3f} | Fz(hot)={Fz_hot:.3f}')
     ax.legend(fontsize=10); ax.grid(True, alpha=0.3)
     ax.ticklabel_format(style='scientific', axis='y', scilimits=(0, 0))
     p = os.path.join(run_dir, f'batch{batch}_axial_heating_hottest_vs_average.png')
@@ -513,7 +515,8 @@ def analyze_and_plot(data, out_dir, batch, params, target_power_MW):
     cos_ref = np.cos(np.pi * (zn - 0.5)); cos_ref /= np.max(cos_ref)
     ax.plot(z_centers, cos_ref, 'k:', lw=1.5, alpha=0.5, label='Ref. cosine')
     ax.set_xlabel('Axial Position [cm]'); ax.set_ylabel('Normalized Heating')
-    ax.set_title(f'Normalized Axial Shape \u2014 {target_power_MW} MW')
+    if show_titles:
+        ax.set_title(f'Normalized Axial Shape \u2014 {target_power_MW} MW')
     ax.legend(fontsize=10); ax.grid(True, alpha=0.3); ax.set_ylim(-0.05, 1.15)
     p = os.path.join(run_dir, f'batch{batch}_axial_heating_shape_comparison.png')
     plt.savefig(p, bbox_inches='tight'); plt.close(fig); del fig
@@ -537,7 +540,8 @@ def analyze_and_plot(data, out_dir, batch, params, target_power_MW):
             label=f'Coldest (ch {coldest_idx})')
     ax.set_xlabel('Axial Position [cm]')
     ax.set_ylabel('Channel Heating q(z) [W]')
-    ax.set_title(f'All Fuel Channel Axial Profiles \u2014 {target_power_MW} MW')
+    if show_titles:
+        ax.set_title(f'All Fuel Channel Axial Profiles \u2014 {target_power_MW} MW')
     ax.legend(fontsize=10); ax.grid(True, alpha=0.3)
     ax.ticklabel_format(style='scientific', axis='y', scilimits=(0, 0))
     p = os.path.join(run_dir, f'batch{batch}_axial_heating_all_channels.png')
@@ -560,8 +564,9 @@ def analyze_and_plot(data, out_dir, batch, params, target_power_MW):
                label=f'Avg = {avg_integ:.2e} W')
     ax.set_xlabel('Fuel Channel (ranked)')
     ax.set_ylabel('Integrated Heating [W]')
-    ax.set_title(f'Radial Heating Distribution \u2014 '
-                 f'{target_power_MW} MW | Fxy = {Fxy:.3f}')
+    if show_titles:
+        ax.set_title(f'Radial Heating Distribution \u2014 '
+                     f'{target_power_MW} MW | Fxy = {Fxy:.3f}')
     ax.legend(fontsize=10); ax.grid(True, alpha=0.3, axis='y')
     ax.ticklabel_format(style='scientific', axis='y', scilimits=(0, 0))
     p = os.path.join(run_dir, f'batch{batch}_radial_heating_distribution.png')
@@ -581,8 +586,9 @@ def analyze_and_plot(data, out_dir, batch, params, target_power_MW):
                edgecolors='black', linewidths=0.5, zorder=5,
                label='Hottest channel')
     ax.set_xlabel('x [cm]'); ax.set_ylabel('y [cm]')
-    ax.set_title(f'Integrated Heating Map \u2014 {target_power_MW} MW\n'
-                 f'{n_channels} channels detected')
+    if show_titles:
+        ax.set_title(f'Integrated Heating Map \u2014 {target_power_MW} MW\n'
+                     f'{n_channels} channels detected')
     ax.legend(fontsize=9, loc='upper left')
     plt.colorbar(im, ax=ax, label='Integrated Heating [W]', shrink=0.8)
     p = os.path.join(run_dir, f'batch{batch}_radial_heating_map_channels.png')
@@ -628,7 +634,8 @@ def analyze_and_plot(data, out_dir, batch, params, target_power_MW):
             ax.plot(z_centers, asm_q[a, :], color='gray', alpha=0.3, lw=0.8)
         ax.set_xlabel('Axial Position [cm]')
         ax.set_ylabel('Assembly Heating Rate q(z) [W / axial level]')
-        ax.set_title(f'Assembly Axial Heating q(z) \u2014 {target_power_MW} MW')
+        if show_titles:
+            ax.set_title(f'Assembly Axial Heating q(z) \u2014 {target_power_MW} MW')
         ax.legend(fontsize=10); ax.grid(True, alpha=0.3)
         ax.ticklabel_format(style='scientific', axis='y', scilimits=(0, 0))
         p = os.path.join(run_dir,
