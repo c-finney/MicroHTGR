@@ -7,11 +7,9 @@ Extracts and plots BeO reflector fluence results from OpenMC depletion simulatio
  - BeO fluence CSV export
 
 Usage:
-    # As a module (called from depletion_postprocessing.py):
-    from BeO_depletion_postprocessing import (
-        extract_beo_peak_fluence,
-        plot_and_save_beo_results,
-    )
+    # As a module:
+    from BeO_depletion_postprocessing import run_BeO_depletion_postprocessing
+    run_BeO_depletion_postprocessing(run_dir, params)
 
     # Standalone:
     python BeO_depletion_postprocessing.py <run_directory>
@@ -24,6 +22,7 @@ import glob
 import numpy as np
 import matplotlib.pyplot as plt
 import openmc
+import openmc.deplete
 
 # ====================================================================================================
 # NORMALIZATION HELPER
@@ -319,6 +318,76 @@ def plot_and_save_beo_results(beo_fluence_data, x_data, x_label, x_label_short,
 
 
 # ====================================================================================================
+# MODULE ENTRY POINT
+# ====================================================================================================
+
+def run_BeO_depletion_postprocessing(run_dir, params):
+    """
+    Run BeO reflector depletion post-processing.
+
+    Parameters
+    ----------
+    run_dir : str
+        Directory containing depletion_results.h5 and openmc_simulation_n*.h5 statepoints.
+    params : dict
+        Simulation parameters (merged with run_params.json by the caller).
+
+    Returns
+    -------
+    dict : BeO fluence data returned by extract_beo_peak_fluence, or None.
+    """
+    print(f"\n{'=' * 80}")
+    print("BEO REFLECTOR DEPLETION POST-PROCESSING")
+    print(f"{'=' * 80}")
+    print(f"Run directory: {run_dir}")
+
+    results_path = os.path.join(run_dir, "depletion_results.h5")
+    if not os.path.exists(results_path):
+        print(f"ERROR: {results_path} not found!")
+        return None
+
+    results = openmc.deplete.Results(results_path)
+    time_steps, keff_values = results.get_keff()
+
+    if hasattr(keff_values[0], 'nominal_value'):
+        keff_mean = np.array([k.nominal_value for k in keff_values])
+    else:
+        keff_values = np.array(keff_values)
+        keff_mean   = keff_values[:, 0]
+
+    time_days  = time_steps / 86400.0
+
+    total_HM_mass_kg = params.get("total_HM_mass_kg", None)
+    thermal_power_MW = params.get("thermal_power_MW", 10.0)
+
+    if total_HM_mass_kg and total_HM_mass_kg > 0:
+        burnup_MWd_per_MtU = thermal_power_MW * time_days / (total_HM_mass_kg / 1000.0)
+    else:
+        burnup_MWd_per_MtU = None
+
+    x_data        = burnup_MWd_per_MtU if burnup_MWd_per_MtU is not None else time_days
+    x_label       = "Burnup (MWd/MtU)"  if burnup_MWd_per_MtU is not None else "Time (days)"
+    x_label_short = "burnup"            if burnup_MWd_per_MtU is not None else "time"
+
+    output_dir = os.path.join(run_dir, "depletion_results")
+    os.makedirs(output_dir, exist_ok=True)
+
+    show_titles = params.get("show_titles", True)
+
+    beo_data = extract_beo_peak_fluence(run_dir, time_steps, keff_mean, params)
+    if beo_data is not None:
+        plot_and_save_beo_results(
+            beo_data, x_data, x_label, x_label_short,
+            time_days, keff_mean, burnup_MWd_per_MtU,
+            output_dir, show_titles=show_titles,
+        )
+    else:
+        print("BeO fluence data not available (check use_BeO_tallies and use_BeO_reflector params).")
+
+    return beo_data
+
+
+# ====================================================================================================
 # STANDALONE ENTRY POINT
 # ====================================================================================================
 
@@ -339,7 +408,6 @@ if __name__ == "__main__":
         params = {}
 
     # Load depletion results for time/keff data
-    import openmc.deplete
     results_path = os.path.join(run_dir, "depletion_results.h5")
     if not os.path.exists(results_path):
         print(f"ERROR: {results_path} not found!")

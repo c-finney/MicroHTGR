@@ -112,7 +112,7 @@ params = {
     "particles": 100_000,
 
     # ----- Geometry Plots -----
-    "make_geometry_plots": True,
+    "make_geometry_plots": False,
     "plot_threads": 128,         # OpenMP threads used by openmc --plot
 
     # ----- Spatial Burnup Resolution -----
@@ -241,7 +241,7 @@ params = {
     },
 
     # ----- Study Execution Mode Configuration -----
-    "study_execution_mode": "ParametricStudy",
+    "study_execution_mode": "ReactivityStudy",
     # Study Execution Mode Options:
     #    "SingleStudy"     — Singular steady state monte carlo simulation of specified core layout
     #    "ParametricStudy" — Creates multiple steady state monte carlo simulations varying a single core parameter
@@ -251,4 +251,5 @@ params = {
     #                        Runs one explicit-TRISO reference then scans rpt_calibration_n_points RPT models.
     #                        After running, set rpt_radius in this file to the reported optimal value.
     "run_post_processing": False, # Note this controls individual study post-processing for ParametricStudy runs as parametric post-processing is always run
+    "show_titles": False,
 }

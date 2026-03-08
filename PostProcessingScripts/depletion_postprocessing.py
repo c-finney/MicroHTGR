@@ -28,10 +28,6 @@ import matplotlib.pyplot as plt
 import openmc
 import openmc.deplete
 
-from BeO_depletion_postprocessing import (
-    extract_beo_peak_fluence,
-    plot_and_save_beo_results,
-)
 
 # Default plot groups — used only if not specified in params
 DEFAULT_PLOT_GROUPS = {
@@ -734,7 +730,6 @@ def run_depletion_postprocessing(run_dir, params):
         pu_ratio = fuel_data["Pu239"][-1] / fuel_data["U235"][0] * 100
         print(f"\n  Pu-239 final (% of initial U-235 atoms): {pu_ratio:.2f}%")
 
-    # BeO fluence summary (placeholder — filled after extraction below)
     print(f"{'─' * 60}")
 
     # ================================================================================
@@ -957,25 +952,7 @@ def run_depletion_postprocessing(run_dir, params):
         print(f"  Saved: {peak_csv}")
 
     # ================================================================================
-    # 5c. BEO PEAK FLUENCE (requires per-step statepoints)
-    # ================================================================================
-
-    beo_fluence_data = extract_beo_peak_fluence(
-        run_dir       = run_dir,
-        time_steps_s  = time_steps,           # seconds, from results.get_keff()
-        keff_mean     = keff_mean,
-        params        = params,
-    )
-
-    if beo_fluence_data is not None:
-        plot_and_save_beo_results(
-            beo_fluence_data, x_data, x_label, x_label_short,
-            time_days, keff_mean, burnup_MWd_per_MtU,
-            POSTPROCESSING_RESULTS_DIR, show_titles=show_titles,
-        )
-
-    # ================================================================================
-    # 5d. CONVERSION RATIO
+    # 5c. CONVERSION RATIO
     # ================================================================================
 
     cr_data = calculate_conversion_ratio(fuel_data)
@@ -1091,15 +1068,6 @@ def run_depletion_postprocessing(run_dir, params):
         "peak_burnup_zone_final":        (peak_burnup_data["zone_labels"][
                                               int(peak_burnup_data["peak_zone"][-1])]
                                          if peak_burnup_data is not None else None),
-        # BeO peak fluence
-        "beo_total_peak_fluence_n_cm2":  (beo_fluence_data["total_peak_fluence_n_cm2"]
-                                          if beo_fluence_data is not None else None),
-        "beo_shutdown_step_idx":         (beo_fluence_data["shutdown_step_idx"]
-                                          if beo_fluence_data is not None else None),
-        "beo_cumulative_fluence_n_cm2":  (beo_fluence_data["cumulative_fluence_n_cm2"].tolist()
-                                          if beo_fluence_data is not None else None),
-        "beo_peak_flux_per_step_n_cm2_s":(beo_fluence_data["peak_flux_per_step_n_cm2_s"].tolist()
-                                          if beo_fluence_data is not None else None),
         # Conversion ratio
         "conversion_ratio":              (cr_data["CR"].tolist()
                                           if cr_data is not None else None),
@@ -1201,33 +1169,6 @@ def run_depletion_postprocessing(run_dir, params):
                 f.write(f"{nuc:<12}  {initial:>16.4e}  {final:>16.4e}  {pct:>+12.2f}%\n")
 
         f.write("=" * 80 + "\n")
-
-        # BeO fluence report
-        if beo_fluence_data is not None:
-            f.write("\n" + "=" * 80 + "\n")
-            f.write("BEO REFLECTOR PEAK FLUENCE SUMMARY\n")
-            f.write("=" * 80 + "\n")
-            f.write(f"Total peak fluence: {beo_fluence_data['total_peak_fluence_n_cm2']:.4e} n/cm²\n")
-            sd = beo_fluence_data['shutdown_step_idx']
-            if sd < len(keff_mean):
-                f.write(f"Reactor shutdown: step {sd}  "
-                        f"(k_eff = {keff_mean[sd]:.4f} < 1.0,  "
-                        f"t = {time_days[sd]:.1f} days)\n")
-            else:
-                f.write("Reactor remained supercritical throughout all steps\n")
-            f.write(f"\n{'Step':>5}  {'Time (d)':>10}  {'k_eff':>8}  "
-                    f"{'Peak Flux (n/cm²/s)':>22}  {'Step Fluence (n/cm²)':>22}  "
-                    f"{'Cum. Fluence (n/cm²)':>22}\n")
-            f.write("-" * 100 + "\n")
-            pf_arr = beo_fluence_data['peak_flux_per_step_n_cm2_s']
-            sf_arr = beo_fluence_data['step_fluence_n_cm2']
-            cf_arr = beo_fluence_data['cumulative_fluence_n_cm2']
-            for i in range(n_sp):
-                pf = pf_arr[i] if not np.isnan(pf_arr[i]) else 0.0
-                sf = sf_arr[i] if not np.isnan(sf_arr[i]) else 0.0
-                f.write(f"{i:>5}  {time_days[i]:>10.1f}  {keff_mean[i]:>8.5f}  "
-                        f"{pf:>22.4e}  {sf:>22.4e}  {cf_arr[i]:>22.4e}\n")
-            f.write("=" * 80 + "\n")
 
     print(f"  Report saved to: {txt_path}")
     print(f"\n{'=' * 80}")

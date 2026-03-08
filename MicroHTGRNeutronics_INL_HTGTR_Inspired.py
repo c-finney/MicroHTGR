@@ -1651,16 +1651,18 @@ def run_depletion_post_processing(run_dir, params):
     """
     Run depletion-specific post-processing.
     """
+
+    params_path = os.path.join(run_dir, 'run_params.json')
+    if os.path.exists(params_path):
+        with open(params_path, 'r') as f:
+            saved_params = json.load(f)
+        merged_params = {**params, **saved_params}
+    else:
+        merged_params = params
+    
     try:
         from depletion_postprocessing import run_depletion_postprocessing
         print("Running depletion post-processing...")
-        params_path = os.path.join(run_dir, 'run_params.json')
-        if os.path.exists(params_path):
-            with open(params_path, 'r') as f:
-                saved_params = json.load(f)
-            merged_params = {**params, **saved_params}
-        else:
-            merged_params = params
         run_depletion_postprocessing(run_dir, merged_params)
     except ImportError as e:
         print(f"Warning: Could not import depletion_postprocessing: {e}")
@@ -1668,6 +1670,17 @@ def run_depletion_post_processing(run_dir, params):
         print(f"Warning: Depletion post-processing failed: {e}")
         import traceback
         traceback.print_exc()
+    
+    if params['use_BeO_reflector'] and params['BeO_thickness'] > 0.0:
+        try:
+            from BeO_depletion_postprocessing import run_BeO_depletion_postprocessing
+            run_BeO_depletion_postprocessing(run_dir, merged_params)
+        except ImportError as e:
+            print(f"Warning: Could not import depletion_postprocessing: {e}")
+        except Exception as e:
+            print(f"Warning: Depletion post-processing failed: {e}")
+            import traceback
+            traceback.print_exc()
 
 def run_parametric_post_processing(parametric_dir):
     """

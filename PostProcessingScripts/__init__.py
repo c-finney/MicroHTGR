@@ -18,6 +18,7 @@ from .spectrum_thermalization import run_spectrum_analysis
 from .reactivity_coefficients_postprocessing import save_results, plot_results
 from .depletion_postprocessing import run_depletion_postprocessing
 from .leakage_spectrum import run_leakage_analysis
+from .BeO_depletion_postprocessing import run_BeO_depletion_postprocessing
 
 __all__ = [
     'run_burnup_estimation',
@@ -28,4 +29,5 @@ __all__ = [
     'plot_results',
     'run_depletion_postprocessing',
     'run_leakage_analysis',
+    'run_BeO_depletion_postprocessing'
 ]
