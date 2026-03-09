@@ -39,7 +39,6 @@ import os
 import sys
 import json
 import copy
-import math
 import subprocess
 import numpy as np
 from datetime import datetime
@@ -127,8 +126,29 @@ def reconstruct_depleted_materials(depletion_run_dir, step_idx):
     except Exception:
         tracked_mat_ids = set()
 
+    # Build set of nuclides available in the cross-sections library so we
+    # can skip depletion-chain products (e.g. Ag109_m1) that have no
+    # transport data and would crash OpenMC at run time.
+    try:
+        xs_library = openmc.data.DataLibrary.from_xml()
+        xs_nuclides = {
+            m for entry in xs_library.libraries
+            if entry['type'] == 'neutron'
+            for m in entry['materials']
+        }
+    except Exception:
+        xs_nuclides = None   # fallback: no filtering
+
     depleted = {}   # (ring_idx, bax_idx) -> {nuc: atoms/cm3}
 
+    # Build the global nuclide list once (index_nuc is keyed by nuclide name,
+    # not by material ID).
+    try:
+        all_nuclides = list(results[0].index_nuc.keys())
+    except Exception:
+        all_nuclides = []
+
+    n_skipped_xs = 0
     for ring_idx, row in enumerate(fuel_mat_ids_2d):
         for bax_idx, mat_id in enumerate(row):
             mat_id_str = str(mat_id)
@@ -140,14 +160,12 @@ def reconstruct_depleted_materials(depletion_run_dir, step_idx):
                 print(f"  WARNING: zero volume for material {mat_id_str}, skipping")
                 continue
 
-            # Get nuclides tracked for this material
-            try:
-                nuc_map = results[0].index_nuc.get(mat_id_str, {})
-            except Exception:
-                nuc_map = {}
-
             nuc_densities = {}
-            for nuc in nuc_map.keys():
+            for nuc in all_nuclides:
+                # Skip nuclides absent from the transport library
+                if xs_nuclides is not None and nuc not in xs_nuclides:
+                    n_skipped_xs += 1
+                    continue
                 try:
                     _, atoms = results.get_atoms(mat_id_str, nuc)
                     n_at = float(atoms[step_idx])
@@ -159,8 +177,39 @@ def reconstruct_depleted_materials(depletion_run_dir, step_idx):
             if nuc_densities:
                 depleted[(ring_idx, bax_idx)] = nuc_densities
 
+    if n_skipped_xs:
+        print(f"  Skipped {n_skipped_xs} nuclide-zone entries absent from XS library")
+
     print(f"  Reconstructed {len(depleted)} / "
           f"{len(fuel_mat_ids_2d) * len(fuel_mat_ids_2d[0])} fuel zones")
+
+    # ── Burnable poison (B4C) ──────────────────────────────────────────────
+    # The poison depletes heavily (B-10 burns up).  Injecting the depleted
+    # composition is essential for a correct post-depletion keff.
+    poison_mat_id_str = str(run_params.get("poison_material_id", ""))
+    poison_vol_cm3    = float(run_params.get("poison_volume_simulated_cm3", 0.0))
+
+    if poison_mat_id_str and poison_mat_id_str in tracked_mat_ids and poison_vol_cm3 > 0:
+        poison_densities = {}
+        for nuc in all_nuclides:
+            if xs_nuclides is not None and nuc not in xs_nuclides:
+                continue
+            try:
+                _, atoms = results.get_atoms(poison_mat_id_str, nuc)
+                n_at = float(atoms[step_idx])
+                if n_at > 0:
+                    poison_densities[nuc] = n_at / poison_vol_cm3
+            except Exception:
+                pass
+        if poison_densities:
+            depleted['poison'] = poison_densities
+            print(f"  Reconstructed burnable poison (mat {poison_mat_id_str}): "
+                  f"{len(poison_densities)} nuclides")
+        else:
+            print(f"  WARNING: no poison nuclide data found for mat {poison_mat_id_str}")
+    else:
+        print(f"  WARNING: burnable poison not found in depletion results "
+              f"(id={poison_mat_id_str!r}, vol={poison_vol_cm3:.1f} cm3)")
 
     return depleted, fuel_mat_ids_2d, run_params, step_time_days
 
@@ -169,9 +218,10 @@ def reconstruct_depleted_materials(depletion_run_dir, step_idx):
 # STEP 2 — INJECT DEPLETED COMPOSITIONS INTO A FRESHLY BUILT MODEL
 # ============================================================================
 
-def _inject_depleted_materials(fuel_clones, depleted, params):
+def _inject_depleted_materials(fuel_clones, depleted, model=None):
     """
     Overwrite fuel-clone nuclide compositions with depleted atom densities.
+    Also injects the depleted burnable-poison (B4C) composition if present.
 
     Called AFTER build_model() returns fuel_clones but BEFORE
     model.export_to_xml() is called, so the modified compositions are
@@ -182,13 +232,19 @@ def _inject_depleted_materials(fuel_clones, depleted, params):
     fuel_clones : list[list[openmc.Material]]
         From build_model() — [ring_idx][bax_idx].
     depleted : dict
-        From reconstruct_depleted_materials() — (ring, bax) -> {nuc: dens}.
-    params : dict
-        Simulation params (used to read ax_zones_per_burnup_region).
+        From reconstruct_depleted_materials() — (ring, bax) -> {nuc: dens},
+        plus optional 'poison' key for the burnable poison material.
+    model : openmc.model.Model, optional
+        The freshly-built model; used to locate the B4C_Poison material.
     """
-    n_ax   = params.get("n_ax_zones", 50)
-    zpb    = params.get("ax_zones_per_burnup_region", 10)
-    n_bax  = math.ceil(n_ax / zpb)
+    def _overwrite_mat(mat, nuc_densities):
+        total_density = sum(nuc_densities.values())   # atoms/cm3
+        mat._nuclides = []
+        if hasattr(mat, '_elements'):
+            mat._elements = []
+        for nuc, n_dens in nuc_densities.items():
+            mat.add_nuclide(nuc, n_dens / total_density, 'ao')
+        mat.set_density('atom/cm3', total_density)
 
     injected = 0
     for ring_idx, ring_fuels in enumerate(fuel_clones):
@@ -198,27 +254,28 @@ def _inject_depleted_materials(fuel_clones, depleted, params):
             key = (ring_idx, effective_bax)
             if key not in depleted:
                 continue
-
             nuc_densities = depleted[key]
             if not nuc_densities:
                 continue
-
-            total_density = sum(nuc_densities.values())   # atoms/cm3
-
-            # Clear existing nuclide/element lists
-            mat._nuclides = []
-            if hasattr(mat, '_elements'):
-                mat._elements = []
-
-            # Add depleted nuclides as atom fractions
-            for nuc, n_dens in nuc_densities.items():
-                mat.add_nuclide(nuc, n_dens / total_density, 'ao')
-
-            # Set total atom density  (atoms/cm3)
-            mat.set_density('atom/cm3', total_density)
+            _overwrite_mat(mat, nuc_densities)
             injected += 1
 
     print(f"  Injected depleted compositions into {injected} fuel material clones")
+
+    # ── Burnable poison ────────────────────────────────────────────────────
+    if 'poison' in depleted and model is not None:
+        poison_mat = next(
+            (m for m in model.materials if m.name == "B4C_Poison"), None
+        )
+        if poison_mat is not None:
+            _overwrite_mat(poison_mat, depleted['poison'])
+            print(f"  Injected depleted composition into B4C_Poison material")
+        else:
+            print(f"  WARNING: 'poison' key in depleted but no B4C_Poison "
+                  f"material found in model — poison NOT injected")
+    elif 'poison' in depleted and model is None:
+        print(f"  WARNING: 'poison' key in depleted but model not passed — "
+              f"B4C_Poison NOT injected")
 
 
 def _assert_new_dir(run_dir, depletion_run_dir=None):
@@ -271,7 +328,7 @@ def _run_eigenvalue_with_depleted(params, depleted, run_dir, depletion_run_dir=N
     model, n_trisos, m_colors, fuel_clones = build_model(params, run_dir)
 
     print(f"\n  Injecting depleted compositions...")
-    _inject_depleted_materials(fuel_clones, depleted, params)
+    _inject_depleted_materials(fuel_clones, depleted, model=model)
 
     model.export_to_xml()
 
@@ -321,18 +378,18 @@ def find_critical_rod_insertion(
     depleted,
     output_dir,
     depletion_run_dir=None,
-    rod_bank="bank_3",
     k_target=1.0,
-    k_tol=0.005,
-    max_iter=12,
-    insertion_lo=0.0,
-    insertion_hi=1.0,
+    k_tol=0.003,
+    max_iter=20,
 ):
     """
-    Binary search over control rod insertion to find the critical position.
+    Two-stage binary search to find the critical rod position.
 
-    Varies params[rod_bank + "_insertion"] between insertion_lo and insertion_hi
-    until |k_eff - k_target| < k_tol.
+    Stage 0 — quick check: run with bank 1 fully inserted, bank 2 at 0.
+    Stage 1 — binary search:
+      * If stage-0 k < k_target: search bank 1 in [0, 1] with bank 2 = 0.
+      * If stage-0 k > k_target: fix bank 1 = 1.0, search bank 2 in [0, 1].
+    Bank 3 is always left at 0 (unused legacy bank).
 
     Parameters
     ----------
@@ -342,66 +399,113 @@ def find_critical_rod_insertion(
         Depleted material compositions from reconstruct_depleted_materials().
     output_dir : str
         Root directory for binary-search sub-runs.
-    rod_bank : str
-        Which bank to vary.  Default: "bank_3".
     k_target : float
         Target k_eff (default 1.0 — critical).
     k_tol : float
         Convergence tolerance on |k_eff - k_target|.
     max_iter : int
-        Maximum iterations.
-    insertion_lo, insertion_hi : float
-        Search bounds for insertion fraction [0, 1].
+        Maximum binary-search iterations per stage.
 
     Returns
     -------
     dict with keys:
-        critical_insertion : float
+        critical_bank_1    : float   — final bank 1 insertion fraction
+        critical_bank_2    : float   — final bank 2 insertion fraction
+        critical_insertion : float   — insertion of the active search bank
+        search_stage       : str     — "bank1" or "bank2"
         critical_keff      : float
         critical_keff_std  : float
         critical_run_dir   : str
         converged          : bool
         n_iterations       : int
     """
-    rod_key = rod_bank + "_insertion"
     os.makedirs(output_dir, exist_ok=True)
 
     print(f"\n{'─' * 70}")
-    print(f"  CRITICAL ROD SEARCH — {rod_bank}")
+    print(f"  CRITICAL ROD SEARCH — 2-stage (bank 1 then bank 2)")
     print(f"  Target: k_eff = {k_target:.4f}  ±  {k_tol:.4f}")
-    print(f"  Search: insertion ∈ [{insertion_lo:.3f}, {insertion_hi:.3f}]")
     print(f"{'─' * 70}")
 
-    lo = insertion_lo
-    hi = insertion_hi
-    best_dir = None
-    best_ins = None
-    best_k   = None
-    best_std = None
-    converged = False
-
-    # Reduce particles for the search to keep it fast
+    # Reduced particle settings for all search iterations
     search_params = copy.deepcopy(params)
-    search_params["total_batches"]    = max(30, params.get("total_batches", 50))
-    search_params["inactive_batches"] = max(10, params.get("inactive_batches", 20))
-    search_params["particles"]        = max(50_000, params.get("particles", 100_000) // 2)
+    search_params["total_batches"]       = 100
+    search_params["inactive_batches"]    = 40
+    search_params["particles"]           = max(50_000, params.get("particles", 100_000) // 2)
     search_params["make_geometry_plots"] = False
     search_params["use_mesh_tallies"]    = False
     search_params["use_BeO_tallies"]     = False
     search_params["use_leakage_tallies"] = False
     search_params["use_global_tallies"]  = False
 
+    # ── Stage 0: bank 1 fully inserted, bank 2 out ──────────────────────────
+    stage0_params = copy.deepcopy(search_params)
+    stage0_params["bank_1_insertion"] = 1.0
+    stage0_params["bank_2_insertion"] = 0.0
+    stage0_params["bank_3_insertion"] = 0.0
+    stage0_dir = os.path.join(output_dir, "stage0_bank1_full_bank2_out")
+
+    print(f"\n  Stage 0: bank 1 = 1.0, bank 2 = 0.0")
+    _run_eigenvalue_with_depleted(stage0_params, depleted, stage0_dir,
+                                  depletion_run_dir=depletion_run_dir)
+    k0, k0_std = _read_keff(stage0_dir)
+    print(f"  k_eff = {k0:.5f} ± {k0_std:.5f}   "
+          f"(Δ = {(k0 - k_target)*1e5:+.0f} pcm)")
+
+    if abs(k0 - k_target) < k_tol:
+        print(f"\n  ✓ Converged at stage 0: bank 1 = 1.0, bank 2 = 0.0")
+        return {
+            "critical_bank_1":   1.0,
+            "critical_bank_2":   0.0,
+            "critical_insertion": 1.0,
+            "search_stage":      "bank1",
+            "critical_keff":     k0,
+            "critical_keff_std": k0_std,
+            "critical_run_dir":  stage0_dir,
+            "converged":         True,
+            "n_iterations":      1,
+        }
+
+    # ── Stage 1: choose which bank to search ────────────────────────────────
+    if k0 < k_target:
+        # Subcritical even with bank 1 fully inserted → search bank 1 in [0,1]
+        active_bank  = "bank_1"
+        fixed_b1     = None     # will be set per iteration
+        fixed_b2     = 0.0
+        search_stage = "bank1"
+        print(f"\n  k < 1 with bank 1 full → binary search on bank 1 (bank 2 = 0.0)")
+    else:
+        # Supercritical with bank 1 fully inserted → fix bank 1, search bank 2
+        active_bank  = "bank_2"
+        fixed_b1     = 1.0
+        fixed_b2     = None     # will be set per iteration
+        search_stage = "bank2"
+        print(f"\n  k > 1 with bank 1 full → binary search on bank 2 (bank 1 = 1.0)")
+
+    lo, hi = 0.0, 1.0
+    best_dir = None
+    best_ins = None
+    best_k   = None
+    best_std = None
+    converged = False
+
     for i in range(max_iter):
         mid = 0.5 * (lo + hi)
-        search_params[rod_key] = mid
-        case_dir = os.path.join(output_dir, f"search_iter{i+1:02d}_ins{mid:.4f}")
+        iter_params = copy.deepcopy(search_params)
+        iter_params["bank_3_insertion"] = 0.0
+        if active_bank == "bank_1":
+            iter_params["bank_1_insertion"] = mid
+            iter_params["bank_2_insertion"] = fixed_b2
+        else:
+            iter_params["bank_1_insertion"] = fixed_b1
+            iter_params["bank_2_insertion"] = mid
 
-        print(f"\n  Iter {i+1:2d}: {rod_bank} = {mid:.4f}  [{lo:.4f}, {hi:.4f}]")
+        case_dir = os.path.join(output_dir,
+                                f"search_{search_stage}_iter{i+1:02d}_ins{mid:.4f}")
+        print(f"\n  Iter {i+1:2d}: {active_bank} = {mid:.4f}  [{lo:.4f}, {hi:.4f}]")
 
-        _run_eigenvalue_with_depleted(search_params, depleted, case_dir,
+        _run_eigenvalue_with_depleted(iter_params, depleted, case_dir,
                                       depletion_run_dir=depletion_run_dir)
         k, k_std = _read_keff(case_dir)
-
         print(f"         k_eff = {k:.5f} ± {k_std:.5f}   "
               f"(Δ = {(k - k_target)*1e5:+.0f} pcm)")
 
@@ -413,7 +517,8 @@ def find_critical_rod_insertion(
 
         if abs(k - k_target) < k_tol:
             converged = True
-            print(f"\n  ✓ Converged: insertion = {mid:.4f}, k = {k:.5f} ± {k_std:.5f}")
+            print(f"\n  ✓ Converged: {active_bank} = {mid:.4f}, "
+                  f"k = {k:.5f} ± {k_std:.5f}")
             break
 
         # k > target → more absorption needed → increase insertion
@@ -424,15 +529,23 @@ def find_critical_rod_insertion(
 
     if not converged:
         print(f"\n  WARNING: Did not converge in {max_iter} iterations.")
-        print(f"  Best: insertion = {best_ins:.4f}, k = {best_k:.5f}")
+        print(f"  Best: {active_bank} = {best_ins:.4f}, k = {best_k:.5f}")
+
+    if search_stage == "bank1":
+        final_b1, final_b2 = best_ins, 0.0
+    else:
+        final_b1, final_b2 = 1.0, best_ins
 
     return {
-        "critical_insertion":  best_ins,
-        "critical_keff":       best_k,
-        "critical_keff_std":   best_std,
-        "critical_run_dir":    best_dir,
-        "converged":           converged,
-        "n_iterations":        i + 1,
+        "critical_bank_1":   final_b1,
+        "critical_bank_2":   final_b2,
+        "critical_insertion": best_ins,
+        "search_stage":      search_stage,
+        "critical_keff":     best_k,
+        "critical_keff_std": best_std,
+        "critical_run_dir":  best_dir,
+        "converged":         converged,
+        "n_iterations":      i + 1,
     }
 
 
@@ -486,7 +599,8 @@ def run_mol_eol_reactivity_coefficients(
     output_base_dir,
     delta_T_values=None,
     coefficients=None,
-    rod_insertion_override=None,
+    bank_1_override=None,
+    bank_2_override=None,
 ):
     """
     Compute FTC/MTC/ITC at a specific depletion step using depleted materials.
@@ -505,9 +619,11 @@ def run_mol_eol_reactivity_coefficients(
         Temperature perturbations in K. Default: [50, 100, 150].
     coefficients : list[str], optional
         Subset of ["FTC", "MTC", "ITC"]. Default: all three.
-    rod_insertion_override : float or None
-        If given, set bank_3_insertion to this value for all runs.
-        Use None to keep whatever is in run_params.json (typically 0 = rods out).
+    bank_1_override : float or None
+        If given, override bank 1 insertion for all runs.
+    bank_2_override : float or None
+        If given, override bank 2 insertion for all runs.
+        Bank 3 is always left at 0.
 
     Returns
     -------
@@ -531,9 +647,13 @@ def run_mol_eol_reactivity_coefficients(
     import config as cfg
     merged = {**cfg.params, **run_params}
 
-    if rod_insertion_override is not None:
-        merged["bank_3_insertion"] = rod_insertion_override
-        print(f"  Rod insertion override: bank_3 = {rod_insertion_override:.4f}")
+    if bank_1_override is not None:
+        merged["bank_1_insertion"] = bank_1_override
+        print(f"  Rod insertion override: bank 1 = {bank_1_override:.4f}")
+    if bank_2_override is not None:
+        merged["bank_2_insertion"] = bank_2_override
+        print(f"  Rod insertion override: bank 2 = {bank_2_override:.4f}")
+    merged["bank_3_insertion"] = 0.0
 
     # Disable heavy options for reactivity perturbation runs
     merged["make_geometry_plots"] = False
@@ -677,10 +797,10 @@ def run_mol_eol_heat_map(
     step_label,
     output_base_dir,
     rod_mode="critical",
-    rod_bank="bank_3",
-    fixed_rod_insertion=None,
-    k_tol=0.001,
-    max_search_iter=12,
+    fixed_bank_1=None,
+    fixed_bank_2=None,
+    k_tol=0.003,
+    max_search_iter=20,
 ):
     """
     Extract heat map and leakage spectrum at a specific burnup step.
@@ -697,14 +817,14 @@ def run_mol_eol_heat_map(
         Root directory for all output sub-directories.
     rod_mode : str
         One of:
-          "rods_out"   — run with all control rods at the depletion position (0).
-          "all_in"     — run with bank fully inserted (insertion = 1.0).
+          "rods_out"   — all banks at 0.
+          "all_in"     — bank 1 = 1.0, bank 2 = 1.0.
           "critical"   — run critical rod search first, then full-tally run.
-          "fixed"      — use fixed_rod_insertion value for the bank.
-    rod_bank : str
-        Which bank to vary for the criticality search. Default: "bank_3".
-    fixed_rod_insertion : float or None
-        Used only when rod_mode="fixed".
+          "fixed"      — use fixed_bank_1 / fixed_bank_2 values.
+    fixed_bank_1 : float or None
+        Bank 1 insertion for rod_mode="fixed".
+    fixed_bank_2 : float or None
+        Bank 2 insertion for rod_mode="fixed".
     k_tol : float
         Convergence tolerance for the criticality search.
     max_search_iter : int
@@ -726,7 +846,6 @@ def run_mol_eol_heat_map(
     merged["make_geometry_plots"] = False
 
     # ---- Determine rod insertion for this run ----
-    rod_key = rod_bank + "_insertion"
     critical_search_result = None
 
     if rod_mode == "rods_out":
@@ -737,16 +856,23 @@ def run_mol_eol_heat_map(
         label_suffix  = "rods_out"
 
     elif rod_mode == "all_in":
-        merged[rod_key] = 1.0
+        merged["bank_1_insertion"] = 1.0
+        merged["bank_2_insertion"] = 1.0
+        merged["bank_3_insertion"] = 0.0
         rod_insertion = 1.0
         label_suffix  = "all_rods_in"
 
     elif rod_mode == "fixed":
-        if fixed_rod_insertion is None:
-            raise ValueError("rod_mode='fixed' requires fixed_rod_insertion to be set")
-        merged[rod_key] = fixed_rod_insertion
-        rod_insertion   = fixed_rod_insertion
-        label_suffix    = f"rod_{rod_insertion:.4f}"
+        if fixed_bank_1 is None and fixed_bank_2 is None:
+            raise ValueError("rod_mode='fixed' requires at least one of "
+                             "fixed_bank_1 or fixed_bank_2 to be set")
+        b1 = fixed_bank_1 if fixed_bank_1 is not None else merged.get("bank_1_insertion", 0.0)
+        b2 = fixed_bank_2 if fixed_bank_2 is not None else 0.0
+        merged["bank_1_insertion"] = b1
+        merged["bank_2_insertion"] = b2
+        merged["bank_3_insertion"] = 0.0
+        rod_insertion = b1  # used for label/metadata; b2 stored separately
+        label_suffix  = f"b1_{b1:.4f}_b2_{b2:.4f}"
 
     elif rod_mode == "critical":
         # First, quick run with rods out to check if supercritical
@@ -772,13 +898,17 @@ def run_mol_eol_heat_map(
             # Already critical — no search needed
             print(f"  Core is already critical with rods out — skipping search")
             rod_insertion = 0.0
-            merged[rod_key] = 0.0
+            merged["bank_1_insertion"] = 0.0
+            merged["bank_2_insertion"] = 0.0
+            merged["bank_3_insertion"] = 0.0
             label_suffix = "critical_rods_out"
         elif k_check < 1.0:
             print(f"  Core is subcritical with rods out — cannot insert rods to reach k=1")
             print(f"  Proceeding with rods_out configuration")
             rod_insertion = 0.0
-            merged[rod_key] = 0.0
+            merged["bank_1_insertion"] = 0.0
+            merged["bank_2_insertion"] = 0.0
+            merged["bank_3_insertion"] = 0.0
             label_suffix = "rods_out_subcritical"
         else:
             # Supercritical — search for critical insertion
@@ -786,14 +916,16 @@ def run_mol_eol_heat_map(
                                        f"heatmap_{step_label}_rod_search")
             critical_search_result = find_critical_rod_insertion(
                 merged, depleted, search_dir,
-                rod_bank=rod_bank,
                 k_target=1.0,
                 k_tol=k_tol,
                 max_iter=max_search_iter,
             )
+            merged["bank_1_insertion"] = critical_search_result["critical_bank_1"]
+            merged["bank_2_insertion"] = critical_search_result["critical_bank_2"]
+            merged["bank_3_insertion"] = 0.0
             rod_insertion = critical_search_result["critical_insertion"]
-            merged[rod_key] = rod_insertion
-            label_suffix = f"critical_{rod_insertion:.4f}"
+            label_suffix = (f"critical_b1_{critical_search_result['critical_bank_1']:.4f}"
+                            f"_b2_{critical_search_result['critical_bank_2']:.4f}")
     else:
         raise ValueError(f"Unknown rod_mode: '{rod_mode}'. "
                          "Use 'rods_out', 'all_in', 'fixed', or 'critical'.")
@@ -839,7 +971,6 @@ def run_mol_eol_heat_map(
         "step_idx":         step_idx,
         "step_time_days":   step_time_days,
         "rod_mode":         rod_mode,
-        "rod_bank":         rod_bank,
         "rod_insertion":    rod_insertion,
         "k_eff":            keff,
         "k_eff_std":        keff_std,
@@ -855,7 +986,6 @@ def run_mol_eol_heat_map(
 
     return meta
 
-
 # ============================================================================
 # ORCHESTRATOR — RUN ALL ANALYSES FOR ONE BURNUP STEP
 # ============================================================================
@@ -869,18 +999,18 @@ def run_mol_eol_analysis(
     run_heat_map=True,
     run_leakage=True,
     run_all_rods_in=True,
-    rod_bank="bank_3",
     delta_T_values=None,
     coefficients=None,
-    k_tol=0.001,
-    max_search_iter=12,
+    k_tol=0.003,
+    max_search_iter=20,
 ):
     """
     Orchestrate the full MOL/EOL analysis suite for one depletion step.
 
     Runs (in order, all optional):
-      1. Reactivity coefficient study (FTC, MTC, ITC) with rods out.
-      2. Heat map + leakage with critical rod insertion.
+      0. Critical rod search (shared) — finds the critical insertion once.
+      1. Reactivity coefficient study (FTC, MTC, ITC) at critical insertion.
+      2. Heat map + leakage at the same critical insertion (no re-search).
       3. Heat map + leakage with all rods fully inserted.
 
     Parameters
@@ -901,8 +1031,6 @@ def run_mol_eol_analysis(
         This flag enables/disables the standalone leakage-only pass.
     run_all_rods_in : bool
         If True and run_heat_map is True, also runs a separate "all_in" heat map.
-    rod_bank : str
-        Which bank to vary in the criticality search.
     delta_T_values, coefficients : see run_mol_eol_reactivity_coefficients().
     k_tol, max_search_iter : see find_critical_rod_insertion().
 
@@ -928,7 +1056,52 @@ def run_mol_eol_analysis(
         "output_base_dir":     output_base_dir,
     }
 
-    # 1. Reactivity coefficients (rods out — same as depletion config)
+    # ── Find critical rod insertion ONCE ────────────────────────────────────
+    # All power-condition analyses (RC study + heat map) share this position.
+    # The critical rod search is the "expensive" step; running it once avoids
+    # redundant work and guarantees consistency between analyses.
+    critical_bank_1 = 0.0   # fall back to rods-out if search skipped
+    critical_bank_2 = 0.0
+
+    if run_heat_map or run_reactivity_study:
+        print(f"\n{'─' * 70}")
+        print(f"  CRITICAL ROD SEARCH — shared pre-step")
+        print(f"{'─' * 70}")
+        try:
+            # Reconstruct depleted compositions and build merged params here
+            # so the search reuses the same data that the sub-runs will use.
+            import config as cfg
+            _dep, _, _rp, _ = reconstruct_depleted_materials(
+                depletion_run_dir, step_idx)
+            _params_search = {**cfg.params, **_rp}
+            _params_search["make_geometry_plots"] = False
+            _params_search["use_mesh_tallies"]    = False
+            _params_search["use_BeO_tallies"]     = False
+            _params_search["use_leakage_tallies"] = False
+            _params_search["use_global_tallies"]  = False
+
+            _search_dir = os.path.join(output_base_dir, "critical_rod_search")
+            _crit = find_critical_rod_insertion(
+                _params_search, _dep, _search_dir,
+                k_target=1.0,
+                k_tol=k_tol,
+                max_iter=max_search_iter,
+            )
+            critical_bank_1 = _crit["critical_bank_1"]
+            critical_bank_2 = _crit["critical_bank_2"]
+            summary["critical_rod_search"] = _crit
+            print(f"\n  Critical position: bank 1 = {critical_bank_1:.4f}, "
+                  f"bank 2 = {critical_bank_2:.4f}  "
+                  f"(k = {_crit['critical_keff']:.5f} ± {_crit['critical_keff_std']:.5f})")
+        except Exception as e:
+            print(f"\n  WARNING: Critical rod search failed ({e}); "
+                  f"falling back to rods-out for all analyses.")
+            import traceback; traceback.print_exc()
+            critical_bank_1 = 0.0
+            critical_bank_2 = 0.0
+            summary["critical_rod_search"] = {"error": str(e)}
+
+    # 1. Reactivity coefficients at critical rod position (power conditions)
     if run_reactivity_study:
         try:
             rc_results = run_mol_eol_reactivity_coefficients(
@@ -938,7 +1111,8 @@ def run_mol_eol_analysis(
                 output_base_dir=output_base_dir,
                 delta_T_values=delta_T_values,
                 coefficients=coefficients,
-                rod_insertion_override=0.0,   # rods out for coefficient study
+                bank_1_override=critical_bank_1,
+                bank_2_override=critical_bank_2,
             )
             summary["reactivity_coefficients"] = {
                 name: {
@@ -952,7 +1126,7 @@ def run_mol_eol_analysis(
             import traceback; traceback.print_exc()
             summary["reactivity_coefficients"] = {"error": str(e)}
 
-    # 2. Heat map — critical rod position
+    # 2. Heat map — critical rod position (reuse insertion found above)
     if run_heat_map:
         try:
             hm_critical = run_mol_eol_heat_map(
@@ -960,10 +1134,9 @@ def run_mol_eol_analysis(
                 step_idx=step_idx,
                 step_label=step_label,
                 output_base_dir=output_base_dir,
-                rod_mode="critical",
-                rod_bank=rod_bank,
-                k_tol=k_tol,
-                max_search_iter=max_search_iter,
+                rod_mode="fixed",
+                fixed_bank_1=critical_bank_1,
+                fixed_bank_2=critical_bank_2,
             )
             summary["heat_map_critical"] = hm_critical
         except Exception as e:
@@ -971,7 +1144,7 @@ def run_mol_eol_analysis(
             import traceback; traceback.print_exc()
             summary["heat_map_critical"] = {"error": str(e)}
 
-    # 3. Heat map — all rods in
+    # 3. Heat map — all rods fully inserted
     if run_heat_map and run_all_rods_in:
         try:
             hm_all_in = run_mol_eol_heat_map(
@@ -980,7 +1153,6 @@ def run_mol_eol_analysis(
                 step_label=step_label,
                 output_base_dir=output_base_dir,
                 rod_mode="all_in",
-                rod_bank=rod_bank,
             )
             summary["heat_map_all_rods_in"] = hm_all_in
         except Exception as e:
@@ -1012,6 +1184,11 @@ if __name__ == "__main__":
     )
     parser.add_argument("depletion_run_dir",
                         help="Directory containing depletion_results.h5")
+    parser.add_argument("--mode", type=str, default="full",
+                        choices=["full", "CriticalSearch"],
+                        help="Run mode: 'full' runs all analyses (default); "
+                             "'CriticalSearch' runs only the critical rod search "
+                             "and prints the result")
     parser.add_argument("--step", type=int, default=-1,
                         help="Depletion step index (-1 = EOL, default)")
     parser.add_argument("--label", type=str, default="EOL",
@@ -1019,29 +1196,77 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=str, default=None,
                         help="Output directory (default: <depletion_run_dir>/mol_eol_analysis_<label>)")
     parser.add_argument("--no-rc",  action="store_true",
-                        help="Skip reactivity coefficient study")
+                        help="Skip reactivity coefficient study (full mode only)")
     parser.add_argument("--no-hm",  action="store_true",
-                        help="Skip heat map extraction")
+                        help="Skip heat map extraction (full mode only)")
     parser.add_argument("--no-rods-in", action="store_true",
-                        help="Skip the 'all rods in' heat map run")
-    parser.add_argument("--rod-bank", type=str, default="bank_3",
-                        help="Which bank to vary in the criticality search")
-    parser.add_argument("--k-tol", type=float, default=0.001,
-                        help="Criticality search tolerance (default 0.001)")
-    parser.add_argument("--max-iter", type=int, default=12,
-                        help="Max iterations for criticality search (default 12)")
+                        help="Skip the 'all rods in' heat map run (full mode only)")
+    parser.add_argument("--k-tol", type=float, default=0.003,
+                        help="Criticality search tolerance (default 0.003)")
+    parser.add_argument("--max-iter", type=int, default=20,
+                        help="Max iterations for criticality search (default 20)")
 
     args = parser.parse_args()
 
-    run_mol_eol_analysis(
-        depletion_run_dir   = args.depletion_run_dir,
-        step_idx            = args.step,
-        step_label          = args.label,
-        output_base_dir     = args.output,
-        run_reactivity_study= not args.no_rc,
-        run_heat_map        = not args.no_hm,
-        run_all_rods_in     = not args.no_rods_in,
-        rod_bank            = args.rod_bank,
-        k_tol               = args.k_tol,
-        max_search_iter     = args.max_iter,
-    )
+    if args.mode == "CriticalSearch":
+        # ── Standalone critical rod search ──────────────────────────────────
+        output_base = args.output or os.path.join(
+            args.depletion_run_dir,
+            f"mol_eol_analysis_{args.label}"
+        )
+        os.makedirs(output_base, exist_ok=True)
+
+        print(f"\n{'#' * 80}")
+        print(f"#  CRITICAL ROD SEARCH — {args.label}")
+        print(f"#  Depletion run: {args.depletion_run_dir}")
+        print(f"#  Output:        {output_base}")
+        print(f"{'#' * 80}\n")
+
+        import config as cfg
+        dep, _, rp, step_time_days = reconstruct_depleted_materials(
+            args.depletion_run_dir, args.step)
+        search_params = {**cfg.params, **rp}
+        search_params["make_geometry_plots"] = False
+        search_params["use_mesh_tallies"]    = False
+        search_params["use_BeO_tallies"]     = False
+        search_params["use_leakage_tallies"] = False
+        search_params["use_global_tallies"]  = False
+
+        search_dir = os.path.join(output_base, "critical_rod_search")
+        result = find_critical_rod_insertion(
+            search_params, dep, search_dir,
+            k_target=1.0,
+            k_tol=args.k_tol,
+            max_iter=args.max_iter,
+        )
+
+        print(f"\n{'─' * 70}")
+        print(f"  CRITICAL SEARCH RESULT — {args.label}  ({step_time_days:.1f} days)")
+        print(f"  Bank 1 insertion : {result['critical_bank_1']:.4f}")
+        print(f"  Bank 2 insertion : {result['critical_bank_2']:.4f}")
+        print(f"  Search stage     : {result['search_stage']}")
+        print(f"  k_eff            : {result['critical_keff']:.5f} "
+              f"± {result['critical_keff_std']:.5f}")
+        print(f"  Converged        : {result['converged']}  "
+              f"({result['n_iterations']} iterations)")
+        print(f"{'─' * 70}\n")
+
+        result_path = os.path.join(output_base, "critical_search_result.json")
+        with open(result_path, "w") as f:
+            json.dump({**result, "step_label": args.label,
+                       "step_time_days": step_time_days}, f, indent=2, default=float)
+        print(f"  Result saved to: {result_path}")
+
+    else:
+        # ── Full MOL/EOL analysis suite ──────────────────────────────────────
+        run_mol_eol_analysis(
+            depletion_run_dir   = args.depletion_run_dir,
+            step_idx            = args.step,
+            step_label          = args.label,
+            output_base_dir     = args.output,
+            run_reactivity_study= not args.no_rc,
+            run_heat_map        = not args.no_hm,
+            run_all_rods_in     = not args.no_rods_in,
+            k_tol               = args.k_tol,
+            max_search_iter     = args.max_iter,
+        )

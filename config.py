@@ -53,8 +53,8 @@ params = {
     "fuel_assembly_control_radius": 2.54,    # Radius for circular control rods in fuel assemblies
     "sheath_thickness": 0.1, 
     "guide_tube_thickness": 0.2,  
-    "bank_1_insertion": 0.0,                 # Fractional control rod insertion for bank 1 (0-1.0)
-    "bank_2_insertion": 0.0,                 # Fractional control rod insertion for bank 2 (0-1.0)
+    "bank_1_insertion": 1.0,                 # Fractional control rod insertion for bank 1 (0-1.0)
+    "bank_2_insertion": 0.7344,              # Fractional control rod insertion for bank 2 (0-1.0)
     "bank_3_insertion": 0.0,                 # Fractional control rod insertion for bank 3 (0-1.0)
     "secondary_SD_rods_inserted": False,     # True = all SS rods fully inserted, False = all removed
     "B10_enrichment_control": 0.9,
@@ -102,17 +102,17 @@ params = {
     # ----- Tally Configuration -----
     "n_XY_mesh_zones_full_core": 500,
     "use_global_tallies": True,
-    "use_mesh_tallies": False,
-    "use_leakage_tallies": False,
-    "use_BeO_tallies": False,
+    "use_mesh_tallies": True,
+    "use_leakage_tallies": True,
+    "use_BeO_tallies": True,
 
     # ----- OpenMC Monte Carlo Settings -----
-    "total_batches": 100,
-    "inactive_batches": 40,
+    "total_batches": 1000,
+    "inactive_batches": 250,
     "particles": 100_000,
 
     # ----- Geometry Plots -----
-    "make_geometry_plots": False,
+    "make_geometry_plots": True,
     "plot_threads": 128,         # OpenMP threads used by openmc --plot
 
     # ----- Spatial Burnup Resolution -----
@@ -145,6 +145,10 @@ params = {
     # ----- Reactivity Coefficient Study Configuration -----
     "reactivity_delta_T_values": [50.0, 100.0, 150.0],
     "reactivity_coefficients": ["FTC", "MTC", "ITC"],
+
+    # ----- Critical Rod Search Configuration -----
+    "critical_search_k_tol": 0.003,
+    "critical_search_max_iter": 20,
 
     # ----- Depletion Study Configuration -----
     "thermal_power_MW": 10.0,
@@ -241,15 +245,16 @@ params = {
     },
 
     # ----- Study Execution Mode Configuration -----
-    "study_execution_mode": "ReactivityStudy",
+    "study_execution_mode": "SingleStudy",
     # Study Execution Mode Options:
     #    "SingleStudy"     — Singular steady state monte carlo simulation of specified core layout
     #    "ParametricStudy" — Creates multiple steady state monte carlo simulations varying a single core parameter
     #    "ReactivityStudy" — Calculates reactivity coefficients via multiple steady state monte carlo simulations and specified temperature perturbations
+    #    "CriticalSerach"  — Performs critical rod position search, first inserting bank 1 all the way and then inserting bank 2 until critical
     #    "DepletionStudy"  — Performs depletion run on specified core layout using specified depletion timesteps
     #    "RPTCalibration"  — Finds the RPT inner radius (rpt_radius) that matches explicit-TRISO k_eff.
     #                        Runs one explicit-TRISO reference then scans rpt_calibration_n_points RPT models.
     #                        After running, set rpt_radius in this file to the reported optimal value.
-    "run_post_processing": False, # Note this controls individual study post-processing for ParametricStudy runs as parametric post-processing is always run
-    "show_titles": False,
+    "run_post_processing": True, # Note this controls individual study post-processing for ParametricStudy runs as parametric post-processing is always run
+    "show_titles": True,
 }

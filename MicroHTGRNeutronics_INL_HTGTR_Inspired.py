@@ -1820,7 +1820,145 @@ if __name__ == "__main__":
         print(f"Results Directory: {BASE_DIR}")
         print(f"{'='*80}\n")
 
+    elif cfg.params["study_execution_mode"] == "CriticalSearch":
+        # ── BOL critical rod search ──────────────────────────────────────────
+        # Two-stage binary search to find the critical rod position at BOL:
+        #   Stage 0: bank 1 = 1.0, bank 2 = 0.0  →  quick k_eff check
+        #   Stage 1a: if k < 1, binary search bank 1 in [0,1] (bank 2 = 0)
+        #   Stage 1b: if k > 1, fix bank 1 = 1.0, binary search bank 2 in [0,1]
+        #   Bank 3 is unused and always left at 0.
+
+        import glob as _glob
+
+        def _read_keff_cs(run_dir):
+            sp_files = sorted(_glob.glob(os.path.join(run_dir, "statepoint.*.h5")))
+            if not sp_files:
+                raise FileNotFoundError(f"No statepoint in {run_dir}")
+            sp = openmc.StatePoint(sp_files[-1])
+            return float(sp.keff.n), float(sp.keff.s)
+
+        BASE_DIR_CS = os.path.join(OUTPUT_BASE, run_name + "_CriticalSearch")
+        os.makedirs(BASE_DIR_CS, exist_ok=True)
+
+        k_tol        = cfg.params.get("critical_search_k_tol",  0.003)
+        max_iter     = cfg.params.get("critical_search_max_iter", 20)
+
+        # Reduced particle settings for fast search iterations
+        sp = cfg.params.copy()
+        sp["total_batches"]       = 100
+        sp["inactive_batches"]    = 40
+        sp["particles"]           = max(50_000, cfg.params.get("particles", 100_000) // 2)
+        sp["make_geometry_plots"] = False
+        sp["use_mesh_tallies"]    = False
+        sp["use_BeO_tallies"]     = False
+        sp["use_leakage_tallies"] = False
+        sp["use_global_tallies"]  = False
+
+        print(f"\n{'='*80}")
+        print(f"CRITICAL SEARCH — BOL")
+        print(f"  Target: k_eff = 1.0  ±  {k_tol}")
+        print(f"  Particles per iter: {sp['particles']:,}  "
+              f"({sp['total_batches']} batches, {sp['inactive_batches']} inactive)")
+        print(f"  Output: {BASE_DIR_CS}")
+        print(f"{'='*80}")
+
+        # ── Stage 0 ─────────────────────────────────────────────────────────
+        s0 = sp.copy()
+        s0["bank_1_insertion"] = 1.0
+        s0["bank_2_insertion"] = 0.0
+        s0["bank_3_insertion"] = 0.0
+        s0_dir = os.path.join(BASE_DIR_CS, "stage0_bank1_full_bank2_out")
+
+        print(f"\n  Stage 0: bank 1 = 1.0, bank 2 = 0.0")
+        run_simulation(s0, s0_dir)
+        k0, k0_std = _read_keff_cs(s0_dir)
+        print(f"  k_eff = {k0:.5f} ± {k0_std:.5f}   "
+              f"(Δ = {(k0 - 1.0)*1e5:+.0f} pcm)")
+
+        if abs(k0 - 1.0) < k_tol:
+            print(f"\n  ✓ Converged at stage 0: bank 1 = 1.0, bank 2 = 0.0")
+            cs_result = {"critical_bank_1": 1.0, "critical_bank_2": 0.0,
+                         "critical_keff": k0, "critical_keff_std": k0_std,
+                         "search_stage": "bank1", "converged": True,
+                         "n_iterations": 1, "critical_run_dir": s0_dir}
+        else:
+            # ── Stage 1 ─────────────────────────────────────────────────────
+            if k0 < 1.0:
+                active_bank  = "bank_1"
+                fixed_b1, fixed_b2 = None, 0.0
+                search_stage = "bank1"
+                print(f"\n  k < 1 with bank 1 full → binary search on bank 1 (bank 2 = 0)")
+            else:
+                active_bank  = "bank_2"
+                fixed_b1, fixed_b2 = 1.0, None
+                search_stage = "bank2"
+                print(f"\n  k > 1 with bank 1 full → binary search on bank 2 (bank 1 = 1.0)")
+
+            lo, hi = 0.0, 1.0
+            best = {"ins": None, "k": None, "std": None, "dir": None}
+            converged = False
+
+            for i in range(max_iter):
+                mid = 0.5 * (lo + hi)
+                it = sp.copy()
+                it["bank_3_insertion"] = 0.0
+                if active_bank == "bank_1":
+                    it["bank_1_insertion"] = mid
+                    it["bank_2_insertion"] = fixed_b2
+                else:
+                    it["bank_1_insertion"] = fixed_b1
+                    it["bank_2_insertion"] = mid
+
+                it_dir = os.path.join(BASE_DIR_CS,
+                                      f"search_{search_stage}_iter{i+1:02d}_ins{mid:.4f}")
+                print(f"\n  Iter {i+1:2d}: {active_bank} = {mid:.4f}  [{lo:.4f}, {hi:.4f}]")
+                run_simulation(it, it_dir)
+                k, k_std = _read_keff_cs(it_dir)
+                print(f"         k_eff = {k:.5f} ± {k_std:.5f}   "
+                      f"(Δ = {(k - 1.0)*1e5:+.0f} pcm)")
+
+                if best["k"] is None or abs(k - 1.0) < abs(best["k"] - 1.0):
+                    best = {"ins": mid, "k": k, "std": k_std, "dir": it_dir}
+
+                if abs(k - 1.0) < k_tol:
+                    converged = True
+                    print(f"\n  ✓ Converged: {active_bank} = {mid:.4f}, "
+                          f"k = {k:.5f} ± {k_std:.5f}")
+                    break
+
+                if k > 1.0:
+                    lo = mid
+                else:
+                    hi = mid
+
+            if not converged:
+                print(f"\n  WARNING: Did not converge in {max_iter} iterations.")
+                print(f"  Best: {active_bank} = {best['ins']:.4f}, k = {best['k']:.5f}")
+
+            final_b1 = best["ins"] if search_stage == "bank1" else 1.0
+            final_b2 = best["ins"] if search_stage == "bank2" else 0.0
+            cs_result = {"critical_bank_1": final_b1, "critical_bank_2": final_b2,
+                         "critical_keff": best["k"], "critical_keff_std": best["std"],
+                         "search_stage": search_stage, "converged": converged,
+                         "n_iterations": i + 1, "critical_run_dir": best["dir"]}
+
+        print(f"\n{'='*80}")
+        print(f"  CRITICAL SEARCH RESULT — BOL")
+        print(f"  Bank 1 insertion : {cs_result['critical_bank_1']:.4f}")
+        print(f"  Bank 2 insertion : {cs_result['critical_bank_2']:.4f}")
+        print(f"  Search stage     : {cs_result['search_stage']}")
+        print(f"  k_eff            : {cs_result['critical_keff']:.5f} "
+              f"± {cs_result['critical_keff_std']:.5f}")
+        print(f"  Converged        : {cs_result['converged']}  "
+              f"({cs_result['n_iterations']} iterations)")
+        print(f"{'='*80}\n")
+
+        result_path = os.path.join(BASE_DIR_CS, "critical_search_result.json")
+        with open(result_path, "w") as f:
+            json.dump(cs_result, f, indent=2)
+        print(f"  Result saved to: {result_path}")
+
     else:
         print(f"\nERROR: Unknown study_execution_mode: '{cfg.params['study_execution_mode']}'")
-        print("Valid modes: SingleStudy, ParametricStudy, ReactivityStudy, DepletionStudy, RPTCalibration")
+        print("Valid modes: SingleStudy, ParametricStudy, ReactivityStudy, DepletionStudy, RPTCalibration, CriticalSearch")
         sys.exit(1)

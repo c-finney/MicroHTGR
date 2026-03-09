@@ -453,77 +453,78 @@ def save_nuclide_inventory_csv(output_dir, time_days, time_years, burnup_MWd_per
 # CONVERSION RATIO CALCULATION
 # ====================================================================================================
 
-def calculate_conversion_ratio(fuel_data):
+def calculate_conversion_ratio(fuel_data, time_days):
     """
-    Calculate the approximate conversion ratio (CR) at each depletion timestep.
+    Calculate the conversion ratio (CR) at each depletion timestep.
 
-    For each step i → i+1:
-      - U235_burned      = max(0, U235[i] - U235[i+1])
-      - Pu239_burned     = max(0, Pu239[i] - Pu239[i+1])   (atoms of Pu-239 consumed)
-      - Pu241_burned     = max(0, Pu241[i] - Pu241[i+1])
-      - total_fissile_burned = U235_burned + Pu239_burned + Pu241_burned
-      - Pu239_generated  = (Pu239[i+1] - Pu239[i]) + Pu239_burned
-                         = gross Pu-239 production in the step
-      - CR[i] = total_fissile_burned / max(1, Pu239_generated)
+    Method:
+      fiss_per_day = (U235[0] - U235[1]) / dt[0]   (constant rate, calibrated at step 0
+                                                      where Pu239 ≈ 0 so all fissile = U-235)
+      Per step i → i+1:
+        dt[i]               = time_days[i+1] - time_days[i]
+        fissile_burned[i]   = fiss_per_day * dt[i]
+        delta_U235[i]       = U235[i] - U235[i+1]
+        Pu239_burned[i]     = fissile_burned[i] - delta_U235[i]
+        delta_Pu239[i]      = Pu239[i+1] - Pu239[i]
+        Pu239_generated[i]  = delta_Pu239[i] + Pu239_burned[i]
+        CR[i]               = Pu239_generated[i] / fissile_burned[i]
 
-    Step 0 (BOL → first burnup point) uses all U-235 as the fissile source
-    (Pu239 = 0 initially), giving a firm baseline CR.
+    CR < 1 for a converter, CR = 1 at break-even, CR > 1 only for a breeder.
 
     Parameters
     ----------
     fuel_data : dict {nuclide: np.ndarray}
-        Must contain at least 'U235' and 'Pu239'; 'Pu241' optional.
+        Must contain 'U235' and 'Pu239'.
+    time_days : array-like
+        Time in days at each depletion step (length = n_steps).
 
     Returns
     -------
-    dict with keys:
-        'CR'               : (n_steps-1,) array — conversion ratio per step
-        'U235_burned'      : (n_steps-1,) array — U-235 atoms burned per step
-        'Pu239_burned'     : (n_steps-1,) array — Pu-239 atoms burned per step
-        'Pu239_generated'  : (n_steps-1,) array — gross Pu-239 atoms generated per step
-        'total_fissile_burned' : (n_steps-1,) array
-    None if U235 or Pu239 are not in fuel_data.
+    dict with keys: 'CR', 'U235_burned', 'Pu239_burned', 'Pu239_generated',
+                    'total_fissile_burned', 'dt_days'
+    None if required nuclides are absent or data is too short.
     """
     if "U235" not in fuel_data or "Pu239" not in fuel_data:
         return None
 
-    u235  = fuel_data["U235"]
-    pu239 = fuel_data["Pu239"]
-    n     = len(u235)
+    u235  = np.array(fuel_data["U235"],  dtype=float)
+    pu239 = np.array(fuel_data["Pu239"], dtype=float)
+    t     = np.array(time_days,          dtype=float)
+    n     = min(len(u235), len(pu239), len(t))
 
     if n < 2:
         return None
 
-    pu241 = fuel_data.get("Pu241", np.zeros(n))
+    u235  = u235[:n]
+    pu239 = pu239[:n]
+    t     = t[:n]
 
-    # Align lengths
-    min_n = min(len(u235), len(pu239), len(pu241))
-    u235  = u235[:min_n]
-    pu239 = pu239[:min_n]
-    pu241 = pu241[:min_n]
-    n     = min_n
+    dt = t[1:] - t[:-1]           # step lengths in days
 
-    u235_burned  = np.maximum(0.0, u235[:-1]  - u235[1:])
-    pu239_burned = np.maximum(0.0, pu239[:-1] - pu239[1:])
-    pu241_burned = np.maximum(0.0, pu241[:-1] - pu241[1:])
+    # Constant fissile burn rate calibrated at step 0 (Pu239 ≈ 0 at BOL)
+    delta_u235_step0 = float(u235[0] - u235[1])
+    if delta_u235_step0 <= 0 or dt[0] <= 0:
+        return None
+    fiss_per_day = delta_u235_step0 / dt[0]
 
-    total_fissile_burned = u235_burned + pu239_burned + pu241_burned
+    # Per-step quantities
+    fissile_burned  = fiss_per_day * dt              # varies with dt
+    delta_u235      = u235[:-1] - u235[1:]           # U235 consumed this step
+    pu239_burned    = fissile_burned - delta_u235    # remainder from Pu239
+    delta_pu239     = pu239[1:] - pu239[:-1]         # net Pu239 change
+    pu239_generated = delta_pu239 + pu239_burned     # gross Pu239 production
 
-    # Gross Pu-239 production = net change + atoms burned in this step
-    pu239_net_change  = pu239[1:] - pu239[:-1]
-    pu239_generated   = pu239_net_change + pu239_burned   # always ≥ 0 by construction
-
-    # Guard against zero generation (early steps before Pu builds up)
-    cr = np.where(pu239_generated > 0,
-                  total_fissile_burned / pu239_generated,
+    cr = np.where(fissile_burned > 0,
+                  pu239_generated / fissile_burned,
                   np.nan)
 
     return {
         "CR":                   cr,
-        "U235_burned":          u235_burned,
+        "U235_burned":          delta_u235,
         "Pu239_burned":         pu239_burned,
         "Pu239_generated":      pu239_generated,
-        "total_fissile_burned": total_fissile_burned,
+        "total_fissile_burned": fissile_burned,
+        "dt_days":              dt,
     }
 
 
@@ -635,7 +636,7 @@ def run_depletion_postprocessing(run_dir, params):
 
     print("\n   Locating materials in depletion results...")
 
-    tracked_nuclides        = params.get("tracked_nuclides", ["U235", "U238", "Pu239", "B10"])
+    tracked_nuclides        = params.get("tracked_nuclides", ["U235", "U238", "Pu238", "Pu239", "B10"])
     poison_tracked_nuclides = params.get("poison_tracked_nuclides", ["B10"])
 
     # Exclude poison-specific nuclides from fuel search to avoid confusion
@@ -955,7 +956,7 @@ def run_depletion_postprocessing(run_dir, params):
     # 5c. CONVERSION RATIO
     # ================================================================================
 
-    cr_data = calculate_conversion_ratio(fuel_data)
+    cr_data = calculate_conversion_ratio(fuel_data, time_days)
 
     if cr_data is not None:
         cr          = cr_data["CR"]
@@ -973,12 +974,12 @@ def run_depletion_postprocessing(run_dir, params):
         fig, ax = plt.subplots(figsize=(12, 5), dpi=150)
         valid = ~np.isnan(cr)
         ax.plot(x_cr[valid], cr[valid], "o-", markersize=5, linewidth=1.5, color="tab:orange")
-        ax.axhline(1.0, color="gray", linestyle="--", linewidth=1, alpha=0.7, label="CR = 1 (break-even)")
         ax.set_xlabel(x_label, fontsize=12)
         ax.set_ylabel("Conversion Ratio", fontsize=12)
         if show_titles:
             ax.set_title("Conversion Ratio vs. Burnup", fontsize=14)
-        ax.legend(fontsize=10)
+        cr_max = float(np.nanmax(cr)) if np.any(valid) else 1.0
+        ax.set_ylim(0, 1.5 * cr_max)
         ax.grid(True, alpha=0.3)
         plt.savefig(os.path.join(POSTPROCESSING_RESULTS_DIR,
                                   f"depletion_conversion_ratio_vs_{x_label_short}.png"),
