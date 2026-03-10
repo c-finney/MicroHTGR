@@ -12,12 +12,14 @@ Extracts and plots results from OpenMC depletion simulations:
 BeO reflector fluence analysis is handled by BeO_depletion_postprocessing.py.
 
 Usage:
-    # As a module:
+    # As a module (PNG default, 300 dpi):
     from depletion_postprocessing import run_depletion_postprocessing
     run_depletion_postprocessing(run_dir, params)
+    run_depletion_postprocessing(run_dir, params, pdf_output=True)  # vector PDF
 
     # Standalone:
-    python depletion_postprocessing.py <run_directory>
+    python depletion_postprocessing.py <run_directory>          # PNG (300 dpi)
+    python depletion_postprocessing.py <run_directory> --pdf    # vector PDF
 """
 
 import os
@@ -30,6 +32,7 @@ import openmc.deplete
 
 
 # Default plot groups — used only if not specified in params
+
 DEFAULT_PLOT_GROUPS = {
     "Fissile Actinides": ["U235",
                           "Pu239", "Pu241"],
@@ -37,21 +40,20 @@ DEFAULT_PLOT_GROUPS = {
                           "Pu238", "Pu240", "Pu242"],
     "Minor Actinides":   ["Np237", "Np239",
                           "Am241", "Am243",
-                          "Cm242", "Cm243", "Cm244", "Cm245", "Cm246"],
-    "Xe/I Poisons":      ["Xe131", "Xe135", "Xe135_m1",
-                          "I135"],
-    "Sm/Pm Poisons":     ["Sm149", "Sm151", "Sm152",
-                          "Pm147", "Pm149"],
-    "Cs/Sr FPs":         ["Cs133", "Cs134", "Cs137",
-                          "Sr90"],
-    "Nd/Eu FPs":         ["Nd143", "Nd145", "Nd147",
-                          "Eu153", "Eu154", "Eu155"],
-    "Mo/Tc/Rh/Pd FPs":   ["Mo95",
+                          "Cm242", "Cm244"],
+    "FP Poisons":        ["Xe131", "Xe135",
+                          "I135",
+                          "Pm147", "Pm149",
+                          "Sm149", "Sm151", "Sm152"],
+    "Other FPs":         ["Kr83",
+                          "Sr90",
+                          "Mo95",
                           "Tc99",
-                          "Rh103", "Rh105",
-                          "Pd107"],
-    "Kr FPs":            ["Kr83"],
-    "Boron Poisons":     ["B10"],
+                          "Rh103",
+                          "Cs133", "Cs137",
+                          "Nd143", "Nd145",
+                          "Eu153"],
+    "Boron Poisons":     ["B10"]
 }
 
 # ====================================================================================================
@@ -532,7 +534,7 @@ def calculate_conversion_ratio(fuel_data, time_days):
 # PERFORM DEPLETION ANALYSIS PLOTTING AND SAVE RESULTS
 # ====================================================================================================
 
-def run_depletion_postprocessing(run_dir, params):
+def run_depletion_postprocessing(run_dir, params, pdf_output=False):
     """
     Run full depletion post-processing.
 
@@ -542,11 +544,16 @@ def run_depletion_postprocessing(run_dir, params):
         Directory containing depletion_results.h5.
     params : dict
         Simulation parameters (merged with run_params.json).
+    pdf_output : bool, optional
+        If True, save figures as PDF (vector, no compression). Default False (PNG at 300 dpi).
 
     Returns
     -------
     dict : Summary results.
     """
+
+    fig_fmt = "pdf" if pdf_output else "png"
+    fig_dpi = None if pdf_output else 300
 
     show_titles = params.get("show_titles", True)
 
@@ -739,55 +746,65 @@ def run_depletion_postprocessing(run_dir, params):
 
     print("\nGenerating depletion plots...")
 
+    # Global style settings for all plots (sized for side-by-side on letter page)
+    plt.rcParams.update({
+        'font.size':        16,
+        'axes.titlesize':   18,
+        'axes.labelsize':   16,
+        'xtick.labelsize':  16,
+        'ytick.labelsize':  16,
+        'legend.fontsize':  14,
+        'lines.linewidth':  2.5,
+        'lines.markersize': 6,
+    })
+
     # k_eff vs burnup/time
-    fig, ax = plt.subplots(figsize=(12, 6), dpi=150)
-    ax.errorbar(x_data, keff_mean, yerr=keff_std, fmt="o-", capsize=3,
-                markersize=5, linewidth=1.5, label="k-effective")
+    fig, ax = plt.subplots(figsize=(12, 6), dpi=fig_dpi)
+    ax.errorbar(x_data, keff_mean, yerr=keff_std, fmt="o-", capsize=3, label="k-effective")
     ax.axhline(1.0, color="red", linestyle="--", alpha=0.7, linewidth=1, label="k = 1.0")
     if discharge_burnup is not None and burnup_MWd_per_MtU is not None:
         ax.axvline(discharge_burnup, color="green", linestyle=":", alpha=0.7,
                    label=f"Discharge: {discharge_burnup:.0f} MWd/MtU")
-    ax.set_xlabel(x_label, fontsize=12)
-    ax.set_ylabel("k-effective", fontsize=12)
+    ax.set_xlabel(x_label)
+    ax.set_ylabel("k-effective")
     if show_titles:
-        ax.set_title("k-effective vs. Burnup", fontsize=14)
-    ax.legend(fontsize=10)
+        ax.set_title("k-effective vs. Burnup")
+    ax.legend()
     ax.grid(True, alpha=0.3)
-    plt.savefig(os.path.join(POSTPROCESSING_RESULTS_DIR, f"depletion_keff_vs_{x_label_short}.png"), bbox_inches="tight")
+    plt.savefig(os.path.join(POSTPROCESSING_RESULTS_DIR, f"depletion_keff_vs_{x_label_short}.{fig_fmt}"), bbox_inches="tight")
     plt.close()
 
     # k_eff vs time with year secondary axis
     if burnup_MWd_per_MtU is not None:
-        fig, ax = plt.subplots(figsize=(12, 6), dpi=150)
-        ax.errorbar(time_days, keff_mean, yerr=keff_std, fmt="o-", capsize=3,
-                    markersize=5, linewidth=1.5, label="k-effective")
+        fig, ax = plt.subplots(figsize=(12, 6), dpi=fig_dpi)
+        ax.errorbar(time_days, keff_mean, yerr=keff_std, fmt="o-", capsize=3, label="k-effective")
         ax.axhline(1.0, color="red", linestyle="--", alpha=0.7, linewidth=1, label="k = 1.0")
         if discharge_time_years is not None and discharge_time_days is not None:
             ax.axvline(discharge_time_days, color="green", linestyle=":", alpha=0.7,
                        label=f"Discharge: {discharge_time_years:.2f} years")
-        ax.set_xlabel("Time (days)", fontsize=12)
-        ax.set_ylabel("k-effective", fontsize=12)
+        ax.set_xlabel("Time (days)")
+        ax.set_ylabel("k-effective")
         if show_titles:
-            ax.set_title("k-effective vs. Time", fontsize=14)
-        ax.legend(fontsize=10)
+            ax.set_title("k-effective vs. Time")
+        ax.legend()
         ax.grid(True, alpha=0.3)
         ax2 = ax.twiny()
         ax2.set_xlim(ax.get_xlim()[0] / 365.25, ax.get_xlim()[1] / 365.25)
-        ax2.set_xlabel("Time (years)", fontsize=11)
-        plt.savefig(os.path.join(POSTPROCESSING_RESULTS_DIR, "depletion_keff_vs_time.png"), bbox_inches="tight")
+        ax2.set_xlabel("Time (years)")
+        plt.savefig(os.path.join(POSTPROCESSING_RESULTS_DIR, f"depletion_keff_vs_time.{fig_fmt}"), bbox_inches="tight")
         plt.close()
 
     # Reactivity (pcm)
     reactivity_pcm = (keff_mean - 1.0) / keff_mean * 1e5
-    fig, ax = plt.subplots(figsize=(12, 6), dpi=150)
-    ax.plot(x_data, reactivity_pcm, "o-", markersize=5, linewidth=1.5)
+    fig, ax = plt.subplots(figsize=(12, 6), dpi=fig_dpi)
+    ax.plot(x_data, reactivity_pcm, "o-")
     ax.axhline(0, color="red", linestyle="--", alpha=0.7, linewidth=1)
-    ax.set_xlabel(x_label, fontsize=12)
-    ax.set_ylabel("Reactivity (pcm)", fontsize=12)
+    ax.set_xlabel(x_label)
+    ax.set_ylabel("Reactivity (pcm)")
     if show_titles:
-        ax.set_title("Excess Reactivity vs. Burnup", fontsize=14)
+        ax.set_title("Excess Reactivity vs. Burnup")
     ax.grid(True, alpha=0.3)
-    plt.savefig(os.path.join(POSTPROCESSING_RESULTS_DIR, f"depletion_reactivity_vs_{x_label_short}.png"), bbox_inches="tight")
+    plt.savefig(os.path.join(POSTPROCESSING_RESULTS_DIR, f"depletion_reactivity_vs_{x_label_short}.{fig_fmt}"), bbox_inches="tight")
     plt.close()
 
     # Nuclide group plots — driven entirely by params["depletion_plot_groups"]
@@ -801,7 +818,7 @@ def run_depletion_postprocessing(run_dir, params):
                 x_data, x_label, all_nuclide_data, available,
                 group_name, POSTPROCESSING_RESULTS_DIR,
                 f"depletion_{group_name.lower().replace('/', '').replace(' ', '_')}",
-                is_wedge=is_wedge, show_titles=show_titles
+                is_wedge=is_wedge, show_titles=show_titles, fig_fmt=fig_fmt, fig_dpi=fig_dpi
             )
             plotted_nuclides.update(available)
 
@@ -815,7 +832,7 @@ def run_depletion_postprocessing(run_dir, params):
             x_data, x_label, all_nuclide_data, ungrouped,
             "Other Tracked Nuclides", POSTPROCESSING_RESULTS_DIR,
             "depletion_other_nuclides",
-            is_wedge=is_wedge, show_titles=show_titles
+            is_wedge=is_wedge, show_titles=show_titles, fig_fmt=fig_fmt, fig_dpi=fig_dpi
         )
 
     # Fissile inventory ratio
@@ -823,20 +840,18 @@ def run_depletion_postprocessing(run_dir, params):
     if fissile_present and "U235" in fuel_data and fuel_data["U235"][0] > 0:
         fissile_initial = fuel_data["U235"][0]
         fissile_current = sum(fuel_data[n] for n in fissile_present)
-        fig, ax = plt.subplots(figsize=(10, 5), dpi=150)
-        ax.plot(x_data, fissile_current / fissile_initial, "o-",
-                markersize=5, linewidth=1.5, color="tab:green")
+        fig, ax = plt.subplots(figsize=(10, 5), dpi=fig_dpi)
+        ax.plot(x_data, fissile_current / fissile_initial, "o-", color="tab:green")
         ax.axhline(1.0, color="gray", linestyle=":", alpha=0.5)
-        ax.set_xlabel(x_label, fontsize=12)
-        ax.set_ylabel("Fissile Inventory Ratio", fontsize=12)
+        ax.set_xlabel(x_label)
+        ax.set_ylabel("Fissile Inventory Ratio")
         if show_titles:
             ax.set_title(
                 f"Fissile Inventory Ratio vs. Burnup\n"
-                f"({' + '.join(fissile_present)}) / Initial U-235",
-                fontsize=13
+                f"({' + '.join(fissile_present)}) / Initial U-235"
             )
         ax.grid(True, alpha=0.3)
-        plt.savefig(os.path.join(POSTPROCESSING_RESULTS_DIR, f"depletion_fissile_ratio_vs_{x_label_short}.png"),
+        plt.savefig(os.path.join(POSTPROCESSING_RESULTS_DIR, f"depletion_fissile_ratio_vs_{x_label_short}.{fig_fmt}"),
                     bbox_inches="tight")
         plt.close()
 
@@ -844,27 +859,26 @@ def run_depletion_postprocessing(run_dir, params):
     if "B10" in all_nuclide_data:
         b10         = all_nuclide_data["B10"]
         b10_initial = b10[0]
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5), dpi=150)
-        ax1.plot(x_data, b10, "o-", markersize=4, linewidth=1.5, color="purple")
-        ax1.set_xlabel(x_label, fontsize=12)
-        ax1.set_ylabel("B-10 Atoms", fontsize=12)
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5), dpi=fig_dpi)
+        ax1.plot(x_data, b10, "o-", color="purple")
+        ax1.set_xlabel(x_label)
+        ax1.set_ylabel("B-10 Atoms")
         if show_titles:
-            ax1.set_title("B-10 Absolute Inventory (Burnable Poison)", fontsize=13)
+            ax1.set_title("B-10 Absolute Inventory (Burnable Poison)")
         ax1.grid(True, alpha=0.3)
         ax1.ticklabel_format(style='scientific', axis='y', scilimits=(0, 0))
         if b10_initial > 0:
-            ax2.plot(x_data, b10 / b10_initial * 100, "o-", markersize=4,
-                     linewidth=1.5, color="darkviolet")
-            ax2.set_xlabel(x_label, fontsize=12)
-            ax2.set_ylabel("Remaining B-10 (%)", fontsize=12)
+            ax2.plot(x_data, b10 / b10_initial * 100, "o-", color="darkviolet")
+            ax2.set_xlabel(x_label)
+            ax2.set_ylabel("Remaining B-10 (%)")
             if show_titles:
-                ax2.set_title("B-10 Fractional Burnout", fontsize=13)
+                ax2.set_title("B-10 Fractional Burnout")
             ax2.grid(True, alpha=0.3)
             ax2.set_ylim(0, 105)
         plt.tight_layout()
-        plt.savefig(os.path.join(POSTPROCESSING_RESULTS_DIR, "depletion_B10_burnout.png"), bbox_inches="tight")
+        plt.savefig(os.path.join(POSTPROCESSING_RESULTS_DIR, f"depletion_B10_burnout.{fig_fmt}"), bbox_inches="tight")
         plt.close()
-        print(f"  Saved: depletion_B10_burnout.png")
+        print(f"  Saved: depletion_B10_burnout.{fig_fmt}")
 
     # ================================================================================
     # 5b. PEAK BURNUP (spatial burnup only)
@@ -891,45 +905,42 @@ def run_depletion_postprocessing(run_dir, params):
         zone_lbl   = peak_burnup_data["zone_labels"]
 
         # Peak / average / minimum burnup plot
-        fig, ax = plt.subplots(figsize=(12, 6), dpi=150)
-        ax.plot(x_data, avg_bu,  "o-", markersize=5, linewidth=1.5,
-                color="black", label="Core-average burnup")
-        ax.plot(x_data, peak_bu, "s--", markersize=5, linewidth=1.5,
-                color="firebrick", label="Peak zone burnup")
-        ax.plot(x_data, min_bu,  "^--", markersize=5, linewidth=1.5,
-                color="steelblue", label="Minimum zone burnup")
+        fig, ax = plt.subplots(figsize=(12, 6), dpi=fig_dpi)
+        ax.plot(x_data, avg_bu,  "o-",  color="black",     label="Core-average burnup")
+        ax.plot(x_data, peak_bu, "s--", color="firebrick",  label="Peak zone burnup")
+        ax.plot(x_data, min_bu,  "^--", color="steelblue",  label="Minimum zone burnup")
         ax.fill_between(x_data, avg_bu, peak_bu, alpha=0.10, color="firebrick",
                         label="Peak-to-average margin")
         ax.fill_between(x_data, min_bu, avg_bu, alpha=0.10, color="steelblue",
                         label="Average-to-minimum margin")
-        ax.set_xlabel(x_label, fontsize=12)
-        ax.set_ylabel("Burnup (MWd/MtU)", fontsize=12)
+        ax.set_xlabel(x_label)
+        ax.set_ylabel("Burnup (MWd/MtU)")
         if show_titles:
-            ax.set_title("Peak / Average / Minimum Burnup\n(U-235 depletion proxy)", fontsize=14)
-        ax.legend(fontsize=10)
+            ax.set_title("Peak / Average / Minimum Burnup\n(U-235 depletion proxy)")
+        ax.legend()
         ax.grid(True, alpha=0.3)
         plt.savefig(os.path.join(POSTPROCESSING_RESULTS_DIR,
-                                  f"depletion_peak_burnup_vs_{x_label_short}.png"),
+                                  f"depletion_peak_burnup_vs_{x_label_short}.{fig_fmt}"),
                     bbox_inches="tight")
         plt.close()
-        print(f"  Saved: depletion_peak_burnup_vs_{x_label_short}.png")
+        print(f"  Saved: depletion_peak_burnup_vs_{x_label_short}.{fig_fmt}")
 
         # Peak-to-average burnup ratio vs burnup
         with np.errstate(divide='ignore', invalid='ignore'):
             pf_burnup = np.where(avg_bu > 0, peak_bu / avg_bu, np.nan)
-        fig, ax = plt.subplots(figsize=(12, 5), dpi=150)
-        ax.plot(x_data, pf_burnup, "o-", markersize=5, linewidth=1.5, color="darkorange")
+        fig, ax = plt.subplots(figsize=(12, 5), dpi=fig_dpi)
+        ax.plot(x_data, pf_burnup, "o-", color="darkorange")
         ax.axhline(1.0, color="gray", linewidth=0.8, linestyle=":")
-        ax.set_xlabel(x_label, fontsize=12)
-        ax.set_ylabel("Peak-to-Average Burnup Ratio", fontsize=12)
+        ax.set_xlabel(x_label)
+        ax.set_ylabel("Peak-to-Average Burnup Ratio")
         if show_titles:
-            ax.set_title("Burnup Peaking Factor vs. Burnup", fontsize=14)
+            ax.set_title("Burnup Peaking Factor vs. Burnup")
         ax.grid(True, alpha=0.3)
         plt.savefig(os.path.join(POSTPROCESSING_RESULTS_DIR,
-                                  f"depletion_burnup_peaking_vs_{x_label_short}.png"),
+                                  f"depletion_burnup_peaking_vs_{x_label_short}.{fig_fmt}"),
                     bbox_inches="tight")
         plt.close()
-        print(f"  Saved: depletion_burnup_peaking_vs_{x_label_short}.png")
+        print(f"  Saved: depletion_burnup_peaking_vs_{x_label_short}.{fig_fmt}")
 
         # CSV: avg, peak, and min burnup per step
         peak_csv = os.path.join(POSTPROCESSING_RESULTS_DIR, "depletion_peak_burnup.csv")
@@ -971,40 +982,38 @@ def run_depletion_postprocessing(run_dir, params):
             x_cr = 0.5 * (time_days[:n_cr] + time_days[1:n_cr + 1])
 
         # --- Plot: CR vs burnup/time ---
-        fig, ax = plt.subplots(figsize=(12, 5), dpi=150)
+        fig, ax = plt.subplots(figsize=(12, 5), dpi=fig_dpi)
         valid = ~np.isnan(cr)
-        ax.plot(x_cr[valid], cr[valid], "o-", markersize=5, linewidth=1.5, color="tab:orange")
-        ax.set_xlabel(x_label, fontsize=12)
-        ax.set_ylabel("Conversion Ratio", fontsize=12)
+        ax.plot(x_cr[valid], cr[valid], "o-", color="tab:orange")
+        ax.set_xlabel(x_label)
+        ax.set_ylabel("Conversion Ratio")
         if show_titles:
-            ax.set_title("Conversion Ratio vs. Burnup", fontsize=14)
+            ax.set_title("Conversion Ratio vs. Burnup")
         cr_max = float(np.nanmax(cr)) if np.any(valid) else 1.0
         ax.set_ylim(0, 1.5 * cr_max)
         ax.grid(True, alpha=0.3)
         plt.savefig(os.path.join(POSTPROCESSING_RESULTS_DIR,
-                                  f"depletion_conversion_ratio_vs_{x_label_short}.png"),
+                                  f"depletion_conversion_ratio_vs_{x_label_short}.{fig_fmt}"),
                     bbox_inches="tight")
         plt.close()
-        print(f"  Saved: depletion_conversion_ratio_vs_{x_label_short}.png")
+        print(f"  Saved: depletion_conversion_ratio_vs_{x_label_short}.{fig_fmt}")
 
         # --- Plot: Pu-239 generated and fissile burned per step ---
-        fig, ax = plt.subplots(figsize=(12, 5), dpi=150)
-        ax.plot(x_cr, fis_burned, "o-", markersize=4, linewidth=1.5,
-                color="tab:red",   label="Total fissile burned")
-        ax.plot(x_cr, pu239_gen,  "s-", markersize=4, linewidth=1.5,
-                color="tab:blue",  label="Pu-239 generated (gross)")
-        ax.set_xlabel(x_label, fontsize=12)
-        ax.set_ylabel("Atoms per step", fontsize=12)
+        fig, ax = plt.subplots(figsize=(12, 5), dpi=fig_dpi)
+        ax.plot(x_cr, fis_burned, "o-", color="tab:red",  label="Total fissile burned")
+        ax.plot(x_cr, pu239_gen,  "s-", color="tab:blue", label="Pu-239 generated (gross)")
+        ax.set_xlabel(x_label)
+        ax.set_ylabel("Atoms per step")
         if show_titles:
-            ax.set_title("Fissile Burned vs. Pu-239 Generated per Step", fontsize=14)
-        ax.legend(fontsize=10)
+            ax.set_title("Fissile Burned vs. Pu-239 Generated per Step")
+        ax.legend()
         ax.grid(True, alpha=0.3)
         ax.ticklabel_format(style='sci', axis='y', scilimits=(0, 0))
         plt.savefig(os.path.join(POSTPROCESSING_RESULTS_DIR,
-                                  f"depletion_fissile_balance_vs_{x_label_short}.png"),
+                                  f"depletion_fissile_balance_vs_{x_label_short}.{fig_fmt}"),
                     bbox_inches="tight")
         plt.close()
-        print(f"  Saved: depletion_fissile_balance_vs_{x_label_short}.png")
+        print(f"  Saved: depletion_fissile_balance_vs_{x_label_short}.{fig_fmt}")
 
         # --- CSV: conversion ratio per step ---
         cr_csv = os.path.join(POSTPROCESSING_RESULTS_DIR, "depletion_conversion_ratio.csv")
@@ -1182,7 +1191,7 @@ def run_depletion_postprocessing(run_dir, params):
 # NUCLIDE GROUP PLOTTING
 # ====================================================================================================
 
-def _plot_nuclide_group(x_data, x_label, nuclide_data, nuclide_list, title, output_dir, filename_base, is_wedge=False, show_titles=True):
+def _plot_nuclide_group(x_data, x_label, nuclide_data, nuclide_list, title, output_dir, filename_base, is_wedge=False, show_titles=True, fig_fmt="png", fig_dpi=300):
     available = [
         n for n in nuclide_list
         if n in nuclide_data and np.any(nuclide_data[n] > 0)
@@ -1190,22 +1199,21 @@ def _plot_nuclide_group(x_data, x_label, nuclide_data, nuclide_list, title, outp
     if not available:
         return
 
-    fig, ax = plt.subplots(figsize=(12, 6), dpi=150)
+    fig, ax = plt.subplots(figsize=(12, 6), **({} if fig_dpi is None else {"dpi": fig_dpi}))
     for nuc in available:
         atoms = nuclide_data[nuc]
         n     = min(len(x_data), len(atoms))
-        ax.plot(x_data[:n], atoms[:n], "o-", markersize=4, linewidth=1.5, label=nuc)
+        ax.plot(x_data[:n], atoms[:n], "o-", label=nuc)
 
-    ax.set_xlabel(x_label, fontsize=12)
-    ylabel = "Number of Atoms"
-    ax.set_ylabel(ylabel, fontsize=12)
+    ax.set_xlabel(x_label)
+    ax.set_ylabel("Number of Atoms")
     if show_titles:
-        ax.set_title(title, fontsize=14)
-    ax.legend(fontsize=9, ncol=min(4, len(available)))
+        ax.set_title(title)
+    ax.legend(ncol=min(4, len(available)))
     ax.grid(True, alpha=0.3)
     ax.set_yscale("log")
 
-    save_path = os.path.join(output_dir, f"{filename_base}.png")
+    save_path = os.path.join(output_dir, f"{filename_base}.{fig_fmt}")
     plt.savefig(save_path, bbox_inches="tight")
     plt.close()
     print(f"  Saved: {save_path}")
@@ -1215,11 +1223,14 @@ def _plot_nuclide_group(x_data, x_label, nuclide_data, nuclide_list, title, outp
 # ====================================================================================================
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python depletion_postprocessing.py <run_directory>")
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    pdf_output = "--pdf" in sys.argv
+
+    if len(args) < 1:
+        print("Usage: python depletion_postprocessing.py <run_directory> [--pdf]")
         sys.exit(1)
 
-    run_dir = sys.argv[1]
+    run_dir = args[0]
 
     params_path = os.path.join(run_dir, "run_params.json")
     if os.path.exists(params_path):
@@ -1232,4 +1243,4 @@ if __name__ == "__main__":
         print("WARNING: run_params.json not found, using defaults")
         params = {}
 
-    run_depletion_postprocessing(run_dir, params)
+    run_depletion_postprocessing(run_dir, params, pdf_output=pdf_output)

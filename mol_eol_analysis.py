@@ -572,6 +572,8 @@ def run_full_tally_eigenvalue(params, depleted, run_dir, label="", depletion_run
     full_params["use_global_tallies"]  = True
     full_params["use_leakage_tallies"] = True
     full_params["make_geometry_plots"] = False
+    full_params["total_batches"]       = 500
+    full_params["inactive_batches"]    = 200
 
     print(f"\n{'=' * 70}")
     if label:
@@ -1003,6 +1005,8 @@ def run_mol_eol_analysis(
     coefficients=None,
     k_tol=0.003,
     max_search_iter=20,
+    critical_bank_1_override=None,
+    critical_bank_2_override=None,
 ):
     """
     Orchestrate the full MOL/EOL analysis suite for one depletion step.
@@ -1033,6 +1037,11 @@ def run_mol_eol_analysis(
         If True and run_heat_map is True, also runs a separate "all_in" heat map.
     delta_T_values, coefficients : see run_mol_eol_reactivity_coefficients().
     k_tol, max_search_iter : see find_critical_rod_insertion().
+    critical_bank_1_override : float or None
+        If provided, skip the critical rod search and use this value directly
+        for bank 1 insertion.
+    critical_bank_2_override : float or None
+        If provided alongside critical_bank_1_override, also override bank 2.
 
     Returns
     -------
@@ -1060,10 +1069,23 @@ def run_mol_eol_analysis(
     # All power-condition analyses (RC study + heat map) share this position.
     # The critical rod search is the "expensive" step; running it once avoids
     # redundant work and guarantees consistency between analyses.
+    # If override values are provided, skip the search entirely.
     critical_bank_1 = 0.0   # fall back to rods-out if search skipped
     critical_bank_2 = 0.0
 
-    if run_heat_map or run_reactivity_study:
+    if critical_bank_1_override is not None:
+        critical_bank_1 = float(critical_bank_1_override)
+        critical_bank_2 = float(critical_bank_2_override) if critical_bank_2_override is not None else 0.0
+        summary["critical_rod_search"] = {
+            "skipped": True,
+            "critical_bank_1": critical_bank_1,
+            "critical_bank_2": critical_bank_2,
+        }
+        print(f"\n{'─' * 70}")
+        print(f"  CRITICAL ROD SEARCH — skipped (using supplied values)")
+        print(f"  Bank 1 = {critical_bank_1:.4f},  Bank 2 = {critical_bank_2:.4f}")
+        print(f"{'─' * 70}")
+    elif run_heat_map or run_reactivity_study:
         print(f"\n{'─' * 70}")
         print(f"  CRITICAL ROD SEARCH — shared pre-step")
         print(f"{'─' * 70}")
@@ -1205,6 +1227,11 @@ if __name__ == "__main__":
                         help="Criticality search tolerance (default 0.003)")
     parser.add_argument("--max-iter", type=int, default=20,
                         help="Max iterations for criticality search (default 20)")
+    parser.add_argument("--bank1", type=float, default=None,
+                        help="Skip critical search and use this bank 1 insertion fraction "
+                             "(full mode only; also sets --bank2 if provided)")
+    parser.add_argument("--bank2", type=float, default=None,
+                        help="Bank 2 insertion fraction to use with --bank1 (default 0.0)")
 
     args = parser.parse_args()
 
@@ -1260,13 +1287,15 @@ if __name__ == "__main__":
     else:
         # ── Full MOL/EOL analysis suite ──────────────────────────────────────
         run_mol_eol_analysis(
-            depletion_run_dir   = args.depletion_run_dir,
-            step_idx            = args.step,
-            step_label          = args.label,
-            output_base_dir     = args.output,
-            run_reactivity_study= not args.no_rc,
-            run_heat_map        = not args.no_hm,
-            run_all_rods_in     = not args.no_rods_in,
-            k_tol               = args.k_tol,
-            max_search_iter     = args.max_iter,
+            depletion_run_dir        = args.depletion_run_dir,
+            step_idx                 = args.step,
+            step_label               = args.label,
+            output_base_dir          = args.output,
+            run_reactivity_study     = not args.no_rc,
+            run_heat_map             = not args.no_hm,
+            run_all_rods_in          = not args.no_rods_in,
+            k_tol                    = args.k_tol,
+            max_search_iter          = args.max_iter,
+            critical_bank_1_override = args.bank1,
+            critical_bank_2_override = args.bank2,
         )

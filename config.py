@@ -54,7 +54,7 @@ params = {
     "sheath_thickness": 0.1, 
     "guide_tube_thickness": 0.2,  
     "bank_1_insertion": 1.0,                 # Fractional control rod insertion for bank 1 (0-1.0)
-    "bank_2_insertion": 0.7344,              # Fractional control rod insertion for bank 2 (0-1.0)
+    "bank_2_insertion": 0.5781,              # Fractional control rod insertion for bank 2 (0-1.0)
     "bank_3_insertion": 0.0,                 # Fractional control rod insertion for bank 3 (0-1.0)
     "secondary_SD_rods_inserted": False,     # True = all SS rods fully inserted, False = all removed
     "B10_enrichment_control": 0.9,
@@ -63,7 +63,7 @@ params = {
     "Incoloy800H_density": 7940,
 
     # ----- Beryllium Reflector -----
-    "use_BeO_reflector": True,
+    "use_BeO_reflector": False,
     "BeO_inner_radius": 70,                # If none defaults to lattice extent (defined as (n_rings-1)*bundle_pitch+bundle_pitch/4)
     "BeO_thickness": 20.0,                   # Will not exceed core radius if inner radius + thickness > core radius
     "BeO_density": 3010,
@@ -107,8 +107,8 @@ params = {
     "use_BeO_tallies": True,
 
     # ----- OpenMC Monte Carlo Settings -----
-    "total_batches": 1000,
-    "inactive_batches": 250,
+    "total_batches": 500,
+    "inactive_batches": 200,
     "particles": 100_000,
 
     # ----- Geometry Plots -----
@@ -182,37 +182,28 @@ params = {
 
         # --- Fertile Actinides ---
         "U238", "U234", "U236",
-        "Pu240", "Pu242",
-        
+        "Pu238", "Pu240", "Pu242",
+
         # --- Minor Actinides ---
-        "Np237", "Np239", "Pu238",
+        "Np237", "Np239",
         "Am241", "Am243",
-        "Cm242", "Cm243", "Cm244", "Cm245", "Cm246",
+        "Cm242", "Cm244",
 
-        # --- Xe/I Poisons ---
-        "Xe131", "Xe135", "Xe135_m1",
-        "I135",
-        
-        # --- Sm/Pm Poisons ---
-        "Sm149", "Sm151", "Sm152",
+        # --- FP Poisons ---
+        "Xe131", "Xe135",
+        "I235",
         "Pm147", "Pm149",
-        
-        # --- Cs/Sr Fission Products ---
-        "Cs133", "Cs134", "Cs137",
-        "Sr90",
+        "Sm151", "Sm152",
 
-        # --- Nd/Eu Fission Products ---
-        "Nd143", "Nd145", "Nd147",
-        "Eu153", "Eu154", "Eu155",
-        
-        # --- Mo/Tc/Rh/Pd Fission Products ---   
+        # --- Other FPs ---
+        "Kr83",
+        "Sr90",
         "Mo95",
         "Tc99",
-        "Rh103", "Rh105",
-        "Pd107",
-        
-        # ----- Kr Fission Products -----
-        "Kr83",
+        "Rho103",
+        "Cs133", "Cs137",
+        "Nd143", "Nd145",
+        "Eu153",
 
         # --- Burnable Poison ---
         "B10",
@@ -221,27 +212,26 @@ params = {
 
     # ----- Depletion Post-Processing Plot Groups -----
     "depletion_plot_groups": {
-        "Fissile Actinides":    ["U235",
-                                 "Pu239", "Pu241"],
-        "Fertile Actinides":    ["U238", "U234", "U236",
-                                 "Pu238", "Pu240", "Pu242"],
-        "Minor Actinides":      ["Np237", "Np239",
-                                 "Am241", "Am243",
-                                 "Cm242", "Cm243", "Cm244", "Cm245", "Cm246"],
-        "Xe/I Poisons":         ["Xe131", "Xe135", "Xe135_m1",
-                                 "I135"],
-        "Sm/Pm Poisons":        ["Sm149", "Sm151", "Sm152",
-                                 "Pm147", "Pm149"],
-        "Cs/Sr FPs":            ["Cs133", "Cs134", "Cs137",
-                                 "Sr90"],
-        "Nd/Eu FPs":            ["Nd143", "Nd145", "Nd147",
-                                 "Eu153", "Eu154", "Eu155"],
-        "Mo/Tc/Rh/Pd FPs":      ["Mo95",
-                                 "Tc99",
-                                 "Rh103", "Rh105",
-                                 "Pd107"],
-        "Kr FPs":               ["Kr83"],
-        "Boron Poisons":        ["B10"],
+        "Fissile Actinides": ["U235",
+                              "Pu239", "Pu241"],
+        "Fertile Actinides": ["U238", "U234", "U236",
+                              "Pu238", "Pu240", "Pu242"],
+        "Minor Actinides":   ["Np237", "Np239",
+                              "Am241", "Am243",
+                              "Cm242", "Cm244"],
+        "FP Poisons":        ["Xe131",
+                              "I235",
+                              "Pm147",
+                              "Sm151", "Sm152"],
+        "Other FPs":         ["Kr83",
+                              "Sr90",
+                              "Mo95",
+                              "Tc99",
+                              "Rho103",
+                              "Cs133", "Cs137",
+                              "Nd143", "Nd145",
+                              "Eu153"],
+        "Boron Poisons":     ["B10"],
     },
 
     # ----- Study Execution Mode Configuration -----
@@ -250,7 +240,7 @@ params = {
     #    "SingleStudy"     — Singular steady state monte carlo simulation of specified core layout
     #    "ParametricStudy" — Creates multiple steady state monte carlo simulations varying a single core parameter
     #    "ReactivityStudy" — Calculates reactivity coefficients via multiple steady state monte carlo simulations and specified temperature perturbations
-    #    "CriticalSerach"  — Performs critical rod position search, first inserting bank 1 all the way and then inserting bank 2 until critical
+    #    "CriticalSearch"  — Performs critical rod position search, first inserting bank 1 all the way and then inserting bank 2 until critical
     #    "DepletionStudy"  — Performs depletion run on specified core layout using specified depletion timesteps
     #    "RPTCalibration"  — Finds the RPT inner radius (rpt_radius) that matches explicit-TRISO k_eff.
     #                        Runs one explicit-TRISO reference then scans rpt_calibration_n_points RPT models.
