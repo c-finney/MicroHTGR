@@ -41,6 +41,8 @@ boron_atom_fraction = boron_mass_fraction * A_carbon / A_boron
 graphite.add_element("C", 1.0 - boron_atom_fraction)
 graphite.add_element("B", boron_atom_fraction)
 graphite.set_density("kg/m3", params["matrix_density"])
+if params.get("deplete_graphite", False):
+    graphite.depletable = True
 
 # ----- Helium Coolant -----
 helium = openmc.Material(name="Helium")
@@ -53,15 +55,14 @@ enrichment_10_poison = params["B10_enrichment_poison"]
 mass_10 = openmc.data.atomic_mass("B10")
 mass_11 = openmc.data.atomic_mass("B11")
 
-# number of atoms in one gram of boron mixture
+# Number of atoms in one gram of boron mixture
 n_10_poison = enrichment_10_poison / mass_10
 n_11_poison = (1.0 - enrichment_10_poison) / mass_11
 total_n_poison = n_10_poison + n_11_poison
 grams_10_poison = n_10_poison / total_n_poison
 grams_11_poison = n_11_poison / total_n_poison
 
-# now, figure out how much carbon needs to be in the poison to get
-# an overall specified B10 weight percent
+# Now, figure out how much carbon needs to be in the poison to get an overall specified B10 weight percent
 total_b10_weight_percent_poison = params["B10_wt_percent_poison"]
 total_mass_poison = grams_10_poison / total_b10_weight_percent_poison
 carbon_mass_poison = total_mass_poison - grams_10_poison - grams_11_poison
@@ -76,15 +77,14 @@ b4c_poison.depletable = True
 b4c_control = openmc.Material(name="B4C_Control")
 enrichment_10_control = params["B10_enrichment_control"]
 
-# number of atoms in one gram of boron mixture
+# Number of atoms in one gram of boron mixture
 n_10_control = enrichment_10_control / mass_10
 n_11_control = (1.0 - enrichment_10_control) / mass_11
 total_n_control = n_10_control + n_11_control
 grams_10_control = n_10_control / total_n_control
 grams_11_control = n_11_control / total_n_control
 
-# now, figure out how much carbon needs to be in the control rod to get
-# an overall specified B10 weight percent
+# Now, figure out how much carbon needs to be in the control rod to get an overall specified B10 weight percent
 total_b10_weight_percent_control = params["B10_wt_percent_control"]
 total_mass_control = grams_10_control / total_b10_weight_percent_control
 carbon_mass_control = total_mass_control - grams_10_control - grams_11_control
@@ -94,10 +94,10 @@ b4c_control.add_nuclide("B11", grams_11_control / total_mass_control, 'wo')
 b4c_control.add_element("C", carbon_mass_control / total_mass_control, 'wo')
 b4c_control.set_density("kg/m3", params["B4C_density_control"])
 
-# ----- Secondary Shutdown Rod Material (55% B4C control + 45% Helium by volume) -----
+# ----- Secondary Shutdown Rod Material -----
 b4c_ss = openmc.Material.mix_materials(
     [b4c_control, helium],
-    [0.55, 0.45],
+    [0.55, 0.45], # 55% b4c_control + 45% helium by volume
     'vo',
     name="B4C_SS"
 )
@@ -128,7 +128,10 @@ materials += [fuel, buffer, pyc, sic, graphite, helium, b4c_poison, b4c_control,
 # HOMOGENIZED FUEL COMPACT
 # ====================================================================================================
 
-def make_homogenized_fuel_compact(params, name="HomogFuel"):
+def make_homogenized_fuel_compact(
+    params: dict,
+    name: str = "HomogFuel"
+) -> openmc.Material:
     """
     Create a single homogenized material representing a TRISO fuel compact.
 
@@ -157,8 +160,8 @@ def make_homogenized_fuel_compact(params, name="HomogFuel"):
         vf_matrix = 1 - pf                                      (graphite outside spheres)
 
     Args:
-        params: Simulation parameters dictionary (same dict used everywhere).
-        name:   Base name for the returned material.
+        params (dict): Simulation parameters dictionary (same dict used everywhere)
+        name (str): Base name for the returned material
 
     Returns:
         openmc.Material: Homogenized, depletable fuel compact material.
@@ -173,6 +176,7 @@ def make_homogenized_fuel_compact(params, name="HomogFuel"):
     r_o = r_s + params["opyc_thickness"]
 
     # Volume fractions of each region (relative to total compact volume)
+    # Computes the volume fraction of a spherical shell between r_in and r_out, scaled by packing fraction.
     def shell_vf(r_out, r_in):
         return pf * (r_out**3 - r_in**3) / r_o**3
 
@@ -230,7 +234,11 @@ def make_homogenized_fuel_compact(params, name="HomogFuel"):
     homog.depletable = True
     return homog
 
-def make_rpt_inner_material(params, r_rpt, name="RPTInner"):
+def make_rpt_inner_material(
+    params: dict,
+    r_rpt: float,
+    name: str = "RPTInner"
+) -> openmc.Material:
     """
     Create the homogenized inner-cylinder material for the RPT method.
 
@@ -265,9 +273,9 @@ def make_rpt_inner_material(params, r_rpt, name="RPTInner"):
     Constraint: r_rpt >= r_compact * sqrt(pf)  (so that pf_inner <= 1)
 
     Args:
-        params: Simulation parameters dictionary.
-        r_rpt:  Inner cylinder radius (cm). Must satisfy pf*(r_compact/r_rpt)^2 <= 1.
-        name:   Base name for the returned material.
+        params (dict): Simulation parameters dictionary
+        r_rpt (float): Inner cylinder radius in cm; must satisfy pf*(r_compact/r_rpt)^2 <= 1
+        name (str): Base name for the returned material
 
     Returns:
         openmc.Material: Depletable homogenized RPT inner-cylinder material.
@@ -290,6 +298,7 @@ def make_rpt_inner_material(params, r_rpt, name="RPTInner"):
     r_s = r_i + params["sic_thickness"]
     r_o = r_s + params["opyc_thickness"]
 
+    # Computes the volume fraction of a spherical shell between r_in and r_out, scaled by effective packing fraction.
     def shell_vf(r_out, r_in):
         return pf_inner * (r_out**3 - r_in**3) / r_o**3
 

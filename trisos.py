@@ -1,3 +1,4 @@
+import types
 import openmc
 import numpy as np
 
@@ -5,7 +6,10 @@ import numpy as np
 # TRISO LATTICE BUILDER FUNCTIONS
 # ====================================================================================================
 
-def generate_triso_positions(params, axial_section_height):
+def generate_triso_positions(
+    params: dict,
+    axial_section_height: float
+) -> tuple[list[tuple[float, float, float]], int, float, np.ndarray, np.ndarray, tuple[int, int, int]]:
     """
     Generate TRISO sphere positions for one axial section.
 
@@ -13,17 +17,17 @@ def generate_triso_positions(params, axial_section_height):
     to build multiple lattices with different fuel materials at the same positions.
 
     Args:
-        params: Dictionary of reactor parameters
-        axial_section_height: Height of one axial zone in cm
+        params (dict): Dictionary of reactor parameters
+        axial_section_height (float): Height of one axial zone in cm
 
     Returns:
         tuple: (safe_trisos, n_trisos, r_opyc, llc, pitch, triso_lattice_shape)
-            - safe_trisos: list of (x, y, z) sphere centers
-            - n_trisos: number of accepted TRISO positions (int)
-            - r_opyc: outer PyC radius in cm
-            - llc: lower-left corner of the bounding box (numpy array)
-            - pitch: lattice cell pitch (numpy array)
-            - triso_lattice_shape: (nx, ny, nz) tuple for the search lattice
+            - safe_trisos (list): List of (x, y, z) sphere centers for TRISOS within constraints
+            - n_trisos (int): Number of accepted TRISO positions
+            - r_opyc (float): Outer PyC radius in cm
+            - llc (np.ndarray): Lower-left corner of the bounding box
+            - pitch (np.ndarray): Lattice cell pitch
+            - triso_lattice_shape (tuple): (nx, ny, nz) tuple for the search lattice
     """
 
     r_kernel = params["kernel_radius"]
@@ -45,6 +49,7 @@ def generate_triso_positions(params, axial_section_height):
 
     llc, urc = triso_region.bounding_box
 
+    # Screening helper function to see if TRISO is within correct bounding box
     def valid_triso(c):
         x, y, z = c
         return (
@@ -72,22 +77,31 @@ def generate_triso_positions(params, axial_section_height):
 
     return safe_trisos, n_trisos, r_opyc, llc, pitch, triso_lattice_shape
 
-def build_triso_lattice_for_material(fuel_material, mats, params, safe_trisos, r_opyc, llc, pitch, triso_lattice_shape):
+def build_triso_lattice_for_material(
+    fuel_material: openmc.Material,
+    mats: types.ModuleType,
+    params: dict,
+    safe_trisos: list[tuple[float, float, float]],
+    r_opyc: float,
+    llc: np.ndarray,
+    pitch: np.ndarray,
+    triso_lattice_shape: tuple[int, int, int],
+) -> openmc.RectLattice:
     """
     Build a TRISO search lattice using the given fuel material at pre-generated positions.
 
     Used to create multiple lattices with identical geometry but distinct fuel material
-    instances (e.g., one per core ring × axial zone for spatial burnup tracking).
+    instances (e.g., one per core ring per axial zone for spatial burnup tracking).
 
     Args:
-        fuel_material: openmc.Material to use for the fuel kernel
-        mats: Materials module containing buffer, pyc, sic, graphite
-        params: Dictionary of reactor parameters
-        safe_trisos: list of (x, y, z) sphere centers from generate_triso_positions()
-        r_opyc: outer PyC radius in cm
-        llc: lower-left corner of the search lattice bounding box
-        pitch: lattice cell pitch (numpy array)
-        triso_lattice_shape: (nx, ny, nz) tuple for the search lattice
+        fuel_material (openmc.Material): Material to use for the fuel kernel
+        mats (types.ModuleType): Reactor materials module (used for buffer, pyc, sic, and graphite)
+        params (dict): Dictionary of reactor/simulation parameters
+        safe_trisos (list): List of (x, y, z) sphere centers for TRISOS within constraints
+        r_opyc (float): Outer PyC radius in cm
+        llc (np.ndarray): Lower-left corner of the bounding box
+        pitch (np.ndarray): Lattice cell pitch
+        triso_lattice_shape (tuple): (nx, ny, nz) tuple for the search lattice
 
     Returns:
         openmc.model.create_triso_lattice result (an openmc.RectLattice)
@@ -124,17 +138,20 @@ def build_triso_lattice_for_material(fuel_material, mats, params, safe_trisos, r
 
     return triso_lattice
 
-def build_homogenized_compact_fill(fuel_material, params, mats):
+def build_homogenized_compact_fill(
+    fuel_material: openmc.Material,
+    params: dict,
+    mats: types.ModuleType,
+) -> openmc.Universe:
     """
-    Return a two-region annular Universe implementing the RPT homogenization.
+    Return a two-region annular Universe implementing the Reactivity-Equivalent
+    Physical Transform (RPT) method for homogenization.
 
     This is a drop-in replacement for the TRISO search lattice returned by
-    build_triso_lattice_for_material().  The Universe contains:
-
-      - Inner cylinder  (r < r_rpt):             fuel_material (RPT inner material)
-      - Outer annulus   (r_rpt < r < r_compact):  pure graphite
-
-    where r_rpt = params["rpt_radius"] is the calibrated RPT radius (cm).
+    build_triso_lattice_for_material(). The Universe contains:
+        - Inner cylinder (r < r_rpt):              fuel_material (RPT inner material)
+        - Outer annulus  (r_rpt < r < r_compact):  pure graphite
+    where r_rpt = params["rpt_radius"] is the calibrated RPT radius (cm) determined empirically.
 
     The RPT inner material (from materials.make_rpt_inner_material) contains all
     TRISO layers + proportional graphite at effective pf_inner = pf*(r_compact/r_rpt)^2.
@@ -147,13 +164,12 @@ def build_homogenized_compact_fill(fuel_material, params, mats):
     -fuel_cyl region, so no coincident surface is introduced here.
 
     Args:
-        fuel_material: openmc.Material — RPT inner material from
-                       materials.make_rpt_inner_material() (depletable).
-        params:        Simulation parameters dictionary.  Must contain "rpt_radius".
-        mats:          Materials module (used for graphite annulus cell).
+        fuel_material (openmc.Material): RPT inner material from materials.make_rpt_inner_material()
+        params (dict): Dictionary of reactor/simulation parameters
+        mats (types.ModuleType): Reactor materials module (used for graphite annulus cell)
 
     Returns:
-        openmc.Universe containing the two-region RPT compact.
+        RPT_universe (openmc.Universe): Universe containing the two-region RPT fuel compact
     """
     r_rpt = params["rpt_radius"]
 
@@ -161,9 +177,15 @@ def build_homogenized_compact_fill(fuel_material, params, mats):
     inner_cell   = openmc.Cell(fill=fuel_material, region=-inner_cyl)
     annulus_cell = openmc.Cell(fill=mats.graphite,  region=+inner_cyl)
 
-    return openmc.Universe(cells=[inner_cell, annulus_cell])
+    RPT_universe = openmc.Universe(cells=[inner_cell, annulus_cell])
 
-def create_triso_lattice(params, mats, axial_section_height):
+    return RPT_universe
+
+def create_triso_lattice(
+    params: dict,
+    mats: types.ModuleType,
+    axial_section_height: float,
+) -> tuple[openmc.RectLattice, int]:
     """
     Create a TRISO particle lattice for fuel compacts using mats.fuel.
 
@@ -172,14 +194,14 @@ def create_triso_lattice(params, mats, axial_section_height):
     per-region fuel material clones, call those two functions directly instead.
 
     Args:
-        params: Dictionary of reactor parameters
-        mats: Materials module containing fuel, buffer, pyc, sic, graphite
-        axial_section_height: Height of one axial zone in cm
+        params (dict): Dictionary of reactor/simulation parameters
+        mats (types.ModuleType): Materials module containing fuel, buffer, pyc, sic, graphite
+        axial_section_height (float): Height of one axial zone in cm
 
     Returns:
         tuple: (triso_lattice, n_trisos)
-            - triso_lattice: OpenMC lattice containing TRISO particles
-            - n_trisos: Number of TRISO particles per axial zone (int)
+            - triso_lattice (openmc.RectLattice): OpenMC lattice containing TRISO particles
+            - n_trisos (int): Number of TRISO particles per axial zone
     """
 
     safe_trisos, n_trisos, r_opyc, llc, pitch, triso_lattice_shape = generate_triso_positions(

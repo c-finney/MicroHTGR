@@ -5,6 +5,7 @@ import openmc
 import numpy as np
 import openmc.deplete
 from datetime import datetime
+import h5py
 import sys
 import subprocess
 import json
@@ -14,10 +15,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
 
+# Import modules for config parameters, materials, TRISO creation, and assembly/core creation
 import config as cfg
 import materials as mats
-import assembly as asm
 import trisos
+import assembly as asm
 
 # Add PostProcessingScripts to path
 POST_PROCESSING_DIR = os.path.join(SCRIPT_DIR, "PostProcessingScripts")
@@ -44,7 +46,7 @@ def save_params(run_dir, params):
     # Filter to JSON-serializable types
     params_serializable = {}
     for k, v in params.items():
-        if isinstance(v, (int, float, bool, str, list)):
+        if isinstance(v, (int, float, bool, str, list, dict)):
             params_serializable[k] = v
         elif isinstance(v, np.ndarray):
             params_serializable[k] = v.tolist()
@@ -95,9 +97,9 @@ def build_reduced_chain(full_chain_file, reduced_chain_file, tracked_nuclides):
 
     return reduced_chain_file
 
-# ==================================================================
+# ====================================================================================================
 # MODEL BUILDING FUNCTION
-# ==================================================================
+# ====================================================================================================
 
 def build_model(params, run_dir):
     """
@@ -1333,6 +1335,9 @@ def run_depletion_simulation(params, run_dir):
             int(k): v for k, v in saved_params.get("fuel_mat_volumes", {}).items()
         }
 
+        graphite_mat_id    = saved_params.get("graphite_material_id")
+        graphite_vol_saved = saved_params.get("graphite_volume_simulated_cm3")
+
         n_fuel_vols_set = 0
         for mat in materials:
             if mat.id in fuel_mat_volumes:
@@ -1341,6 +1346,9 @@ def run_depletion_simulation(params, run_dir):
             elif mat.id == poison_mat_id:
                 mat.volume = poison_volume
                 print(f"Poison material (id={mat.id}): volume = {poison_volume:.4f} cm³")
+            elif graphite_mat_id is not None and mat.id == graphite_mat_id and graphite_vol_saved is not None:
+                mat.volume = graphite_vol_saved
+                print(f"Graphite material (id={mat.id}): volume = {graphite_vol_saved:.4f} cm³")
         print(f"Set volumes on {n_fuel_vols_set} fuel material clones from saved run_params.json")
 
         prev_results = openmc.deplete.Results(prev_h5)
@@ -1423,6 +1431,50 @@ def run_depletion_simulation(params, run_dir):
         )
         total_B10_mass_kg  = total_poison_volume * b4c_density_g_cm3 * b10_mass_fraction / 1000.0
 
+        # --- Stochastic volume calculation for graphite depletion ---
+        graphite_vol_simulated = None
+        graphite_vol_full      = None
+        if params.get("deplete_graphite", False):
+            n_vol_particles = params.get("graphite_volume_particles", 1_000_000)
+            core_r   = params["core_radius"]
+            refl_t   = params["reflector_thickness"]
+            core_h   = params["core_height"]
+            lower_left  = [-core_r, -core_r, -refl_t]
+            upper_right = [ core_r,  core_r,  core_h + refl_t]
+
+            print(f"\nRunning stochastic volume calculation for graphite "
+                  f"({n_vol_particles:,} particles)...")
+            vol_calc = openmc.VolumeCalculation(
+                [mats.graphite], n_vol_particles, lower_left, upper_right
+            )
+            model.settings.volume_calculations = [vol_calc]
+            model.settings.export_to_xml()
+            openmc.calculate_volumes(output=True, cwd=run_dir)
+
+            vol_h5_path = os.path.join(run_dir, "volume_1.h5")
+            with h5py.File(vol_h5_path, 'r') as vf:
+                mat_id_str = str(mats.graphite.id)
+                mat_key = next(
+                    (k for k in vf.keys() if mat_id_str in k),
+                    None
+                )
+                if mat_key is None:
+                    raise KeyError(
+                        f"Graphite material (id={mats.graphite.id}) not found in {vol_h5_path}. "
+                        f"Available keys: {list(vf.keys())}"
+                    )
+                graphite_vol_simulated = float(vf[mat_key]['volume'][0])
+            graphite_vol_full = graphite_vol_simulated * geometry_factor
+            mats.graphite.volume = graphite_vol_simulated
+            model.materials.export_to_xml()
+
+            # Clear volume_calculations so they don't re-run during depletion
+            model.settings.volume_calculations = []
+            model.settings.export_to_xml()
+
+            print(f"Graphite volume (simulated geometry): {graphite_vol_simulated:.4f} cm³")
+            print(f"Graphite volume (full core):          {graphite_vol_full:.4f} cm³")
+
         print(f"\nFuel volume   (simulated geometry): {fuel_volume_simulated:.4f} cm³")
         print(f"Fuel volume   (full core):          {total_fuel_volume:.4f} cm³")
         print(f"Uranium mass  (full core):          {total_HM_mass_kg:.2f} kg")
@@ -1458,6 +1510,10 @@ def run_depletion_simulation(params, run_dir):
                 for ri in range(len(fuel_clones))
             ],
         })
+        if params.get("deplete_graphite", False) and graphite_vol_simulated is not None:
+            saved_params['graphite_material_id']          = mats.graphite.id
+            saved_params['graphite_volume_simulated_cm3'] = graphite_vol_simulated
+            saved_params['graphite_volume_full_core_cm3'] = graphite_vol_full
         with open(params_path, 'w') as f:
             json.dump(saved_params, f, indent=2)
 

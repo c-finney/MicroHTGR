@@ -1,25 +1,39 @@
 import math
+import types
 import openmc
 import numpy as np
 
 # ====================================================================================================
-# ASSEMBLY UNIVERSES BUILDER FUNCTIONS
+# CONTROL ROD ASSEMBLY UNIVERSES BUILDER FUNCTION
 # ====================================================================================================
 
 def build_bank_assemblies(
-    bank_id, control_insertion_depth,
-    params, mats, T_coolant_z, T_matrix_z,
-    axial_coords, reactor_bottom, reactor_top,
-    axial_section_height, bundle_pitch,
-    fuel_lattice_univs, poison_lattice_univs,
-    hex_prism_fuel, hex_prism_refl,
-    min_z, max_z,
-    fuel_control_cyl_b4c, fuel_control_cyl_sheath_outer, fuel_control_cyl_guide_outer,
-    inf_graphite_universe, inf_graphite_refl_universe,
-    m_colors
-):
+    bank_id: int,
+    control_insertion_depth: float,
+    params: dict,
+    mats: types.ModuleType,
+    T_coolant_z: list[float],
+    T_matrix_z: list[float],
+    axial_coords: list[float],
+    reactor_bottom: float,
+    reactor_top: float,
+    axial_section_height: float,
+    bundle_pitch: float,
+    fuel_lattice_univs: list,
+    poison_lattice_univs: list,
+    hex_prism_fuel: openmc.Region,
+    hex_prism_refl: openmc.Region,
+    min_z: openmc.ZPlane,
+    max_z: openmc.ZPlane,
+    fuel_control_cyl_b4c: openmc.ZCylinder,
+    fuel_control_cyl_sheath_outer: openmc.ZCylinder,
+    fuel_control_cyl_guide_outer: openmc.ZCylinder,
+    inf_graphite_universe: openmc.Universe,
+    inf_graphite_refl_universe: openmc.Universe,
+    m_colors: dict,
+) -> dict[str, openmc.Universe]:
     """
-    Build the three bank-dependent assembly types (r, fc, fcp) for a single
+    Build the four bank-dependent assembly types (r, ra, fc, fcp) for a single
     control rod bank insertion depth.
 
     Control rod geometry is defined by a continuous ZPlane at the exact insertion
@@ -33,8 +47,35 @@ def build_bank_assemblies(
       - Zone fully above control_bottom  → entirely helium (withdrawn)
       - Zone straddles control_bottom    → split into two sub-regions at the exact plane
 
+    Args:
+        bank_id (int): Control bank identifier (1, 2, or 3)
+        control_insertion_depth (float): Distance inserted from reactor top in cm
+        params (dict): Dictionary of reactor/simulation parameters
+        mats (types.ModuleType): Reactor materials module
+        T_coolant_z (list[float]): Coolant temperature per axial zone in K
+        T_matrix_z (list[float]): Graphite matrix temperature per axial zone in K
+        axial_coords (list[float]): Z-coordinates of axial zone boundaries in cm
+        reactor_bottom (float): Bottom of the active core in cm
+        reactor_top (float): Top of the active core in cm
+        axial_section_height (float): Height of one axial zone in cm
+        bundle_pitch (float): Center-to-center distance between assemblies in cm
+        fuel_lattice_univs (list): Per-zone hex lattice universe lists for fuel assemblies
+        poison_lattice_univs (list): Per-zone hex lattice universe lists for fuel+poison assemblies
+        hex_prism_fuel (openmc.Region): Hexagonal prism region for fuel assemblies
+        hex_prism_refl (openmc.Region): Hexagonal prism region for reflector assemblies
+        min_z (openmc.ZPlane): Bottom bounding plane of the core
+        max_z (openmc.ZPlane): Top bounding plane of the core
+        fuel_control_cyl_b4c (openmc.ZCylinder): Inner B4C cylinder surface for fuel assembly control rod
+        fuel_control_cyl_sheath_outer (openmc.ZCylinder): Outer sheath surface for fuel assembly control rod
+        fuel_control_cyl_guide_outer (openmc.ZCylinder): Outer guide tube surface for fuel assembly control rod
+        inf_graphite_universe (openmc.Universe): Infinite graphite universe for fuel assembly outer fill
+        inf_graphite_refl_universe (openmc.Universe): Infinite graphite universe for reflector assembly outer fill
+        m_colors (dict): Material color dictionary updated in-place for plotting
+
     Returns:
-        dict with keys "r", "ra" "fc", "fcp" mapped to OpenMC Universe objects
+        dict[str, openmc.Universe]: Assembly type codes mapped to their Universe objects.
+            Keys: "r" (reflector with central control rod), "ra" (reflector with 6 control rods),
+                  "fc" (fuel with central control rod), "fcp" (fuel with control and poison rods)
     """
 
     r_b4c = params["control_radius"] - params["sheath_thickness"]
@@ -184,10 +225,7 @@ def build_bank_assemblies(
         fill=reflector_alt_assembly_lat, region=hex_prism_refl & +min_z & -max_z)
     reflector_alt_assembly_univ = openmc.Universe(cells=[reflector_alt_assembly_cell])
 
-    # ==================================================================
-    # HELPER: build the inner-ring graphite substitution lattice universes
-    # ==================================================================
-
+    # Copies outer rings from source_lattice_univs and replaces the two inner rings with graphite for control rod clearance
     def make_control_lattice_univs(source_lattice_univs, lat_name):
         result = []
         for idx in range(len(axial_coords) - 1):
@@ -202,11 +240,7 @@ def build_bank_assemblies(
             result.append([ring4, ring3, ring2, [g_inner] * 6, [g_inner]])
         return result
 
-    # ==================================================================
-    # HELPER: build axial control-rod cells for fuel assemblies
-    # Geometry split at exact control_bottom_plane; temperature from T_*_z arrays
-    # ==================================================================
-
+    # Builds per-axial-zone control rod cells for a fuel assembly, splitting geometry at the exact control_bottom_plane.
     def make_fuel_control_cells(hex_region_with_outer_cyl):
         cells = []
         for idx, (z_min, z_max) in enumerate(zip(axial_coords[:-1], axial_coords[1:])):
@@ -336,17 +370,31 @@ def build_bank_assemblies(
         "fcp": fcp_univ,
     }
 
+# ====================================================================================================
+# SECONDARY SHUTDOWN SYSTEM ASSEMBLY UNIVERSES BUILDER FUNCTION
+# ====================================================================================================
+
 def build_ss_assemblies(
-    ss_inserted,
-    params, mats, T_coolant_z, T_matrix_z,
-    axial_coords, reactor_bottom, reactor_top,
-    axial_section_height, bundle_pitch,
-    fuel_lattice_univs, poison_lattice_univs,
-    hex_prism_fuel, hex_prism_refl,
-    min_z, max_z,
-    inf_graphite_universe, inf_graphite_refl_universe,
-    m_colors
-):
+    ss_inserted: bool,
+    params: dict,
+    mats: types.ModuleType,
+    T_coolant_z: list[float],
+    T_matrix_z: list[float],
+    axial_coords: list[float],
+    reactor_bottom: float,
+    reactor_top: float,
+    axial_section_height: float,
+    bundle_pitch: float,
+    fuel_lattice_univs: list,
+    poison_lattice_univs: list,
+    hex_prism_fuel: openmc.Region,
+    hex_prism_refl: openmc.Region,
+    min_z: openmc.ZPlane,
+    max_z: openmc.ZPlane,
+    inf_graphite_universe: openmc.Universe,
+    inf_graphite_refl_universe: openmc.Universe,
+    m_colors: dict,
+) -> dict[str, openmc.Universe]:
     """
     Build the four secondary shutdown rod assembly types: rss, rssa, fss, fssp.
 
@@ -358,8 +406,31 @@ def build_ss_assemblies(
     control_radius + guide_tube_thickness, matching the control rod guide-outer
     diameter so graphite block hole dimensions are identical.
 
+    Args:
+        ss_inserted (bool): If True, rods are fully inserted; if False, fully withdrawn
+        params (dict): Dictionary of reactor/simulation parameters
+        mats (types.ModuleType): Reactor materials module
+        T_coolant_z (list[float]): Coolant temperature per axial zone in K
+        T_matrix_z (list[float]): Graphite matrix temperature per axial zone in K
+        axial_coords (list[float]): Z-coordinates of axial zone boundaries in cm
+        reactor_bottom (float): Bottom of the active core in cm
+        reactor_top (float): Top of the active core in cm
+        axial_section_height (float): Height of one axial zone in cm
+        bundle_pitch (float): Center-to-center distance between assemblies in cm
+        fuel_lattice_univs (list): Per-zone hex lattice universe lists for fuel assemblies
+        poison_lattice_univs (list): Per-zone hex lattice universe lists for fuel+poison assemblies
+        hex_prism_fuel (openmc.Region): Hexagonal prism region for fuel assemblies
+        hex_prism_refl (openmc.Region): Hexagonal prism region for reflector assemblies
+        min_z (openmc.ZPlane): Bottom bounding plane of the core
+        max_z (openmc.ZPlane): Top bounding plane of the core
+        inf_graphite_universe (openmc.Universe): Infinite graphite universe for fuel assembly outer fill
+        inf_graphite_refl_universe (openmc.Universe): Infinite graphite universe for reflector assembly outer fill
+        m_colors (dict): Material color dictionary updated in-place for plotting
+
     Returns:
-        dict with keys "rss", "rssa", "fss", "fssp" -> OpenMC Universe objects
+        dict[str, openmc.Universe]: Assembly type codes mapped to their Universe objects.
+            Keys: "rss" (reflector with central SS rod), "rssa" (reflector with 6 SS rods),
+                  "fss" (fuel with central SS rod), "fssp" (fuel with SS rod and edge poison rods)
     """
 
     r_ss_refl = params["control_radius"] + params["guide_tube_thickness"]
@@ -424,10 +495,7 @@ def build_ss_assemblies(
     rssa_univ = openmc.Universe(cells=[
         openmc.Cell(fill=rssa_lat, region=hex_prism_refl & +min_z & -max_z)])
 
-    # ==================================================================
-    # HELPER: replace center rings of fuel lattice with graphite
-    # ==================================================================
-
+    # Copies outer rings from source_lattice_univs and replaces the two inner rings with graphite for SS rod clearance.
     def make_ss_fuel_lattice_univs(source_lattice_univs):
         result = []
         for idx in range(len(axial_coords) - 1):
@@ -440,10 +508,7 @@ def build_ss_assemblies(
             result.append([ring4, ring3, ring2, [g_inner] * 6, [g_inner]])
         return result
 
-    # ==================================================================
-    # HELPER: per-axial-zone SS rod cells for fuel assemblies
-    # ==================================================================
-
+    # Builds per-axial-zone SS rod cells for a fuel assembly, filling with b4c_ss or helium based on ss_inserted.
     def make_fuel_ss_cells(hex_region):
         cells = []
         for idx, (z_min, z_max) in enumerate(zip(axial_coords[:-1], axial_coords[1:])):
@@ -502,8 +567,22 @@ def build_ss_assemblies(
         "fssp": fssp_univ,
     }
 
+# ====================================================================================================
+# ALL ASSEMBLY UNIVERSES BUILDER FUNCTION
+# ====================================================================================================
 
-def create_assembly_univs(params, mats, T_coolant_z, T_compact_z, T_matrix_z, T_reflector_z, ring_triso_lattices, axial_coords, reactor_bottom, reactor_top):
+def create_assembly_univs(
+    params: dict,
+    mats: types.ModuleType,
+    T_coolant_z: list[float],
+    T_compact_z: list[float],
+    T_matrix_z: list[float],
+    T_reflector_z: list[float],
+    ring_triso_lattices: dict,
+    axial_coords: list[float],
+    reactor_bottom: float,
+    reactor_top: float,
+) -> tuple[dict[str, openmc.Universe], dict, float]:
     """
     Create all fuel assembly variants and reflector assemblies.
 
@@ -524,13 +603,24 @@ def create_assembly_univs(params, mats, T_coolant_z, T_compact_z, T_matrix_z, T_
     trisos.py.
 
     Args:
-        ring_triso_lattices: dict  {ring_idx: {ax_idx: fill_object}}
-            One fill object per (core ring, axial zone).
+        params (dict): Dictionary of reactor/simulation parameters
+        mats (types.ModuleType): Reactor materials module
+        T_coolant_z (list[float]): Coolant temperature per axial zone in K
+        T_compact_z (list[float]): Fuel compact temperature per axial zone in K
+        T_matrix_z (list[float]): Graphite matrix temperature per axial zone in K
+        T_reflector_z (list[float]): Reflector temperature per axial zone in K
+        ring_triso_lattices (dict): Nested dict {ring_idx: {ax_idx: fill_object}} where
+            fill_object is either an openmc.RectLattice (explicit TRISO) or openmc.Universe
+            (homogenized RPT) — one fill object per (core ring, axial zone)
+        axial_coords (list[float]): Z-coordinates of axial zone boundaries in cm
+        reactor_bottom (float): Bottom of the active core in cm
+        reactor_top (float): Top of the active core in cm
 
     Returns:
-        dict: Assembly codes → OpenMC Universe objects.
-        dict: Material colors dictionary for plotting.
-        float: Bundle pitch.
+        tuple: (assemblies, m_colors, bundle_pitch)
+            - assemblies (dict[str, openmc.Universe]): Assembly type codes mapped to Universe objects
+            - m_colors (dict): Material color dictionary for plotting
+            - bundle_pitch (float): Center-to-center distance between assemblies in cm
     """
 
     m_colors = {}
@@ -596,33 +686,17 @@ def create_assembly_univs(params, mats, T_coolant_z, T_compact_z, T_matrix_z, T_
             T_matrix = T_matrix_z[idx]
 
             # Retrieve the fill object for this ring and axial zone.
-            # This is either a TRISO RectLattice (explicit) or a Universe
-            # wrapping a homogenized compact cell — both are valid fills for
-            # the fuel channel cell below.
+            # This is either a TRISO RectLattice (explicit) or a Universe wrapping a homogenized compact cell
+            # Both are valid fills for the fuel channel cell below
             this_fuel_fill = ring_triso_lattices[ring_idx][idx]
 
-            # ------------------------------------------------------------------
-            # Fuel channel cell
-            #
-            # For explicit TRISO: this_fuel_fill is a RectLattice whose extent
-            #   exactly matches the -fuel_cyl & axial region; the cell region
-            #   is -fuel_cyl and the lattice handles everything inside.
-            #
-            # For homogenized fuel: this_fuel_fill is a Universe containing
-            #   (a) a fuel cell filling -fuel_cyl, and
-            #   (b) a graphite matrix cell filling +fuel_cyl.
-            #   The outer Universe boundary is open (no bounding region in the
-            #   Universe itself), so the cell region -fuel_cyl clips it correctly.
-            #
-            # In both cases the cell region is -fuel_cyl and the fill is the
-            # object from ring_triso_lattices — no branching required.
-            # ------------------------------------------------------------------
+            # Fuel Cannel
             fuel_ch_cell = openmc.Cell(region=-fuel_cyl, fill=this_fuel_fill)
             fuel_ch_cell.temperature = T_compact
             fuel_ch_matrix_cell = openmc.Cell(region=+fuel_cyl, fill=mats.graphite)
             fuel_ch_matrix_cell.temperature = T_matrix
 
-            # Poison channel
+            # Poison Channel
             poison_ch_cell = openmc.Cell(region=-poison_cyl, fill=mats.b4c_poison)
             poison_ch_cell.temperature = T_matrix
             poison_ch_matrix_cell = openmc.Cell(region=+poison_cyl, fill=mats.graphite)
@@ -792,18 +866,23 @@ def create_assembly_univs(params, mats, T_coolant_z, T_compact_z, T_matrix_z, T_
 # CORE LATTICE BUILDER FUNCTION
 # ====================================================================================================
 
-def build_core_lattice(assemblies, core_rings, bundle_pitch):
+def build_core_lattice(
+    assemblies: dict[str, openmc.Universe],
+    core_rings: list[list[str]],
+    bundle_pitch: float,
+) -> openmc.HexLattice:
     """
-    Build the core lattice from ring definitions.
+    Build the core hex lattice from ring definitions.
 
     Args:
-        assemblies: Dictionary mapping assembly codes to Universe objects.
-                    Bank-dependent types use suffixes: r1/r2/r3, fc1/fc2/fc3, fcp1/fcp2/fcp3.
-        core_rings: List of rings, each ring is a list of assembly codes.
-        bundle_pitch: Pitch between assemblies.
+        assemblies (dict[str, openmc.Universe]): Assembly type codes mapped to Universe objects.
+            Bank-dependent types use suffixes: r1/r2/r3, fc1/fc2/fc3, fcp1/fcp2/fcp3.
+        core_rings (list[list[str]]): List of rings from outermost to innermost, each ring
+            is a list of assembly type code strings
+        bundle_pitch (float): Center-to-center distance between assemblies in cm
 
     Returns:
-        openmc.HexLattice: The core lattice
+        openmc.HexLattice: The assembled core hex lattice
     """
 
     core_lattice_univs = []

@@ -53,8 +53,8 @@ params = {
     "fuel_assembly_control_radius": 2.54,    # Radius for circular control rods in fuel assemblies
     "sheath_thickness": 0.1, 
     "guide_tube_thickness": 0.2,  
-    "bank_1_insertion": 1.0,                 # Fractional control rod insertion for bank 1 (0-1.0)
-    "bank_2_insertion": 0.5781,              # Fractional control rod insertion for bank 2 (0-1.0)
+    "bank_1_insertion": 0.0,                 # Fractional control rod insertion for bank 1 (0-1.0)
+    "bank_2_insertion": 0.0,                 # Fractional control rod insertion for bank 2 (0-1.0)
     "bank_3_insertion": 0.0,                 # Fractional control rod insertion for bank 3 (0-1.0)
     "secondary_SD_rods_inserted": False,     # True = all SS rods fully inserted, False = all removed
     "B10_enrichment_control": 0.9,
@@ -63,7 +63,7 @@ params = {
     "Incoloy800H_density": 7940,
 
     # ----- Beryllium Reflector -----
-    "use_BeO_reflector": False,
+    "use_BeO_reflector": True,
     "BeO_inner_radius": 70,                # If none defaults to lattice extent (defined as (n_rings-1)*bundle_pitch+bundle_pitch/4)
     "BeO_thickness": 20.0,                   # Will not exceed core radius if inner radius + thickness > core radius
     "BeO_density": 3010,
@@ -102,23 +102,22 @@ params = {
     # ----- Tally Configuration -----
     "n_XY_mesh_zones_full_core": 500,
     "use_global_tallies": True,
-    "use_mesh_tallies": False,
-    "use_leakage_tallies": False,
-    "use_BeO_tallies": False,
+    "use_mesh_tallies": True,
+    "use_leakage_tallies": True,
+    "use_BeO_tallies": True,
 
     # ----- OpenMC Monte Carlo Settings -----
-    "total_batches": 100,
-    "inactive_batches": 40,
+    "total_batches": 50,
+    "inactive_batches": 25,
     "particles": 100_000,
 
     # ----- Geometry Plots -----
-    "make_geometry_plots": False,
+    "make_geometry_plots": True,
     "plot_threads": 128,         # OpenMP threads used by openmc --plot
 
     # ----- Spatial Burnup Resolution -----
     "ax_zones_per_burnup_region": 10,
     "use_spatial_burnup": False,
-    "use_homogenized_fuel": False,
 
     # ----- RPT Homogenization (Reactivity Equivalent Physical Transform) -----
     # Set use_homogenized_fuel=True to activate the two-region RPT model.
@@ -132,6 +131,7 @@ params = {
     # Calibration scan range: [compact_radius*sqrt(triso_pf), compact_radius]
     #   Lower bound: maximum self-shielding (all TRISO volume in inner cylinder)
     #   Upper bound: flat homogenization (no benefit over simple mixing)
+    "use_homogenized_fuel": False,
     "rpt_radius": None,                   # Calibrated inner cylinder radius (cm). None = not yet calibrated.
     "rpt_calibration_n_points": 20,       # Number of r_rpt values to scan in RPTCalibration study.
 
@@ -150,12 +150,16 @@ params = {
     "critical_search_k_tol": 0.003,
     "critical_search_max_iter": 20,
 
+    # ----- Graphite Depletion -----
+    "deplete_graphite": True,                # Deplete graphite as a single lumped core-averaged material
+    "graphite_volume_particles": 10_000_000, # Stochastic volume calculation samples (auto-enabled when deplete_graphite=True)
+
     # ----- Depletion Study Configuration -----
     "thermal_power_MW": 10.0,
     # "depletion_chain_file": "/home/cade/Desktop/OpenMC/CrossSections/chain_endfb81_thermal.xml",
     "depletion_chain_file": "/home/cade/Desktop/OpenMC/CrossSections/chain_casl_pwr.xml",
     "use_reduced_chain_file": False,
-    "depletion_timesteps_days": [10, 10, 10, 30, 30, 30, 60, 60, 60, 120, 120, 120, 180, 180, 180],
+    "depletion_timesteps_days": [2, 2, 2, 2, 2, 10, 10, 10, 30, 30, 30, 60, 60, 60, 120, 120, 120, 180, 180, 180, 180],
     "depletion_integrator": "PredictorIntegrator",
     # Integrator options:
     #    "PredictorIntegrator" — simplest, one transport solve per step
@@ -193,7 +197,7 @@ params = {
         "Xe131", "Xe135",
         "I235",
         "Pm147", "Pm149",
-        "Sm151", "Sm152",
+        "Sm149", "Sm151", "Sm152",
 
         # --- Other FPs ---
         "Kr83",
@@ -206,36 +210,36 @@ params = {
         "Eu153",
 
         # --- Burnable Poison ---
-        "B10",
+        "B10"
     ],
     "poison_tracked_nuclides": ["B10"],    # Nuclides to search for in the burnable poison material exclusively
 
     # ----- Depletion Post-Processing Plot Groups -----
     "depletion_plot_groups": {
-        "Fissile Actinides": ["U235",
-                              "Pu239", "Pu241"],
-        "Fertile Actinides": ["U238", "U234", "U236",
-                              "Pu238", "Pu240", "Pu242"],
-        "Minor Actinides":   ["Np237", "Np239",
-                              "Am241", "Am243",
-                              "Cm242", "Cm244"],
-        "FP Poisons":        ["Xe131",
-                              "I235",
-                              "Pm147",
-                              "Sm151", "Sm152"],
-        "Other FPs":         ["Kr83",
-                              "Sr90",
-                              "Mo95",
-                              "Tc99",
-                              "Rho103",
-                              "Cs133", "Cs137",
-                              "Nd143", "Nd145",
-                              "Eu153"],
-        "Boron Poisons":     ["B10"],
+            "Fissile Actinides": ["U235",
+                                  "Pu239", "Pu241"],
+            "Fertile Actinides": ["U238", "U234", "U236",
+                                  "Pu238", "Pu240", "Pu242"],
+            "Minor Actinides":   ["Np237", "Np239",
+                                  "Am241", "Am243",
+                                  "Cm242", "Cm244"],
+            "FP Poisons":        ["Xe131", "Xe135",
+                                  "I135",
+                                  "Pm147", "Pm149",
+                                  "Sm149", "Sm151", "Sm152"],
+            "Other FPs":         ["Kr83",
+                                  "Sr90",
+                                  "Mo95",
+                                  "Tc99",
+                                  "Rh103",
+                                  "Cs133", "Cs137",
+                                  "Nd143", "Nd145",
+                                  "Eu153"],
+            "Boron Poisons":     ["B10"]
     },
 
     # ----- Study Execution Mode Configuration -----
-    "study_execution_mode": "ReactivityStudy",
+    "study_execution_mode": "DepletionStudy",
     # Study Execution Mode Options:
     #    "SingleStudy"     — Singular steady state monte carlo simulation of specified core layout
     #    "ParametricStudy" — Creates multiple steady state monte carlo simulations varying a single core parameter
