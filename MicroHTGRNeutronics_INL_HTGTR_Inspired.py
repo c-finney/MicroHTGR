@@ -9,6 +9,8 @@ import h5py
 import sys
 import subprocess
 import json
+import glob
+import copy
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Add parent directory to path to find modules
@@ -285,8 +287,7 @@ def build_model(params, run_dir):
     # identically in both cases.
 
     if use_homogenized_fuel:
-        # Build one homogenized-compact universe per (ring, burnup band)
-        # and expand to full axial-zone mapping — fast, no lattice construction.
+        # Build one homogenized-compact universe per (ring, burnup band), parallelized
 
         if use_spatial_burnup:
             n_lattices = n_rings * n_burnup_ax
@@ -321,8 +322,7 @@ def build_model(params, run_dir):
         print("Done building homogenized compact universes.")
 
     else:
-        # Explicit TRISO path — build one lattice per (ring, burnup band),
-        # parallelised with threads as before.
+        # Explicit TRISO path — build one lattice per (ring, burnup band), parallelized
 
         if use_spatial_burnup:
             n_lattices = n_rings * n_burnup_ax
@@ -941,7 +941,7 @@ def _extract_keff(run_dir):
     Returns:
         (k_eff_mean, k_eff_std): floats
     """
-    import glob
+    
     sp_files = sorted(glob.glob(os.path.join(run_dir, "statepoint.*.h5")))
     if not sp_files:
         raise FileNotFoundError(f"No statepoint file found in {run_dir}")
@@ -1614,6 +1614,520 @@ def run_depletion_simulation(params, run_dir):
     return n_trisos
 
 # ====================================================================================================
+# DEPLETION SIMULATION FUNCTION
+# ====================================================================================================
+
+def run_critical_search_depletion_simulation(params, run_dir):
+    """
+    Build model and run a coupled depletion simulation where a criticality
+    search is performed before every depletion timestep.
+
+    Workflow
+    --------
+    For each timestep i in params["depletion_timesteps_days"]:
+
+      1.  Load depleted materials from the previous step's depletion_results.h5
+          (or use fresh fuel for step 0).
+      2.  Build a fresh model with those materials injected.
+      3.  Run a two-stage binary search (bank 1 then bank 2) to find the
+          critical rod insertion fraction for the current burnup state.
+      4.  Rebuild the model again at the critical rod position.
+      5.  Run a single-timestep CoupledOperator depletion with prev_results
+          pointing at the accumulated depletion_results.h5, so all timestep
+          results are chained into one file.
+      6.  Save a per-step JSON log: critical insertion, k_eff, burnup time.
+
+    The function honours the same reduced-chain and power-scaling logic used
+    by run_depletion_simulation() so it is a drop-in replacement for the
+    "CriticalSearchDepletion" study_execution_mode.
+
+    Parameters
+    ----------
+    params : dict
+        Simulation parameter dictionary (from config.py).  Relevant keys:
+
+        depletion_timesteps_days : list[float]
+            Timestep durations (days).  One criticality search per timestep.
+
+        thermal_power_MW : float
+        use_1/6_geometry : bool
+        depletion_chain_file : str
+        use_reduced_chain_file : bool
+        tracked_nuclides : list[str]
+        depletion_integrator : str
+            Name of the OpenMC integrator class to use.
+
+        critical_search_k_tol : float   (default 0.003)
+        critical_search_max_iter : int  (default 20)
+
+        Critical-search particle settings are taken from the dedicated
+        sub-keys if present, otherwise fall back to sensible defaults:
+        critical_search_particles    (default: params["particles"] // 2)
+        critical_search_batches      (default: 100)
+        critical_search_inactive     (default: 40)
+
+    run_dir : str
+        Root directory for this simulation run.  Sub-directories are created
+        for each timestep's criticality search.
+
+    Returns
+    -------
+    n_trisos : int
+        Number of TRISO particles per axial zone (0 for homogenised fuel).
+    """
+    import copy
+    import glob
+
+    # ------------------------------------------------------------------
+    # Import the criticality-search helper from mol_eol_analysis.py.
+    # Both files live in the same SCRIPT_DIR so a direct import works.
+    # ------------------------------------------------------------------
+    try:
+        from mol_eol_analysis import (
+            find_critical_rod_insertion,
+            reconstruct_depleted_materials,
+            _inject_depleted_materials,
+        )
+    except ImportError as exc:
+        raise ImportError(
+            "run_critical_search_depletion_simulation requires mol_eol_analysis.py "
+            "to be importable from SCRIPT_DIR.  Check your path setup."
+        ) from exc
+
+    print(f"\n{'=' * 80}")
+    print("CRITICAL SEARCH DEPLETION SIMULATION")
+    print(f"{'=' * 80}")
+
+    os.makedirs(run_dir, exist_ok=True)
+
+    timesteps_days  = params["depletion_timesteps_days"]
+    n_steps         = len(timesteps_days)
+    thermal_power_W = params["thermal_power_MW"] * 1e6
+
+    if params["use_1/6_geometry"]:
+        operator_power_W = thermal_power_W / 6.0
+        print(f"1/6 geometry: scaling power {thermal_power_W/1e6:.1f} MW → "
+              f"{operator_power_W/1e6:.4f} MW (simulated geometry)")
+    else:
+        operator_power_W = thermal_power_W
+
+    # ------------------------------------------------------------------
+    # Build / load the reduced depletion chain once (reused every step)
+    # ------------------------------------------------------------------
+    full_chain_file = params["depletion_chain_file"]
+    if full_chain_file is None or not os.path.exists(full_chain_file):
+        raise FileNotFoundError(f"Depletion chain file not found: {full_chain_file}")
+
+    reduced_chain_file = os.path.join(run_dir, "chain_reduced.xml")
+
+    if params["use_reduced_chain_file"] and len(params.get("tracked_nuclides", [])) > 0:
+        chain_file = build_reduced_chain(
+            full_chain_file    = full_chain_file,
+            reduced_chain_file = reduced_chain_file,
+            tracked_nuclides   = params["tracked_nuclides"],
+        )
+    else:
+        print("\nUsing full depletion chain file.")
+        chain_file = full_chain_file
+
+    # ------------------------------------------------------------------
+    # Integrator selection
+    # ------------------------------------------------------------------
+    integrator_map = {
+        "PredictorIntegrator":  openmc.deplete.PredictorIntegrator,
+        "CECMIntegrator":       openmc.deplete.CECMIntegrator,
+        "CF4Integrator":        openmc.deplete.CF4Integrator,
+        "EPCRK4Integrator":     openmc.deplete.EPCRK4Integrator,
+        "LEQIIntegrator":       openmc.deplete.LEQIIntegrator,
+        "SICELIIntegrator":     openmc.deplete.SICELIIntegrator,
+        "SILEQIIntegrator":     openmc.deplete.SILEQIIntegrator,
+    }
+    IntegratorClass = integrator_map.get(
+        params["depletion_integrator"],
+        openmc.deplete.PredictorIntegrator,
+    )
+    print(f"Integrator: {IntegratorClass.__name__}")
+
+    # ------------------------------------------------------------------
+    # Criticality-search particle settings
+    # ------------------------------------------------------------------
+    k_tol       = params.get("critical_search_k_tol",     0.003)
+    max_iter    = params.get("critical_search_max_iter",   20)
+    cs_particles = params.get("critical_search_particles",
+                              max(50_000, params.get("particles", 100_000) // 2))
+    cs_batches  = params.get("critical_search_batches",   100)
+    cs_inactive = params.get("critical_search_inactive",  40)
+
+    print(f"\nCriticality search settings:")
+    print(f"  k tolerance  : {k_tol}")
+    print(f"  Max iters    : {max_iter}")
+    print(f"  Particles    : {cs_particles:,}")
+    print(f"  Batches      : {cs_batches} ({cs_inactive} inactive)")
+
+    # ------------------------------------------------------------------
+    # Per-step log — accumulated and saved after every step
+    # ------------------------------------------------------------------
+    step_log_path = os.path.join(run_dir, "critical_search_depletion_log.json")
+    step_log: list[dict] = []
+
+    # Accumulated depletion results HDF5 — built up step by step
+    depletion_h5 = os.path.join(run_dir, "depletion_results.h5")
+
+    # We need n_trisos from the first build_model call for the return value
+    n_trisos_global = 0
+
+    # Cumulative time (days) for logging
+    cumulative_days = 0.0
+
+    # ================================================================
+    # STEP 0: Build the initial model at fresh (BOL) conditions and
+    #         record material volumes / IDs in run_params.json.
+    #         This also writes the initial XML files to run_dir.
+    # ================================================================
+    print(f"\n{'─' * 70}")
+    print(f"  BOL model build (fresh fuel, step 0 / {n_steps})")
+    print(f"{'─' * 70}")
+
+    # Use rods fully withdrawn for the first build so we know the base
+    # geometry; the critical search will update the insertion each step.
+    bol_params = copy.deepcopy(params)
+    bol_params["bank_1_insertion"] = 0.0
+    bol_params["bank_2_insertion"] = 0.0
+    bol_params["bank_3_insertion"] = 0.0
+    bol_params["make_geometry_plots"] = params.get("make_geometry_plots", False)
+
+    model_bol, n_trisos_global, m_colors, fuel_clones_bol = build_model(
+        bol_params, run_dir
+    )
+
+    # Compute and save volumes / masses (mirrors run_depletion_simulation logic)
+    geometry_factor       = 6 if params["use_1/6_geometry"] else 1
+    poison_volume         = mats.b4c_poison.volume
+    total_poison_volume   = poison_volume * geometry_factor
+
+    seen_ids = set()
+    fuel_volume_simulated = 0.0
+    for ri in range(len(fuel_clones_bol)):
+        for ai in range(len(fuel_clones_bol[ri])):
+            mat = fuel_clones_bol[ri][ai]
+            if mat.id not in seen_ids:
+                seen_ids.add(mat.id)
+                fuel_volume_simulated += mat.volume
+    total_fuel_volume = fuel_volume_simulated * geometry_factor
+
+    uco_density_g_cm3 = params["kernel_density"] / 1000.0
+    u_mass_fraction   = 238.0 / 268.0
+    total_HM_mass_kg  = total_fuel_volume * uco_density_g_cm3 * u_mass_fraction / 1000.0
+
+    b4c_density_g_cm3 = params["B4C_density_poison"] / 1000.0
+    b10_enrichment    = params["B10_enrichment_poison"]
+    mass_10           = openmc.data.atomic_mass('B10')
+    mass_11           = openmc.data.atomic_mass('B11')
+    b10_mass_fraction = (b10_enrichment * mass_10) / (
+        b10_enrichment * mass_10 + (1.0 - b10_enrichment) * mass_11
+    )
+    total_B10_mass_kg = total_poison_volume * b4c_density_g_cm3 * b10_mass_fraction / 1000.0
+
+    print(f"\nFuel volume   (simulated): {fuel_volume_simulated:.4f} cm³")
+    print(f"Fuel volume   (full core): {total_fuel_volume:.4f} cm³")
+    print(f"Uranium mass  (full core): {total_HM_mass_kg:.2f} kg")
+    print(f"B4C poison    (simulated): {poison_volume:.4f} cm³")
+    print(f"B-10 mass     (full core): {total_B10_mass_kg:.4f} kg")
+
+    # Persist metadata to run_params.json
+    params_path  = os.path.join(run_dir, "run_params.json")
+    saved_params = json.load(open(params_path)) if os.path.exists(params_path) else {}
+    saved_params.update({
+        "n_trisos":                    n_trisos_global,
+        "use_homogenized_fuel":        params.get("use_homogenized_fuel", False),
+        "use_spatial_burnup":          params.get("use_spatial_burnup", True),
+        "poison_material_id":          mats.b4c_poison.id,
+        "fuel_volume_simulated_cm3":   fuel_volume_simulated,
+        "fuel_volume_full_core_cm3":   total_fuel_volume,
+        "total_HM_mass_kg":            total_HM_mass_kg,
+        "poison_volume_simulated_cm3": poison_volume,
+        "poison_volume_full_core_cm3": total_poison_volume,
+        "total_B10_mass_kg":           total_B10_mass_kg,
+        "fuel_mat_volumes": {
+            str(fuel_clones_bol[ri][ai].id): fuel_clones_bol[ri][ai].volume
+            for ri in range(len(fuel_clones_bol))
+            for ai in range(len(fuel_clones_bol[ri]))
+        },
+        "fuel_mat_ids": [
+            [fuel_clones_bol[ri][ai].id for ai in range(len(fuel_clones_bol[ri]))]
+            for ri in range(len(fuel_clones_bol))
+        ],
+    })
+    with open(params_path, "w") as f:
+        json.dump(saved_params, f, indent=2)
+
+    # Export XML before any geometry plotting — plot_geometry requires
+    # materials.xml / geometry.xml / settings.xml to exist on disk.
+    model_bol.export_to_xml()
+
+    if params.get("make_geometry_plots", False):
+        n_plot_threads = str(params.get("plot_threads", os.cpu_count() or 4))
+        old_omp = os.environ.get("OMP_NUM_THREADS")
+        os.environ["OMP_NUM_THREADS"] = n_plot_threads
+        try:
+            openmc.plot_geometry(output=False, cwd=run_dir)
+        finally:
+            if old_omp is None:
+                os.environ.pop("OMP_NUM_THREADS", None)
+            else:
+                os.environ["OMP_NUM_THREADS"] = old_omp
+
+    # ================================================================
+    # MAIN LOOP — one iteration per depletion timestep
+    # ================================================================
+    for step_idx, dt_days in enumerate(timesteps_days):
+
+        step_start_day = cumulative_days
+        step_end_day   = cumulative_days + dt_days
+
+        print(f"\n{'=' * 80}")
+        print(f"  TIMESTEP {step_idx + 1} / {n_steps}  "
+              f"[{step_start_day:.1f} d → {step_end_day:.1f} d  "
+              f"(Δt = {dt_days:.1f} d)]")
+        print(f"{'=' * 80}")
+
+        # ------------------------------------------------------------
+        # 1. Determine material state for this step
+        #    Step 0 → fresh fuel (BOL model already built above)
+        #    Step n → load depleted materials from depletion_results.h5
+        # ------------------------------------------------------------
+        if step_idx == 0:
+            # Fresh fuel — use the BOL fuel clones directly.
+            # We still need to run a critical search on fresh fuel.
+            depleted_for_search = None   # signals "use fresh fuel"
+            prev_results        = None
+        else:
+            # Reconstruct depleted compositions from the accumulated h5
+            print(f"\n  Loading depleted materials from step {step_idx} "
+                  f"(t = {step_start_day:.1f} d)...")
+            depleted_for_search, _, _, _ = reconstruct_depleted_materials(
+                run_dir, step_idx - 1   # 0-indexed; step_idx-1 is the last completed step
+            )
+            prev_results = openmc.deplete.Results(depletion_h5)
+
+        # ------------------------------------------------------------
+        # 2. Critical rod search at the current burnup state
+        # ------------------------------------------------------------
+        print(f"\n{'─' * 70}")
+        print(f"  CRITICAL ROD SEARCH — step {step_idx + 1} / {n_steps}  "
+              f"({step_start_day:.1f} d)")
+        print(f"{'─' * 70}")
+
+        # Build a lightweight params dict for the search iterations
+        search_params = copy.deepcopy(params)
+        search_params["total_batches"]       = cs_batches
+        search_params["inactive_batches"]    = cs_inactive
+        search_params["particles"]           = cs_particles
+        search_params["make_geometry_plots"] = False
+        search_params["use_mesh_tallies"]    = False
+        search_params["use_BeO_tallies"]     = False
+        search_params["use_leakage_tallies"] = False
+        search_params["use_global_tallies"]  = False
+
+        search_dir = os.path.join(
+            run_dir, f"critical_search_step{step_idx + 1:03d}_t{step_start_day:.0f}d"
+        )
+        os.makedirs(search_dir, exist_ok=True)
+
+        if depleted_for_search is None:
+            # BOL (step 0): fresh fuel compositions — no injection needed.
+            # An empty dict is passed so _inject_depleted_materials inside
+            # find_critical_rod_insertion is a no-op.
+            depleted_arg = {}
+        else:
+            # Steps > 0: depleted_for_search contains atom densities from the
+            # end of the previous timestep.  find_critical_rod_insertion passes
+            # this dict to _run_eigenvalue_with_depleted → _inject_depleted_materials
+            # BEFORE each trial eigenvalue solve, so every search iteration
+            # sees the correct burnup-state compositions.  The critical insertion
+            # found therefore reflects the actual reduced reactivity of the fuel
+            # at this point in the cycle, not BOL reactivity.
+            depleted_arg = depleted_for_search
+
+        crit_result = find_critical_rod_insertion(
+            params        = search_params,
+            depleted      = depleted_arg,
+            output_dir    = search_dir,
+            k_target      = 1.0,
+            k_tol         = k_tol,
+            max_iter      = max_iter,
+        )
+
+        critical_b1  = crit_result["critical_bank_1"]
+        critical_b2  = crit_result["critical_bank_2"]
+        critical_k   = crit_result["critical_keff"]
+        critical_std = crit_result["critical_keff_std"]
+        converged    = crit_result["converged"]
+        search_csv   = crit_result["csv_path"]   # inside search_dir
+
+        print(f"\n  Critical insertion found:")
+        print(f"    Bank 1 = {critical_b1:.4f}, Bank 2 = {critical_b2:.4f}")
+        print(f"    k_eff  = {critical_k:.5f} ± {critical_std:.5f}  "
+              f"({'converged' if converged else 'NOT CONVERGED'})")
+
+        # ------------------------------------------------------------
+        # Copy the search CSV to run_dir, then delete the entire
+        # search directory (all trial subdirs + their OpenMC output).
+        # The CSV is the only artifact we keep from the critical search.
+        # ------------------------------------------------------------
+        csv_dest = os.path.join(
+            run_dir,
+            f"critical_search_step{step_idx + 1:03d}_t{step_start_day:.0f}d.csv"
+        )
+        try:
+            shutil.copy2(search_csv, csv_dest)
+            print(f"    Search CSV saved -> {csv_dest}")
+        except Exception as e:
+            print(f"    WARNING: Could not copy search CSV: {e}")
+
+        try:
+            shutil.rmtree(search_dir)
+            print(f"    Search dir deleted: {search_dir}")
+        except Exception as e:
+            print(f"    WARNING: Could not delete search dir: {e}")
+
+        # ------------------------------------------------------------
+        # 3. Build the depletion model at the critical rod position
+        # ------------------------------------------------------------
+        depletion_params = copy.deepcopy(params)
+        depletion_params["bank_1_insertion"] = critical_b1
+        depletion_params["bank_2_insertion"] = critical_b2
+        depletion_params["bank_3_insertion"] = 0.0
+        depletion_params["make_geometry_plots"] = False
+
+        print(f"\n  Building depletion model at critical rod position...")
+        model_step, _, _, fuel_clones_step = build_model(depletion_params, run_dir)
+
+        # Inject depleted materials from the previous step (if not BOL)
+        if step_idx > 0 and depleted_for_search:
+            print(f"  Injecting depleted compositions into fuel clones...")
+            _inject_depleted_materials(
+                fuel_clones_step, depleted_for_search, model=model_step
+            )
+
+        model_step.export_to_xml()
+
+        # ------------------------------------------------------------
+        # 4. Run single-timestep depletion with prev_results chaining
+        # ------------------------------------------------------------
+        print(f"\n  Running depletion for Δt = {dt_days:.1f} d "
+              f"at bank_1 = {critical_b1:.4f}, bank_2 = {critical_b2:.4f}...")
+
+        operator = openmc.deplete.CoupledOperator(
+            model_step,
+            chain_file         = chain_file,
+            normalization_mode = "fission-q",
+            prev_results       = prev_results,
+        )
+
+        integrator = IntegratorClass(
+            operator,
+            [dt_days],
+            power          = operator_power_W,
+            timestep_units = "d",
+        )
+
+        integrator.integrate()
+
+        cumulative_days = step_end_day
+
+        # ------------------------------------------------------------
+        # 4b. Re-save fuel metadata to run_params.json
+        #
+        # build_model() calls os.chdir() internally, and each critical
+        # search trial also calls build_model() with a different cwd.
+        # This means save_params() inside build_model() may have
+        # overwritten run_dir/run_params.json with a bare params dict
+        # (no fuel_mat_ids / fuel_mat_volumes) by the time we get here.
+        # Re-writing it now guarantees reconstruct_depleted_materials()
+        # always finds the correct material IDs at the start of the
+        # next timestep's critical search.
+        # ------------------------------------------------------------
+        params_path = os.path.join(run_dir, "run_params.json")
+        saved_params = json.load(open(params_path)) if os.path.exists(params_path) else {}
+        saved_params.update({
+            "n_trisos":                    n_trisos_global,
+            "use_homogenized_fuel":        params.get("use_homogenized_fuel", False),
+            "use_spatial_burnup":          params.get("use_spatial_burnup", True),
+            "poison_material_id":          mats.b4c_poison.id,
+            "fuel_volume_simulated_cm3":   fuel_volume_simulated,
+            "fuel_volume_full_core_cm3":   total_fuel_volume,
+            "total_HM_mass_kg":            total_HM_mass_kg,
+            "poison_volume_simulated_cm3": poison_volume,
+            "poison_volume_full_core_cm3": total_poison_volume,
+            "total_B10_mass_kg":           total_B10_mass_kg,
+            "fuel_mat_volumes": {
+                str(fuel_clones_bol[ri][ai].id): fuel_clones_bol[ri][ai].volume
+                for ri in range(len(fuel_clones_bol))
+                for ai in range(len(fuel_clones_bol[ri]))
+            },
+            "fuel_mat_ids": [
+                [fuel_clones_bol[ri][ai].id for ai in range(len(fuel_clones_bol[ri]))]
+                for ri in range(len(fuel_clones_bol))
+            ],
+        })
+        os.chdir(run_dir)   # restore cwd after trial runs may have changed it
+        with open(params_path, "w") as f:
+            json.dump(saved_params, f, indent=2)
+
+        # ------------------------------------------------------------
+        # 5. Log this step's result
+        # ------------------------------------------------------------
+        step_entry = {
+            "step":              step_idx + 1,
+            "step_start_days":   step_start_day,
+            "step_end_days":     step_end_day,
+            "dt_days":           dt_days,
+            "bank_1_insertion":  critical_b1,
+            "bank_2_insertion":  critical_b2,
+            "critical_keff":     critical_k,
+            "critical_keff_std": critical_std,
+            "converged":         converged,
+            "search_csv":        csv_dest,   # search_dir has been deleted
+        }
+        step_log.append(step_entry)
+
+        with open(step_log_path, "w") as f:
+            json.dump(step_log, f, indent=2)
+
+        print(f"\n  ✓ Step {step_idx + 1} complete  "
+              f"[cumulative time: {cumulative_days:.1f} d]")
+        print(f"    Step log saved → {step_log_path}")
+
+    # ================================================================
+    # ALL STEPS COMPLETE
+    # ================================================================
+    print(f"\n{'=' * 80}")
+    print("CRITICAL SEARCH DEPLETION SIMULATION COMPLETE")
+    print(f"  Total steps:    {n_steps}")
+    print(f"  Total burnup:   {cumulative_days:.1f} days  "
+          f"({cumulative_days / 365.25:.2f} years)")
+    print(f"  Results HDF5:   {depletion_h5}")
+    print(f"  Step log:       {step_log_path}")
+    print(f"{'=' * 80}\n")
+
+    # Print rod insertion history summary
+    print(f"{'─' * 70}")
+    print(f"  {'Step':>5}  {'t_start (d)':>12}  {'t_end (d)':>10}  "
+          f"{'Bank 1':>8}  {'Bank 2':>8}  {'k_eff':>10}  {'Conv':>6}")
+    print(f"{'─' * 70}")
+    for entry in step_log:
+        print(f"  {entry['step']:>5}  {entry['step_start_days']:>12.1f}  "
+              f"{entry['step_end_days']:>10.1f}  "
+              f"{entry['bank_1_insertion']:>8.4f}  "
+              f"{entry['bank_2_insertion']:>8.4f}  "
+              f"{entry['critical_keff']:>10.5f}  "
+              f"{'Yes' if entry['converged'] else 'NO':>6}")
+    print(f"{'─' * 70}\n")
+
+    return n_trisos_global
+
+# ====================================================================================================
 # POST-PROCESSING FUNCTIONS
 # ====================================================================================================
 
@@ -1763,7 +2277,9 @@ if __name__ == "__main__":
     os.makedirs(OUTPUT_BASE, exist_ok=True)
     
     BASE_DIR = os.path.join(OUTPUT_BASE, run_name)
-    
+
+    # ----- Run Parametric Study -----
+
     if cfg.params["study_execution_mode"] == "ParametricStudy":
         BASE_DIR = os.path.join(OUTPUT_BASE, run_name + "_ParametricStudy" + f"_{cfg.params['parametric_param']}")
         os.makedirs(BASE_DIR, exist_ok=True)
@@ -1800,6 +2316,8 @@ if __name__ == "__main__":
         print(f"Results Directory: {BASE_DIR}")
         print(f"{'='*80}\n")
     
+    # ----- Run RPT Calibration -----
+
     elif cfg.params["study_execution_mode"] == "RPTCalibration":
         BASE_DIR_RPT = os.path.join(OUTPUT_BASE, run_name + "_RPTCalibration")
         os.makedirs(BASE_DIR_RPT, exist_ok=True)
@@ -1814,6 +2332,8 @@ if __name__ == "__main__":
         print("RPT CALIBRATION COMPLETE")
         print(f"Results Directory: {BASE_DIR_RPT}")
         print(f"{'='*80}\n")
+
+    # ----- Run Reactivity Study -----
 
     elif cfg.params["study_execution_mode"] == "ReactivityStudy":
         from reactivity_coefficients import run_reactivity_coefficients
@@ -1830,6 +2350,8 @@ if __name__ == "__main__":
             run_simulation_fn = run_simulation,
             run_post_processing_fn = run_post_processing if cfg.params["run_post_processing"] else None,
         )
+    
+    # ----- Run Depletion Study -----
 
     elif cfg.params["study_execution_mode"] == "DepletionStudy":
 
@@ -1856,6 +2378,26 @@ if __name__ == "__main__":
         print(f"Results Directory: {BASE_DIR}")
         print(f"{'='*80}")
 
+    # ----- Run Critical Search Depletion Study -----
+
+    elif cfg.params["study_execution_mode"] == "CSDepletionStudy":
+        BASE_DIR = os.path.join(OUTPUT_BASE, run_name + "_CSDepletion")
+        
+        print(f"\n{'='*80}")
+        print("CRITICAL SEARCH DEPLETION RUN MODE")
+        print(f"Run directory: {BASE_DIR}")
+        print(f"{'='*80}")
+
+        n_trisos = run_critical_search_depletion_simulation(cfg.params, BASE_DIR)
+
+        # Run depletion-specific post-processing
+        run_depletion_post_processing(BASE_DIR, cfg.params)
+
+        print(f"\n{'='*80}")
+        print("CRITICAL SEARCH DEPLETION RUN COMPLETE")
+        print(f"Results Directory: {BASE_DIR}")
+        print(f"{'='*80}")
+
     # ----- Run Single Study -----   
 
     elif cfg.params["study_execution_mode"] == "SingleStudy":
@@ -1875,6 +2417,8 @@ if __name__ == "__main__":
         print("SIMULATION COMPLETE")
         print(f"Results Directory: {BASE_DIR}")
         print(f"{'='*80}\n")
+    
+    # ----- Run Critical Rod Search -----
 
     elif cfg.params["study_execution_mode"] == "CriticalSearch":
         # ── BOL critical rod search ──────────────────────────────────────────
@@ -1884,10 +2428,8 @@ if __name__ == "__main__":
         #   Stage 1b: if k > 1, fix bank 1 = 1.0, binary search bank 2 in [0,1]
         #   Bank 3 is unused and always left at 0.
 
-        import glob as _glob
-
         def _read_keff_cs(run_dir):
-            sp_files = sorted(_glob.glob(os.path.join(run_dir, "statepoint.*.h5")))
+            sp_files = sorted(glob.glob(os.path.join(run_dir, "statepoint.*.h5")))
             if not sp_files:
                 raise FileNotFoundError(f"No statepoint in {run_dir}")
             sp = openmc.StatePoint(sp_files[-1])

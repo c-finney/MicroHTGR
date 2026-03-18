@@ -308,7 +308,6 @@ def _assert_new_dir(run_dir, depletion_run_dir=None):
                     "Please use a separate output_base_dir."
                 )
 
-
 def _run_eigenvalue_with_depleted(params, depleted, run_dir, depletion_run_dir=None):
     """
     Build model, inject depleted materials, export XML, and run OpenMC.
@@ -373,6 +372,85 @@ def _read_keff(run_dir):
 # STEP 3 — CRITICAL ROD INSERTION BINARY SEARCH
 # ============================================================================
 
+# ---------------------------------------------------------------------------
+# CSV writer — one row per trial eigenvalue solve
+# ---------------------------------------------------------------------------
+ 
+def _write_search_csv(csv_path, rows):
+    """
+    Write / overwrite the search summary CSV.
+ 
+    rows : list of dicts with keys:
+        stage, iteration, bank_1, bank_2, keff, keff_std, delta_pcm
+    """
+    fieldnames = ["stage", "iteration", "bank_1", "bank_2",
+                  "keff", "keff_std", "delta_pcm"]
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+ 
+ 
+# ---------------------------------------------------------------------------
+# Interpolation search (regula falsi + Illinois anti-stagnation)
+# ---------------------------------------------------------------------------
+#
+# k_eff is MONOTONICALLY DECREASING with insertion fraction:
+#   insertion = 0  ->  rods out  ->  highest k_eff
+#   insertion = 1  ->  rods in   ->  lowest  k_eff
+#
+# We maintain a bracket [lo, hi] where k(lo) > k_target > k(hi).
+# The Illinois variant prevents one-sided stagnation by halving the
+# "old" endpoint's k value when the new point falls on the same side
+# twice in a row.
+#
+# Fallback to bisection if the interpolated point is outside the bracket
+# (can happen with noisy Monte Carlo k_eff estimates).
+ 
+def _interpolation_next(lo, k_lo, hi, k_hi, k_target,
+                        last_side, same_side_count):
+    """
+    Compute the next trial insertion using regula falsi + Illinois.
+ 
+    Parameters
+    ----------
+    lo, hi           : float  -- current bracket endpoints (insertion fractions)
+    k_lo, k_hi       : float  -- k_eff at lo and hi respectively
+    k_target         : float  -- target k_eff (typically 1.0)
+    last_side        : str or None -- "lo" or "hi", which side the last new
+                       point landed on
+    same_side_count  : int    -- how many consecutive times the new point has
+                       been on the same side
+ 
+    Returns
+    -------
+    mid : float  -- next trial insertion fraction
+    """
+    dk = k_lo - k_hi
+    if abs(dk) < 1e-9:
+        # Degenerate bracket -- fall back to bisection
+        return 0.5 * (lo + hi)
+ 
+    # Illinois: if the new point has been on the same side twice in a row,
+    # halve the "stale" endpoint's effective k to force the interpolation
+    # to move further into the bracket.
+    k_lo_eff = k_lo
+    k_hi_eff = k_hi
+    if same_side_count >= 2:
+        if last_side == "hi":
+            k_lo_eff = k_target + 0.5 * (k_lo - k_target)
+        else:
+            k_hi_eff = k_target + 0.5 * (k_hi - k_target)
+ 
+    mid = lo + (k_target - k_lo_eff) / (k_hi_eff - k_lo_eff) * (hi - lo)
+ 
+    # Safety clamp -- noisy MC k_eff can push interpolation outside bracket
+    margin = 0.02 * (hi - lo)
+    mid = max(lo + margin, min(hi - margin, mid))
+ 
+    return mid
+ 
+ 
 def find_critical_rod_insertion(
     params,
     depleted,
@@ -383,171 +461,279 @@ def find_critical_rod_insertion(
     max_iter=20,
 ):
     """
-    Two-stage binary search to find the critical rod position.
-
-    Stage 0 — quick check: run with bank 1 fully inserted, bank 2 at 0.
-    Stage 1 — binary search:
+    Two-stage interpolation search to find the critical rod insertion fraction.
+ 
+    Stage 0 -- quick check: run with bank 1 fully inserted, bank 2 at 0.
+    Stage 1 -- interpolation search:
       * If stage-0 k < k_target: search bank 1 in [0, 1] with bank 2 = 0.
       * If stage-0 k > k_target: fix bank 1 = 1.0, search bank 2 in [0, 1].
-    Bank 3 is always left at 0 (unused legacy bank).
-
+    Bank 3 is always left at 0.
+ 
+    Trial run subdirectories are left intact inside output_dir.
+    Cleanup (shutil.rmtree of the entire output_dir) is the caller's
+    responsibility so that the CSV can be copied out first.
+ 
     Parameters
     ----------
     params : dict
-        Simulation parameters (will be deep-copied; original is unchanged).
+        Simulation parameters (deep-copied; original unchanged).
     depleted : dict
         Depleted material compositions from reconstruct_depleted_materials().
+        Pass {} for BOL (no injection).
     output_dir : str
-        Root directory for binary-search sub-runs.
+        Root directory for the search.  Sub-directories for trial runs are
+        created here.  The CSV is written here as critical_search_summary.csv.
+    depletion_run_dir : str or None
+        Passed to _assert_new_dir to prevent overwriting the depletion directory.
     k_target : float
-        Target k_eff (default 1.0 — critical).
+        Target k_eff (default 1.0).
     k_tol : float
         Convergence tolerance on |k_eff - k_target|.
     max_iter : int
-        Maximum binary-search iterations per stage.
-
+        Maximum interpolation-search iterations per stage.
+ 
     Returns
     -------
     dict with keys:
-        critical_bank_1    : float   — final bank 1 insertion fraction
-        critical_bank_2    : float   — final bank 2 insertion fraction
-        critical_insertion : float   — insertion of the active search bank
-        search_stage       : str     — "bank1" or "bank2"
+        critical_bank_1    : float
+        critical_bank_2    : float
+        critical_insertion : float   -- insertion of the active search bank
+        search_stage       : str     -- "bank1" or "bank2"
         critical_keff      : float
         critical_keff_std  : float
-        critical_run_dir   : str
+        critical_run_dir   : str     -- directory of the converged run
         converged          : bool
         n_iterations       : int
+        csv_path           : str     -- path to the summary CSV inside output_dir
     """
     os.makedirs(output_dir, exist_ok=True)
-
+    csv_path = os.path.join(output_dir, "critical_search_summary.csv")
+    csv_rows = []   # accumulated across both stages
+ 
     print(f"\n{'─' * 70}")
-    print(f"  CRITICAL ROD SEARCH — 2-stage (bank 1 then bank 2)")
-    print(f"  Target: k_eff = {k_target:.4f}  ±  {k_tol:.4f}")
+    print(f"  CRITICAL ROD SEARCH  (interpolation + Illinois fallback)")
+    print(f"  Target: k_eff = {k_target:.4f}  +/-  {k_tol:.4f}")
+    print(f"  Output: {output_dir}")
     print(f"{'─' * 70}")
-
-    # Reduced particle settings for all search iterations
+ 
+    # Reduced-particle settings for all search iterations
     search_params = copy.deepcopy(params)
-    search_params["total_batches"]       = 100
-    search_params["inactive_batches"]    = 40
-    search_params["particles"]           = max(50_000, params.get("particles", 100_000) // 2)
+    search_params["total_batches"]       = params.get("critical_search_batches",  100)
+    search_params["inactive_batches"]    = params.get("critical_search_inactive",  40)
+    search_params["particles"]           = params.get(
+        "critical_search_particles",
+        max(50_000, params.get("particles", 100_000) // 2)
+    )
     search_params["make_geometry_plots"] = False
     search_params["use_mesh_tallies"]    = False
     search_params["use_BeO_tallies"]     = False
     search_params["use_leakage_tallies"] = False
     search_params["use_global_tallies"]  = False
-
-    # ── Stage 0: bank 1 fully inserted, bank 2 out ──────────────────────────
-    stage0_params = copy.deepcopy(search_params)
-    stage0_params["bank_1_insertion"] = 1.0
-    stage0_params["bank_2_insertion"] = 0.0
-    stage0_params["bank_3_insertion"] = 0.0
-    stage0_dir = os.path.join(output_dir, "stage0_bank1_full_bank2_out")
-
+ 
+    def _run_trial(stage_label, iteration, b1, b2, trial_dir):
+        """Build, run, read k_eff.  Returns (keff, keff_std).
+        Trial directory is left on disk -- caller cleans up the whole tree."""
+        p = copy.deepcopy(search_params)
+        p["bank_1_insertion"] = b1
+        p["bank_2_insertion"] = b2
+        p["bank_3_insertion"] = 0.0
+ 
+        _run_eigenvalue_with_depleted(p, depleted, trial_dir,
+                                      depletion_run_dir=depletion_run_dir)
+        k, k_std = _read_keff(trial_dir)
+ 
+        csv_rows.append({
+            "stage":     stage_label,
+            "iteration": iteration,
+            "bank_1":    round(b1,    6),
+            "bank_2":    round(b2,    6),
+            "keff":      round(k,     6),
+            "keff_std":  round(k_std, 6),
+            "delta_pcm": round((k - k_target) * 1e5, 1),
+        })
+        # Overwrite CSV after every trial so a partial run is still readable
+        _write_search_csv(csv_path, csv_rows)
+ 
+        return k, k_std
+ 
+    # ── Stage 0: bank 1 fully inserted, bank 2 out ─────────────────────────
+    s0_dir = os.path.join(output_dir, "stage0")
     print(f"\n  Stage 0: bank 1 = 1.0, bank 2 = 0.0")
-    _run_eigenvalue_with_depleted(stage0_params, depleted, stage0_dir,
-                                  depletion_run_dir=depletion_run_dir)
-    k0, k0_std = _read_keff(stage0_dir)
-    print(f"  k_eff = {k0:.5f} ± {k0_std:.5f}   "
-          f"(Δ = {(k0 - k_target)*1e5:+.0f} pcm)")
-
+    k0, k0_std = _run_trial("stage0", 0, b1=1.0, b2=0.0, trial_dir=s0_dir)
+    print(f"  k_eff = {k0:.5f} +/- {k0_std:.5f}   "
+          f"(delta = {(k0 - k_target)*1e5:+.0f} pcm)")
+ 
     if abs(k0 - k_target) < k_tol:
-        print(f"\n  ✓ Converged at stage 0: bank 1 = 1.0, bank 2 = 0.0")
+        print(f"\n  Converged at stage 0: bank 1 = 1.0, bank 2 = 0.0")
+        print(f"  CSV summary -> {csv_path}")
         return {
-            "critical_bank_1":   1.0,
-            "critical_bank_2":   0.0,
+            "critical_bank_1":    1.0,
+            "critical_bank_2":    0.0,
             "critical_insertion": 1.0,
-            "search_stage":      "bank1",
-            "critical_keff":     k0,
-            "critical_keff_std": k0_std,
-            "critical_run_dir":  stage0_dir,
-            "converged":         True,
-            "n_iterations":      1,
+            "search_stage":       "bank1",
+            "critical_keff":      k0,
+            "critical_keff_std":  k0_std,
+            "critical_run_dir":   s0_dir,
+            "converged":          True,
+            "n_iterations":       1,
+            "csv_path":           csv_path,
         }
-
-    # ── Stage 1: choose which bank to search ────────────────────────────────
+ 
+    # ── Stage 1: choose which bank to search ───────────────────────────────
     if k0 < k_target:
-        # Subcritical even with bank 1 fully inserted → search bank 1 in [0,1]
         active_bank  = "bank_1"
-        fixed_b1     = None     # will be set per iteration
         fixed_b2     = 0.0
         search_stage = "bank1"
-        print(f"\n  k < 1 with bank 1 full → binary search on bank 1 (bank 2 = 0.0)")
+        print(f"\n  k < k_target with bank 1 full -> interpolation search on "
+              f"bank 1  (bank 2 = 0.0)")
+        # Need k at insertion=0 to open the high-k end of the bracket
+        lo_dir = os.path.join(output_dir, "stage1_iter00_b1_0.0000")
+        print(f"\n  Iter  0: bank_1 = 0.0000  [bracketing rods-out end]")
+        k_at_0, k_at_0_std = _run_trial(search_stage, 0,
+                                         b1=0.0, b2=fixed_b2,
+                                         trial_dir=lo_dir)
+        print(f"         k_eff = {k_at_0:.5f} +/- {k_at_0_std:.5f}   "
+              f"(delta = {(k_at_0 - k_target)*1e5:+.0f} pcm)")
+ 
+        if k_at_0 < k_target:
+            print(f"\n  WARNING: k_eff < k_target with all rods withdrawn. "
+                  f"Core is subcritical. Returning rods-out result.")
+            print(f"  CSV summary -> {csv_path}")
+            return {
+                "critical_bank_1":    0.0,
+                "critical_bank_2":    0.0,
+                "critical_insertion": 0.0,
+                "search_stage":       search_stage,
+                "critical_keff":      k_at_0,
+                "critical_keff_std":  k_at_0_std,
+                "critical_run_dir":   lo_dir,
+                "converged":          False,
+                "n_iterations":       2,
+                "csv_path":           csv_path,
+            }
+ 
+        lo, k_lo   = 0.0, k_at_0   # high k side (rods out)
+        hi, k_hi   = 1.0, k0       # low  k side (rods in)
+        iter_offset = 1
+ 
     else:
-        # Supercritical with bank 1 fully inserted → fix bank 1, search bank 2
         active_bank  = "bank_2"
         fixed_b1     = 1.0
-        fixed_b2     = None     # will be set per iteration
         search_stage = "bank2"
-        print(f"\n  k > 1 with bank 1 full → binary search on bank 2 (bank 1 = 1.0)")
-
-    lo, hi = 0.0, 1.0
-    best_dir = None
-    best_ins = None
-    best_k   = None
-    best_std = None
-    converged = False
-
+        print(f"\n  k > k_target with bank 1 full -> interpolation search on "
+              f"bank 2  (bank 1 = 1.0)")
+        # Need k at bank_2=1 to open the low-k end of the bracket
+        hi_dir = os.path.join(output_dir, "stage1_iter00_b2_1.0000")
+        print(f"\n  Iter  0: bank_2 = 1.0000  [bracketing all-rods-in end]")
+        k_at_1, k_at_1_std = _run_trial(search_stage, 0,
+                                          b1=fixed_b1, b2=1.0,
+                                          trial_dir=hi_dir)
+        print(f"         k_eff = {k_at_1:.5f} +/- {k_at_1_std:.5f}   "
+              f"(delta = {(k_at_1 - k_target)*1e5:+.0f} pcm)")
+ 
+        if k_at_1 > k_target:
+            print(f"\n  WARNING: k_eff > k_target with all rods inserted. "
+                  f"Cannot suppress to k_target. Returning all-rods-in result.")
+            print(f"  CSV summary -> {csv_path}")
+            return {
+                "critical_bank_1":    1.0,
+                "critical_bank_2":    1.0,
+                "critical_insertion": 1.0,
+                "search_stage":       search_stage,
+                "critical_keff":      k_at_1,
+                "critical_keff_std":  k_at_1_std,
+                "critical_run_dir":   hi_dir,
+                "converged":          False,
+                "n_iterations":       2,
+                "csv_path":           csv_path,
+            }
+ 
+        lo, k_lo   = 0.0, k0      # high k side (bank_2 out)
+        hi, k_hi   = 1.0, k_at_1  # low  k side (bank_2 in)
+        iter_offset = 1
+ 
+    # ── Interpolation search loop ───────────────────────────────────────────
+    best_dir        = None
+    best_ins        = None
+    best_k          = None
+    best_std        = None
+    converged       = False
+    last_side       = None
+    same_side_count = 0
+ 
     for i in range(max_iter):
-        mid = 0.5 * (lo + hi)
-        iter_params = copy.deepcopy(search_params)
-        iter_params["bank_3_insertion"] = 0.0
+        iter_num = i + iter_offset
+ 
+        mid = _interpolation_next(lo, k_lo, hi, k_hi, k_target,
+                                  last_side, same_side_count)
+ 
         if active_bank == "bank_1":
-            iter_params["bank_1_insertion"] = mid
-            iter_params["bank_2_insertion"] = fixed_b2
+            b1_trial, b2_trial = mid, fixed_b2
+            label_suffix = f"b1_{mid:.4f}"
         else:
-            iter_params["bank_1_insertion"] = fixed_b1
-            iter_params["bank_2_insertion"] = mid
-
-        case_dir = os.path.join(output_dir,
-                                f"search_{search_stage}_iter{i+1:02d}_ins{mid:.4f}")
-        print(f"\n  Iter {i+1:2d}: {active_bank} = {mid:.4f}  [{lo:.4f}, {hi:.4f}]")
-
-        _run_eigenvalue_with_depleted(iter_params, depleted, case_dir,
-                                      depletion_run_dir=depletion_run_dir)
-        k, k_std = _read_keff(case_dir)
-        print(f"         k_eff = {k:.5f} ± {k_std:.5f}   "
-              f"(Δ = {(k - k_target)*1e5:+.0f} pcm)")
-
+            b1_trial, b2_trial = fixed_b1, mid
+            label_suffix = f"b2_{mid:.4f}"
+ 
+        trial_dir = os.path.join(output_dir,
+                                 f"stage1_iter{iter_num:02d}_{label_suffix}")
+ 
+        print(f"\n  Iter {iter_num:2d}: {active_bank} = {mid:.4f}  "
+              f"[{lo:.4f}, {hi:.4f}]")
+        k, k_std = _run_trial(search_stage, iter_num,
+                              b1=b1_trial, b2=b2_trial,
+                              trial_dir=trial_dir)
+        print(f"         k_eff = {k:.5f} +/- {k_std:.5f}   "
+              f"(delta = {(k - k_target)*1e5:+.0f} pcm)")
+ 
         if best_k is None or abs(k - k_target) < abs(best_k - k_target):
             best_k   = k
             best_std = k_std
             best_ins = mid
-            best_dir = case_dir
-
+            best_dir = trial_dir
+ 
         if abs(k - k_target) < k_tol:
             converged = True
-            print(f"\n  ✓ Converged: {active_bank} = {mid:.4f}, "
-                  f"k = {k:.5f} ± {k_std:.5f}")
+            print(f"\n  Converged: {active_bank} = {mid:.4f}, "
+                  f"k = {k:.5f} +/- {k_std:.5f}")
             break
-
-        # k > target → more absorption needed → increase insertion
+ 
+        # k decreases with insertion:
+        #   k > k_target -> need more absorption -> raise lo
+        #   k < k_target -> need less absorption -> lower hi
         if k > k_target:
-            lo = mid
+            new_side = "lo"
+            same_side_count = same_side_count + 1 if last_side == "lo" else 1
+            lo, k_lo = mid, k
         else:
-            hi = mid
-
+            new_side = "hi"
+            same_side_count = same_side_count + 1 if last_side == "hi" else 1
+            hi, k_hi = mid, k
+ 
+        last_side = new_side
+ 
     if not converged:
         print(f"\n  WARNING: Did not converge in {max_iter} iterations.")
         print(f"  Best: {active_bank} = {best_ins:.4f}, k = {best_k:.5f}")
-
+ 
     if search_stage == "bank1":
         final_b1, final_b2 = best_ins, 0.0
     else:
         final_b1, final_b2 = 1.0, best_ins
-
+ 
+    print(f"\n  CSV summary -> {csv_path}")
+ 
     return {
-        "critical_bank_1":   final_b1,
-        "critical_bank_2":   final_b2,
+        "critical_bank_1":    final_b1,
+        "critical_bank_2":    final_b2,
         "critical_insertion": best_ins,
-        "search_stage":      search_stage,
-        "critical_keff":     best_k,
-        "critical_keff_std": best_std,
-        "critical_run_dir":  best_dir,
-        "converged":         converged,
-        "n_iterations":      i + 1,
+        "search_stage":       search_stage,
+        "critical_keff":      best_k,
+        "critical_keff_std":  best_std,
+        "critical_run_dir":   best_dir,
+        "converged":          converged,
+        "n_iterations":       i + 1 + iter_offset,
+        "csv_path":           csv_path,
     }
-
 
 # ============================================================================
 # STEP 4 — FULL-TALLY EIGENVALUE RUN WITH DEPLETED MATERIALS

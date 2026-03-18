@@ -124,115 +124,115 @@ beo.set_density('kg/m3', params["BeO_density"])
 
 materials += [fuel, buffer, pyc, sic, graphite, helium, b4c_poison, b4c_control, b4c_ss, incoloy800H, beo]
 
-# ====================================================================================================
-# HOMOGENIZED FUEL COMPACT
-# ====================================================================================================
+# # ====================================================================================================
+# # HOMOGENIZED FUEL COMPACT
+# # ====================================================================================================
 
-def make_homogenized_fuel_compact(
-    params: dict,
-    name: str = "HomogFuel"
-) -> openmc.Material:
-    """
-    Create a single homogenized material representing a TRISO fuel compact.
+# def make_homogenized_fuel_compact(
+#     params: dict,
+#     name: str = "HomogFuel"
+# ) -> openmc.Material:
+#     """
+#     Create a single homogenized material representing a TRISO fuel compact.
 
-    Volume-averages the fuel kernel, all five TRISO coating layers, and the
-    surrounding graphite matrix based on the TRISO packing fraction.  The
-    result is a single openmc.Material that can fill a plain cylindrical cell,
-    completely replacing the explicit TRISO lattice geometry.
+#     Volume-averages the fuel kernel, all five TRISO coating layers, and the
+#     surrounding graphite matrix based on the TRISO packing fraction.  The
+#     result is a single openmc.Material that can fill a plain cylindrical cell,
+#     completely replacing the explicit TRISO lattice geometry.
 
-    Physics notes
-    -------------
-    - Valid when the neutron mean free path >> TRISO diameter (~0.04 cm).
-      This holds for all HTGR thermal spectra.
-    - Resonance self-shielding within the kernel is slightly underestimated
-      (no explicit Dancoff factor).  Typical Δk vs. explicit TRISO:
-      50–200 pcm — acceptable for burnup / depletion studies.
-    - This is the standard approach used by VSOP, PEBBED, and Griffin for
-      production HTGR depletion calculations.
+#     Physics notes
+#     -------------
+#     - Valid when the neutron mean free path >> TRISO diameter (~0.04 cm).
+#       This holds for all HTGR thermal spectra.
+#     - Resonance self-shielding within the kernel is slightly underestimated
+#       (no explicit Dancoff factor).  Typical Δk vs. explicit TRISO:
+#       50–200 pcm — acceptable for burnup / depletion studies.
+#     - This is the standard approach used by VSOP, PEBBED, and Griffin for
+#       production HTGR depletion calculations.
 
-    Volume fraction breakdown
-    -------------------------
-    Each TRISO sphere occupies a volume fraction `pf` of the compact.
-    Within that sphere the layer volume fractions are:
+#     Volume fraction breakdown
+#     -------------------------
+#     Each TRISO sphere occupies a volume fraction `pf` of the compact.
+#     Within that sphere the layer volume fractions are:
 
-        vf_kernel = pf * (r_kernel / r_opyc)^3
-        vf_layer  = pf * (r_outer^3 - r_inner^3) / r_opyc^3   (for each shell)
-        vf_matrix = 1 - pf                                      (graphite outside spheres)
+#         vf_kernel = pf * (r_kernel / r_opyc)^3
+#         vf_layer  = pf * (r_outer^3 - r_inner^3) / r_opyc^3   (for each shell)
+#         vf_matrix = 1 - pf                                      (graphite outside spheres)
 
-    Args:
-        params (dict): Simulation parameters dictionary (same dict used everywhere)
-        name (str): Base name for the returned material
+#     Args:
+#         params (dict): Simulation parameters dictionary (same dict used everywhere)
+#         name (str): Base name for the returned material
 
-    Returns:
-        openmc.Material: Homogenized, depletable fuel compact material.
-    """
+#     Returns:
+#         openmc.Material: Homogenized, depletable fuel compact material.
+#     """
 
-    pf = params["triso_pf"]
+#     pf = params["triso_pf"]
 
-    r_k = params["kernel_radius"]
-    r_b = r_k + params["buffer_thickness"]
-    r_i = r_b + params["ipyc_thickness"]
-    r_s = r_i + params["sic_thickness"]
-    r_o = r_s + params["opyc_thickness"]
+#     r_k = params["kernel_radius"]
+#     r_b = r_k + params["buffer_thickness"]
+#     r_i = r_b + params["ipyc_thickness"]
+#     r_s = r_i + params["sic_thickness"]
+#     r_o = r_s + params["opyc_thickness"]
 
-    # Volume fractions of each region (relative to total compact volume)
-    # Computes the volume fraction of a spherical shell between r_in and r_out, scaled by packing fraction.
-    def shell_vf(r_out, r_in):
-        return pf * (r_out**3 - r_in**3) / r_o**3
+#     # Volume fractions of each region (relative to total compact volume)
+#     # Computes the volume fraction of a spherical shell between r_in and r_out, scaled by packing fraction.
+#     def shell_vf(r_out, r_in):
+#         return pf * (r_out**3 - r_in**3) / r_o**3
 
-    vf_kernel = pf * (r_k / r_o)**3
-    vf_buffer = shell_vf(r_b, r_k)
-    vf_ipyc   = shell_vf(r_i, r_b)
-    vf_sic    = shell_vf(r_s, r_i)
-    vf_opyc   = shell_vf(r_o, r_s)
-    vf_matrix = 1.0 - pf          # graphite matrix surrounding the spheres
+#     vf_kernel = pf * (r_k / r_o)**3
+#     vf_buffer = shell_vf(r_b, r_k)
+#     vf_ipyc   = shell_vf(r_i, r_b)
+#     vf_sic    = shell_vf(r_s, r_i)
+#     vf_opyc   = shell_vf(r_o, r_s)
+#     vf_matrix = 1.0 - pf          # graphite matrix surrounding the spheres
 
-    # Sanity check — all fractions must sum to 1
-    vf_total = vf_kernel + vf_buffer + vf_ipyc + vf_sic + vf_opyc + vf_matrix
-    assert abs(vf_total - 1.0) < 1e-9, (
-        f"Homogenized compact volume fractions sum to {vf_total:.10f}, expected 1.0"
-    )
+#     # Sanity check — all fractions must sum to 1
+#     vf_total = vf_kernel + vf_buffer + vf_ipyc + vf_sic + vf_opyc + vf_matrix
+#     assert abs(vf_total - 1.0) < 1e-9, (
+#         f"Homogenized compact volume fractions sum to {vf_total:.10f}, expected 1.0"
+#     )
 
-    # Build temporary constituent materials for mix_materials()
-    kernel_tmp = openmc.Material(name=f"{name}_kernel_tmp")
-    kernel_tmp.add_nuclide("U235", params["enrichment"])
-    kernel_tmp.add_nuclide("U238", 1.0 - params["enrichment"])
-    kernel_tmp.add_element("C", 1.0)
-    kernel_tmp.add_element("O", 0.50)
-    kernel_tmp.set_density("kg/m3", params["kernel_density"])
+#     # Build temporary constituent materials for mix_materials()
+#     kernel_tmp = openmc.Material(name=f"{name}_kernel_tmp")
+#     kernel_tmp.add_nuclide("U235", params["enrichment"])
+#     kernel_tmp.add_nuclide("U238", 1.0 - params["enrichment"])
+#     kernel_tmp.add_element("C", 1.0)
+#     kernel_tmp.add_element("O", 0.50)
+#     kernel_tmp.set_density("kg/m3", params["kernel_density"])
 
-    buffer_tmp = openmc.Material(name=f"{name}_buffer_tmp")
-    buffer_tmp.add_element("C", 1.0)
-    buffer_tmp.set_density("kg/m3", params["buffer_density"])
+#     buffer_tmp = openmc.Material(name=f"{name}_buffer_tmp")
+#     buffer_tmp.add_element("C", 1.0)
+#     buffer_tmp.set_density("kg/m3", params["buffer_density"])
 
-    pyc_tmp = openmc.Material(name=f"{name}_pyc_tmp")
-    pyc_tmp.add_element("C", 1.0)
-    pyc_tmp.set_density("kg/m3", params["pyc_density"])
+#     pyc_tmp = openmc.Material(name=f"{name}_pyc_tmp")
+#     pyc_tmp.add_element("C", 1.0)
+#     pyc_tmp.set_density("kg/m3", params["pyc_density"])
 
-    sic_tmp = openmc.Material(name=f"{name}_sic_tmp")
-    sic_tmp.add_element("Si", 1.0)
-    sic_tmp.add_element("C", 1.0)
-    sic_tmp.set_density("kg/m3", params["sic_density"])
+#     sic_tmp = openmc.Material(name=f"{name}_sic_tmp")
+#     sic_tmp.add_element("Si", 1.0)
+#     sic_tmp.add_element("C", 1.0)
+#     sic_tmp.set_density("kg/m3", params["sic_density"])
 
-    # Graphite matrix — same composition as the module-level graphite material
-    boron_mass_fraction = params["boron_ppm"] / 1e6
-    A_carbon = 12.011
-    A_boron  = 10.811
-    boron_atom_fraction = boron_mass_fraction * A_carbon / A_boron
-    matrix_tmp = openmc.Material(name=f"{name}_matrix_tmp")
-    matrix_tmp.add_element("C", 1.0 - boron_atom_fraction)
-    matrix_tmp.add_element("B", boron_atom_fraction)
-    matrix_tmp.set_density("kg/m3", params["matrix_density"])
+#     # Graphite matrix — same composition as the module-level graphite material
+#     boron_mass_fraction = params["boron_ppm"] / 1e6
+#     A_carbon = 12.011
+#     A_boron  = 10.811
+#     boron_atom_fraction = boron_mass_fraction * A_carbon / A_boron
+#     matrix_tmp = openmc.Material(name=f"{name}_matrix_tmp")
+#     matrix_tmp.add_element("C", 1.0 - boron_atom_fraction)
+#     matrix_tmp.add_element("B", boron_atom_fraction)
+#     matrix_tmp.set_density("kg/m3", params["matrix_density"])
 
-    # IPyC and OPyC use the same pyc material at the same density
-    homog = openmc.Material.mix_materials(
-        [kernel_tmp, buffer_tmp, pyc_tmp,   sic_tmp, pyc_tmp,   matrix_tmp],
-        [vf_kernel,  vf_buffer,  vf_ipyc,   vf_sic,  vf_opyc,   vf_matrix],
-        'vo',
-        name=name,
-    )
-    homog.depletable = True
-    return homog
+#     # IPyC and OPyC use the same pyc material at the same density
+#     homog = openmc.Material.mix_materials(
+#         [kernel_tmp, buffer_tmp, pyc_tmp,   sic_tmp, pyc_tmp,   matrix_tmp],
+#         [vf_kernel,  vf_buffer,  vf_ipyc,   vf_sic,  vf_opyc,   vf_matrix],
+#         'vo',
+#         name=name,
+#     )
+#     homog.depletable = True
+#     return homog
 
 def make_rpt_inner_material(
     params: dict,

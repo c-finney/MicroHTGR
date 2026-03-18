@@ -151,8 +151,8 @@ params = {
     "critical_search_max_iter": 20,
 
     # ----- Graphite Depletion -----
-    "deplete_graphite": True,                # Deplete graphite as a single lumped core-averaged material
-    "graphite_volume_particles": 10_000_000, # Stochastic volume calculation samples (auto-enabled when deplete_graphite=True)
+    "deplete_graphite": False,               # Deplete graphite as a single lumped core-averaged material
+    "graphite_volume_particles": 1_000_000, # Stochastic volume calculation samples (auto-enabled when deplete_graphite=True)
 
     # ----- Depletion Study Configuration -----
     "thermal_power_MW": 10.0,
@@ -239,16 +239,17 @@ params = {
     },
 
     # ----- Study Execution Mode Configuration -----
-    "study_execution_mode": "DepletionStudy",
+    "study_execution_mode": "CSDepletionStudy",
     # Study Execution Mode Options:
-    #    "SingleStudy"     — Singular steady state monte carlo simulation of specified core layout
-    #    "ParametricStudy" — Creates multiple steady state monte carlo simulations varying a single core parameter
-    #    "ReactivityStudy" — Calculates reactivity coefficients via multiple steady state monte carlo simulations and specified temperature perturbations
-    #    "CriticalSearch"  — Performs critical rod position search, first inserting bank 1 all the way and then inserting bank 2 until critical
-    #    "DepletionStudy"  — Performs depletion run on specified core layout using specified depletion timesteps
-    #    "RPTCalibration"  — Finds the RPT inner radius (rpt_radius) that matches explicit-TRISO k_eff.
-    #                        Runs one explicit-TRISO reference then scans rpt_calibration_n_points RPT models.
-    #                        After running, set rpt_radius in this file to the reported optimal value.
+    #    "SingleStudy"      — Singular steady state monte carlo simulation of specified core layout
+    #    "ParametricStudy"  — Creates multiple steady state monte carlo simulations varying a single core parameter
+    #    "ReactivityStudy"  — Calculates reactivity coefficients via multiple steady state monte carlo simulations and specified temperature perturbations
+    #    "CriticalSearch"   — Performs critical rod position search, first inserting bank 1 all the way and then inserting bank 2 until critical
+    #    "DepletionStudy"   — Performs depletion run on specified core layout using specified depletion timesteps
+    #    "CSDepletionStudy" — Performs depletion run on specified core layout moving control rods to obtain criticality at each depletion timestep
+    #    "RPTCalibration"   — Finds the RPT inner radius (rpt_radius) that matches explicit-TRISO k_eff.
+    #                         Runs one explicit-TRISO reference then scans rpt_calibration_n_points RPT models.
+    #                         After running, set rpt_radius in this file to the reported optimal value.
     "run_post_processing": True, # Note this controls individual study post-processing for ParametricStudy runs as parametric post-processing is always run
     "show_titles": True,
 }
