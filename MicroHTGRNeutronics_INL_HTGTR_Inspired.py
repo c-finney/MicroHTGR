@@ -134,12 +134,13 @@ def build_model(params, run_dir):
         run_dir: Directory for output files
 
     Returns:
-        tuple: (model, n_trisos, m_colors, fuel_clones)
-            - model:       openmc.model.Model ready to export or deplete
-            - n_trisos:    Number of TRISO particles per axial zone
-                           (0 when use_homogenized_fuel=True)
-            - m_colors:    Material color dictionary for plotting
-            - fuel_clones: list[list[openmc.Material]] — fuel_clones[ring][bax]
+        tuple: (model, n_trisos, m_colors, fuel_clones, poison_clones)
+            - model:         openmc.model.Model ready to export or deplete
+            - n_trisos:      Number of TRISO particles per axial zone
+                             (0 when use_homogenized_fuel=True)
+            - m_colors:      Material color dictionary for plotting
+            - fuel_clones:   list[list[openmc.Material]] — fuel_clones[ring][bax]
+            - poison_clones: list[list[openmc.Material]] — poison_clones[ring][bax]
     """
 
     os.makedirs(run_dir, exist_ok=True)
@@ -417,7 +418,10 @@ def build_model(params, run_dir):
                 for bax_idx in range(n_burnup_ax):
                     band_start   = bax_idx * zones_per_region
                     actual_zones = min(zones_per_region, n_ax - band_start)
-                    fuel_clones[ring_idx][bax_idx].volume = actual_zones * V_inner_per_zone
+                    clone = fuel_clones[ring_idx][bax_idx]
+                    clone.volume = actual_zones * V_inner_per_zone
+                    if actual_zones * V_inner_per_zone == 0:
+                        clone.depletable = False
         else:
             total_volume = 0.0
             for ring_idx, ring_def in enumerate(params["core_rings"]):
@@ -428,6 +432,8 @@ def build_model(params, run_dir):
                 actual_zones = min(zones_per_region, n_ax)
                 total_volume += actual_zones * V_inner_per_zone
             fuel_clones[0][0].volume = total_volume
+            if total_volume == 0:
+                fuel_clones[0][0].depletable = False
 
     else:
         if use_spatial_burnup:
@@ -437,7 +443,10 @@ def build_model(params, run_dir):
                 for bax_idx in range(n_burnup_ax):
                     band_start   = bax_idx * zones_per_region
                     actual_zones = min(zones_per_region, n_ax - band_start)
-                    fuel_clones[ring_idx][bax_idx].volume = actual_zones * V_per_zone
+                    clone = fuel_clones[ring_idx][bax_idx]
+                    clone.volume = actual_zones * V_per_zone
+                    if actual_zones * V_per_zone == 0:
+                        clone.depletable = False
         else:
             total_volume = 0.0
             for ring_idx, ring_def in enumerate(params["core_rings"]):
@@ -446,8 +455,43 @@ def build_model(params, run_dir):
                 actual_zones = min(zones_per_region, n_ax)
                 total_volume += actual_zones * V_per_zone
             fuel_clones[0][0].volume = total_volume
+            if total_volume == 0:
+                fuel_clones[0][0].depletable = False
 
-    # Set poison volume analytically
+    # ==================================================================
+    # CREATE BURNABLE POISON MATERIAL CLONES
+    # ==================================================================
+    # Mirrors the fuel_clones logic above: one B4C_Poison clone per
+    # (core ring × burnup band) so each radial/axial zone depletes
+    # independently.
+
+    if use_spatial_burnup:
+        poison_clones = []
+        for ring_idx in range(n_rings):
+            ring_poisons = []
+            for bax_idx in range(n_burnup_ax):
+                p = mats.b4c_poison.clone()
+                p.name = f"B4C_Poison_ring{ring_idx}_bax{bax_idx}"
+                p.depletable = True
+                ring_poisons.append(p)
+            poison_clones.append(ring_poisons)
+    else:
+        # Non-spatial: single shared poison material for the whole core
+        p_single = mats.b4c_poison.clone()
+        p_single.name = "B4C_Poison_global"
+        p_single.depletable = True
+        poison_clones = [[p_single] for _ in range(n_rings)]
+
+    # Expand to full axial-zone mapping (same pattern as ring_triso_lattices)
+    ring_poison_mats = {
+        ring_idx: {
+            ax_idx: poison_clones[ring_idx][ax_idx // zones_per_region]
+            for ax_idx in range(n_ax)
+        }
+        for ring_idx in range(n_rings)
+    }
+
+    # Set poison compact volumes analytically (per-clone, per-band)
     def _n_poison_compacts_for_code(code):
         if not code.startswith('f'):
             return 0
@@ -457,30 +501,47 @@ def build_model(params, run_dir):
             return 6
         return 0
 
-    n_poison_compacts = sum(
-        _n_poison_compacts_for_code(c)
-        for ring_def in params["core_rings"]
-        for c in ring_def
-    )
-    V_poison_column  = np.pi * params["compact_radius"]**2 * params["core_height"]
-    poison_volume    = n_poison_compacts * V_poison_column / geometry_factor
-    mats.b4c_poison.volume = poison_volume
+    V_poison_zone = np.pi * params["compact_radius"]**2 * axial_section_height
+
+    if use_spatial_burnup:
+        for ring_idx, ring_def in enumerate(params["core_rings"]):
+            n_pois = sum(_n_poison_compacts_for_code(c) for c in ring_def)
+            V_per_zone = n_pois * V_poison_zone / geometry_factor
+            for bax_idx in range(n_burnup_ax):
+                band_start   = bax_idx * zones_per_region
+                actual_zones = min(zones_per_region, n_ax - band_start)
+                clone = poison_clones[ring_idx][bax_idx]
+                clone.volume = actual_zones * V_per_zone
+                # Rings with no poison compacts get volume=0 — mark as non-depletable
+                # so OpenMC does not try to track them (avoids divide-by-zero crash)
+                if actual_zones * V_per_zone == 0:
+                    clone.depletable = False
+    else:
+        total_pois_vol = 0.0
+        for ring_def in params["core_rings"]:
+            n_pois = sum(_n_poison_compacts_for_code(c) for c in ring_def)
+            V_poison_column = np.pi * params["compact_radius"]**2 * params["core_height"]
+            total_pois_vol += n_pois * V_poison_column / geometry_factor
+        poison_clones[0][0].volume = total_pois_vol
+        if total_pois_vol == 0:
+            poison_clones[0][0].depletable = False
 
     # ==================================================================
     # CREATE ASSEMBLIES
     # ==================================================================
 
     assemblies, m_colors, bundle_pitch = asm.create_assembly_univs(
-        params             = params,
-        mats               = mats,
-        T_coolant_z        = T_coolant_z,
-        T_compact_z        = T_compact_z,
-        T_matrix_z         = T_matrix_z,
-        T_reflector_z      = T_reflector_z,
+        params              = params,
+        mats                = mats,
+        T_coolant_z         = T_coolant_z,
+        T_compact_z         = T_compact_z,
+        T_matrix_z          = T_matrix_z,
+        T_reflector_z       = T_reflector_z,
         ring_triso_lattices = ring_triso_lattices,
-        axial_coords       = axial_coords,
-        reactor_bottom     = reactor_bottom,
-        reactor_top        = reactor_top
+        ring_poison_mats    = ring_poison_mats,
+        axial_coords        = axial_coords,
+        reactor_bottom      = reactor_bottom,
+        reactor_top         = reactor_top
     )
 
     # ==================================================================
@@ -650,15 +711,19 @@ def build_model(params, run_dir):
     # GEOMETRY PLOT GENERATION
     # ==================================================================
 
-    # Assign plotting colors
+    # Assign plotting colors (skip zero-volume clones — not in materials.xml)
     for ring_fuels in fuel_clones:
         for f in ring_fuels:
-            m_colors[f] = 'palegreen'
+            if f.volume:
+                m_colors[f] = 'palegreen'
     m_colors[mats.buffer] = 'sandybrown'
     m_colors[mats.pyc] = 'orange'
     m_colors[mats.sic] = 'yellow'
     m_colors[mats.graphite] = 'darkblue'
-    m_colors[mats.b4c_poison] = 'purple'
+    for ring_pois in poison_clones:
+        for pmat in ring_pois:
+            if pmat.volume:
+                m_colors[pmat] = 'purple'
     m_colors[mats.b4c_ss] = 'orange'
     if params["bank_1_insertion"] > 0 or params["bank_2_insertion"] > 0 or params["bank_3_insertion"] > 0:
         m_colors[mats.b4c_control] = 'black'
@@ -880,6 +945,16 @@ def build_model(params, run_dir):
     elif params["use_BeO_tallies"]:
         print("\nWARNING: BeO flux tallies skipped — no BeO reflector was used.")
 
+    # ----- Zone Heating Tally (per-zone burnup via heating-local) -----
+    if use_spatial_burnup:
+        _zone_mats = [fc for ring in fuel_clones for fc in ring if fc.volume]
+        _zone_mat_filter = openmc.MaterialFilter(_zone_mats)
+        zone_heating_tally = openmc.Tally(name="zone_heating_local")
+        zone_heating_tally.filters = [_zone_mat_filter]
+        zone_heating_tally.scores = ["heating-local"]
+        tallies.append(zone_heating_tally)
+        print(f"\nZone heating tally added: {len(_zone_mats)} fuel zone materials")
+
     model.tallies = tallies
 
     # ==================================================================
@@ -914,10 +989,12 @@ def build_model(params, run_dir):
 
     model.settings = settings
 
-    # Exclude the base fuel template — only the depletable clones should be in the model
-    explicit_mats = [m for m in mats.materials if m is not mats.fuel]
+    # Exclude the base fuel and poison templates — only the depletable clones should be in the model
+    explicit_mats = [m for m in mats.materials if m is not mats.fuel and m is not mats.b4c_poison]
     for ring_fuels in fuel_clones:
-        explicit_mats.extend(ring_fuels)
+        explicit_mats.extend(f for f in ring_fuels if f.volume)
+    for ring_poisons in poison_clones:
+        explicit_mats.extend(p for p in ring_poisons if p.volume)
 
     # Homogenized fuel uses temporary constituent materials internally via
     # mix_materials(); those are not tracked separately and do not need to
@@ -928,24 +1005,27 @@ def build_model(params, run_dir):
         if plot.color_by == 'material':
             plot.colors = m_colors
 
-    return model, n_trisos, m_colors, fuel_clones
+    return model, n_trisos, m_colors, fuel_clones, poison_clones
 
 # ====================================================================================================
 # RPT CALIBRATION HELPERS
 # ====================================================================================================
 
 def _extract_keff(run_dir):
-    """
-    Read the final k_eff and its standard deviation from the statepoint in run_dir.
+    """Read the Combined k-effective and its std_dev from the statepoint in run_dir.
+
+    sp.keff reads the 'k_combined' HDF5 dataset — the combined (analog +
+    track-length + collision) estimator, identical to 'Combined k-effective'
+    in OpenMC terminal output.
 
     Returns:
         (k_eff_mean, k_eff_std): floats
     """
-    
     sp_files = sorted(glob.glob(os.path.join(run_dir, "statepoint.*.h5")))
     if not sp_files:
         raise FileNotFoundError(f"No statepoint file found in {run_dir}")
     sp = openmc.StatePoint(sp_files[-1])
+    # sp.keff == sp.k_combined (the 'k_combined' HDF5 dataset)
     return float(sp.keff.n), float(sp.keff.s)
 
 
@@ -1137,7 +1217,7 @@ def run_simulation(params, run_dir):
                   (0 when use_homogenized_fuel=True)
     """
 
-    model, n_trisos, m_colors, fuel_clones = build_model(params, run_dir)
+    model, n_trisos, m_colors, fuel_clones, poison_clones = build_model(params, run_dir)
     model.export_to_xml()
 
     if params.get("make_geometry_plots", False):
@@ -1152,10 +1232,8 @@ def run_simulation(params, run_dir):
             else:
                 os.environ["OMP_NUM_THREADS"] = old_omp
 
-    geometry_factor           = 6 if params["use_1/6_geometry"] else 1
-    poison_volume             = mats.b4c_poison.volume
-    total_poison_volume       = poison_volume * geometry_factor
-    
+    geometry_factor = 6 if params["use_1/6_geometry"] else 1
+
     # Deduplicate by material ID before summing
     # When use_spatial_burnup=False all rings share the same material object so we must not double-count it
     seen_ids = set()
@@ -1167,6 +1245,16 @@ def run_simulation(params, run_dir):
                 seen_ids.add(mat.id)
                 fuel_volume_simulated += mat.volume
     total_fuel_volume = fuel_volume_simulated * geometry_factor
+
+    seen_pids = set()
+    poison_volume_simulated = 0.0
+    for ri in range(len(poison_clones)):
+        for ai in range(len(poison_clones[ri])):
+            mat = poison_clones[ri][ai]
+            if mat.id not in seen_pids:
+                seen_pids.add(mat.id)
+                poison_volume_simulated += mat.volume
+    total_poison_volume = poison_volume_simulated * geometry_factor
 
     uco_density_g_cm3  = params["kernel_density"] / 1000.0
     u_mass_fraction    = 238.0 / 268.0
@@ -1184,7 +1272,7 @@ def run_simulation(params, run_dir):
     print(f"\nFuel volume   (simulated geometry): {fuel_volume_simulated:.4f} cm³")
     print(f"Fuel volume   (full core):          {total_fuel_volume:.4f} cm³")
     print(f"Uranium mass  (full core):          {total_HM_mass_kg:.2f} kg")
-    print(f"B4C poison    (simulated geometry): {poison_volume:.4f} cm³")
+    print(f"B4C poison    (simulated geometry): {poison_volume_simulated:.4f} cm³")
     print(f"B4C poison    (full core):          {total_poison_volume:.4f} cm³")
     print(f"B-10 mass     (full core):          {total_B10_mass_kg:.4f} kg")
 
@@ -1194,11 +1282,10 @@ def run_simulation(params, run_dir):
         'n_trisos':                    n_trisos,
         'use_homogenized_fuel':        params.get("use_homogenized_fuel", False),
         'use_spatial_burnup':          params.get("use_spatial_burnup", True),
-        'poison_material_id':          mats.b4c_poison.id,
         'fuel_volume_simulated_cm3':   fuel_volume_simulated,
         'fuel_volume_full_core_cm3':   total_fuel_volume,
         'total_HM_mass_kg':            total_HM_mass_kg,
-        'poison_volume_simulated_cm3': poison_volume,
+        'poison_volume_simulated_cm3': poison_volume_simulated,
         'poison_volume_full_core_cm3': total_poison_volume,
         'total_B10_mass_kg':           total_B10_mass_kg,
         'fuel_mat_volumes': {
@@ -1209,6 +1296,15 @@ def run_simulation(params, run_dir):
         'fuel_mat_ids': [
             [fuel_clones[ri][ai].id for ai in range(len(fuel_clones[ri]))]
             for ri in range(len(fuel_clones))
+        ],
+        'poison_mat_volumes': {
+            str(poison_clones[ri][ai].id): poison_clones[ri][ai].volume
+            for ri in range(len(poison_clones))
+            for ai in range(len(poison_clones[ri]))
+        },
+        'poison_mat_ids': [
+            [poison_clones[ri][ai].id for ai in range(len(poison_clones[ri]))]
+            for ri in range(len(poison_clones))
         ],
     })
     with open(params_path, 'w') as f:
@@ -1240,6 +1336,100 @@ def run_simulation(params, run_dir):
         raise RuntimeError(f"OpenMC failed with return code {return_code}")
 
     return n_trisos
+
+# ====================================================================================================
+# ZONE HEATING HELPER (per-zone burnup from heating-local tally)
+# ====================================================================================================
+
+def _read_zone_heating_entry(run_dir, fuel_mat_ids_2d):
+    """
+    Read the latest statepoint in run_dir and return a per-zone heating dict.
+
+    Returns a dict:
+        {
+          "H_zones": {"ring_bax": float, ...},  # eV/src per zone
+          "H_total": float                       # eV/src total model heating (from 'heating' tally)
+        }
+    or None on any failure.
+
+    H_total uses the global 'heating' tally (no material filter) so the zone
+    fractions account for gamma heating deposited in moderator/reflector.
+    Falls back to sum of zone values if the global tally is unavailable.
+    """
+    sp_files = sorted(glob.glob(os.path.join(run_dir, "statepoint.*.h5")))
+    if not sp_files:
+        return None
+    try:
+        sp = openmc.StatePoint(sp_files[-1])
+        zone_tally = sp.get_tally(name="zone_heating_local")
+        df = zone_tally.get_pandas_dataframe()
+
+        # Global heating (no filter) for normalisation denominator
+        try:
+            h_tally = sp.get_tally(name="heating")
+            H_total = float(h_tally.mean.flat[0])
+        except Exception:
+            H_total = None
+
+        H_zones   = {}
+        H_zone_sum = 0.0
+        for ring_idx, row in enumerate(fuel_mat_ids_2d):
+            for bax_idx, mat_id in enumerate(row):
+                key   = f"{ring_idx}_{bax_idx}"
+                rows  = df[df['material'] == mat_id]['mean'].values
+                H_z   = float(rows[0]) if len(rows) > 0 else 0.0
+                H_zones[key] = H_z
+                H_zone_sum  += H_z
+
+        if H_total is None or H_total <= 0:
+            H_total = H_zone_sum
+
+        return {"H_zones": H_zones, "H_total": H_total}
+
+    except Exception as e:
+        print(f"  WARNING: Could not read zone heating from statepoint: {e}")
+        return None
+
+
+def _append_zone_heating_step(run_dir, fuel_mat_ids_2d,
+                               step_idx, step_start_days, step_end_days):
+    """
+    Read zone heating from the latest statepoint and append an entry to
+    zone_heating_per_step.json in run_dir.
+
+    Called once per depletion step (CSDepletionStudy) or once after all
+    steps (DepletionStudy) immediately after integrator.integrate().
+    """
+    heating_file = os.path.join(run_dir, "zone_heating_per_step.json")
+
+    entry = _read_zone_heating_entry(run_dir, fuel_mat_ids_2d)
+    if entry is None:
+        print("  WARNING: zone heating not recorded for this step (no statepoint data).")
+        return
+
+    record = {
+        "step_idx":        step_idx,
+        "step_start_days": step_start_days,
+        "step_end_days":   step_end_days,
+        "dt_days":         step_end_days - step_start_days,
+        "H_total":         entry["H_total"],
+        "H_zones":         entry["H_zones"],
+    }
+
+    if os.path.exists(heating_file):
+        with open(heating_file) as f:
+            existing = json.load(f)
+    else:
+        existing = []
+
+    existing.append(record)
+    with open(heating_file, "w") as f:
+        json.dump(existing, f, indent=2)
+
+    print(f"  Zone heating recorded → zone_heating_per_step.json  "
+          f"(step {step_idx}, dt={record['dt_days']:.1f} d, "
+          f"H_total={entry['H_total']:.4e})")
+
 
 # ====================================================================================================
 # DEPLETION SIMULATION FUNCTION
@@ -1327,29 +1517,32 @@ def run_depletion_simulation(params, run_dir):
         with open(required_files["run_params.json"], 'r') as f:
             saved_params = json.load(f)
 
-        n_trisos      = saved_params["n_trisos"]
-        poison_mat_id = saved_params["poison_material_id"]
-        poison_volume = saved_params["poison_volume_simulated_cm3"]
+        n_trisos = saved_params["n_trisos"]
 
         fuel_mat_volumes = {
             int(k): v for k, v in saved_params.get("fuel_mat_volumes", {}).items()
+        }
+        poison_mat_volumes = {
+            int(k): v for k, v in saved_params.get("poison_mat_volumes", {}).items()
         }
 
         graphite_mat_id    = saved_params.get("graphite_material_id")
         graphite_vol_saved = saved_params.get("graphite_volume_simulated_cm3")
 
-        n_fuel_vols_set = 0
+        n_fuel_vols_set   = 0
+        n_poison_vols_set = 0
         for mat in materials:
             if mat.id in fuel_mat_volumes:
                 mat.volume = fuel_mat_volumes[mat.id]
                 n_fuel_vols_set += 1
-            elif mat.id == poison_mat_id:
-                mat.volume = poison_volume
-                print(f"Poison material (id={mat.id}): volume = {poison_volume:.4f} cm³")
+            elif mat.id in poison_mat_volumes:
+                mat.volume = poison_mat_volumes[mat.id]
+                n_poison_vols_set += 1
             elif graphite_mat_id is not None and mat.id == graphite_mat_id and graphite_vol_saved is not None:
                 mat.volume = graphite_vol_saved
                 print(f"Graphite material (id={mat.id}): volume = {graphite_vol_saved:.4f} cm³")
         print(f"Set volumes on {n_fuel_vols_set} fuel material clones from saved run_params.json")
+        print(f"Set volumes on {n_poison_vols_set} poison material clones from saved run_params.json")
 
         prev_results = openmc.deplete.Results(prev_h5)
         n_completed = len(prev_results) - 1
@@ -1387,7 +1580,7 @@ def run_depletion_simulation(params, run_dir):
         prev_results = None
         n_completed = 0
 
-        model, n_trisos, m_colors, fuel_clones = build_model(params, run_dir)
+        model, n_trisos, m_colors, fuel_clones, poison_clones = build_model(params, run_dir)
         model.export_to_xml()
 
         if params.get("make_geometry_plots", False):
@@ -1402,9 +1595,7 @@ def run_depletion_simulation(params, run_dir):
                 else:
                     os.environ["OMP_NUM_THREADS"] = old_omp
 
-        geometry_factor       = 6 if params["use_1/6_geometry"] else 1
-        poison_volume         = mats.b4c_poison.volume
-        total_poison_volume   = poison_volume * geometry_factor
+        geometry_factor = 6 if params["use_1/6_geometry"] else 1
 
         # Deduplicate by material ID before summing
         # When use_spatial_burnup=False all rings share the same material object so we must not double-count it
@@ -1417,6 +1608,16 @@ def run_depletion_simulation(params, run_dir):
                     seen_ids.add(mat.id)
                     fuel_volume_simulated += mat.volume
         total_fuel_volume = fuel_volume_simulated * geometry_factor
+
+        seen_pids = set()
+        poison_volume_simulated = 0.0
+        for ri in range(len(poison_clones)):
+            for ai in range(len(poison_clones[ri])):
+                mat = poison_clones[ri][ai]
+                if mat.id not in seen_pids:
+                    seen_pids.add(mat.id)
+                    poison_volume_simulated += mat.volume
+        total_poison_volume = poison_volume_simulated * geometry_factor
 
         uco_density_g_cm3  = params["kernel_density"] / 1000.0
         u_mass_fraction    = 238.0 / 268.0
@@ -1432,56 +1633,74 @@ def run_depletion_simulation(params, run_dir):
         total_B10_mass_kg  = total_poison_volume * b4c_density_g_cm3 * b10_mass_fraction / 1000.0
 
         # --- Stochastic volume calculation for graphite depletion ---
+        # This calculation is expensive and must only run once per study.
+        # If a previously computed volume is already saved in run_params.json
+        # (e.g. after a partial run or restart), load it directly.
         graphite_vol_simulated = None
         graphite_vol_full      = None
         if params.get("deplete_graphite", False):
-            n_vol_particles = params.get("graphite_volume_particles", 1_000_000)
-            core_r   = params["core_radius"]
-            refl_t   = params["reflector_thickness"]
-            core_h   = params["core_height"]
-            lower_left  = [-core_r, -core_r, -refl_t]
-            upper_right = [ core_r,  core_r,  core_h + refl_t]
+            _saved_g_vol = None
+            _rp_path_check = os.path.join(run_dir, "run_params.json")
+            if os.path.exists(_rp_path_check):
+                _rp_check = json.load(open(_rp_path_check))
+                _saved_g_vol = _rp_check.get("graphite_volume_simulated_cm3")
 
-            print(f"\nRunning stochastic volume calculation for graphite "
-                  f"({n_vol_particles:,} particles)...")
-            vol_calc = openmc.VolumeCalculation(
-                [mats.graphite], n_vol_particles, lower_left, upper_right
-            )
-            model.settings.volume_calculations = [vol_calc]
-            model.settings.export_to_xml()
-            openmc.calculate_volumes(output=True, cwd=run_dir)
+            if _saved_g_vol is not None:
+                graphite_vol_simulated = float(_saved_g_vol)
+                graphite_vol_full      = graphite_vol_simulated * geometry_factor
+                mats.graphite.volume   = graphite_vol_simulated
+                print(f"\nGraphite volume loaded from run_params.json (skipping stochastic calc): "
+                      f"{graphite_vol_simulated:.4f} cm³")
+            else:
+                n_vol_particles = params.get("graphite_volume_particles", 1_000_000)
+                core_r   = params["core_radius"]
+                refl_t   = params["reflector_thickness"]
+                core_h   = params["core_height"]
+                lower_left  = [-core_r, -core_r, -refl_t]
+                upper_right = [ core_r,  core_r,  core_h + refl_t]
 
-            vol_h5_path = os.path.join(run_dir, "volume_1.h5")
-            with h5py.File(vol_h5_path, 'r') as vf:
-                mat_id_str = str(mats.graphite.id)
-                mat_key = next(
-                    (k for k in vf.keys() if mat_id_str in k),
-                    None
+                print(f"\nRunning stochastic volume calculation for graphite "
+                      f"({n_vol_particles:,} particles)...")
+                vol_calc = openmc.VolumeCalculation(
+                    [mats.graphite], n_vol_particles, lower_left, upper_right
                 )
-                if mat_key is None:
-                    raise KeyError(
-                        f"Graphite material (id={mats.graphite.id}) not found in {vol_h5_path}. "
-                        f"Available keys: {list(vf.keys())}"
+                model.settings.volume_calculations = [vol_calc]
+                model.settings.export_to_xml()
+                openmc.calculate_volumes(output=True, cwd=run_dir)
+
+                vol_h5_path = os.path.join(run_dir, "volume_1.h5")
+                with h5py.File(vol_h5_path, 'r') as vf:
+                    mat_id_str = str(mats.graphite.id)
+                    mat_key = next(
+                        (k for k in vf.keys() if mat_id_str in k),
+                        None
                     )
-                graphite_vol_simulated = float(vf[mat_key]['volume'][0])
-            graphite_vol_full = graphite_vol_simulated * geometry_factor
-            mats.graphite.volume = graphite_vol_simulated
-            model.materials.export_to_xml()
+                    if mat_key is None:
+                        raise KeyError(
+                            f"Graphite material (id={mats.graphite.id}) not found in {vol_h5_path}. "
+                            f"Available keys: {list(vf.keys())}"
+                        )
+                    graphite_vol_simulated = float(vf[mat_key]['volume'][0])
+                graphite_vol_full = graphite_vol_simulated * geometry_factor
+                mats.graphite.volume = graphite_vol_simulated
+                model.materials.export_to_xml()
 
-            # Clear volume_calculations so they don't re-run during depletion
-            model.settings.volume_calculations = []
-            model.settings.export_to_xml()
+                # Clear volume_calculations so they don't re-run during depletion
+                model.settings.volume_calculations = []
+                model.settings.export_to_xml()
 
-            print(f"Graphite volume (simulated geometry): {graphite_vol_simulated:.4f} cm³")
-            print(f"Graphite volume (full core):          {graphite_vol_full:.4f} cm³")
+                print(f"Graphite volume (simulated geometry): {graphite_vol_simulated:.4f} cm³")
+                print(f"Graphite volume (full core):          {graphite_vol_full:.4f} cm³")
 
         print(f"\nFuel volume   (simulated geometry): {fuel_volume_simulated:.4f} cm³")
         print(f"Fuel volume   (full core):          {total_fuel_volume:.4f} cm³")
         print(f"Uranium mass  (full core):          {total_HM_mass_kg:.2f} kg")
         print(f"  ({len(params['core_rings'])} rings × {params['n_ax_zones']} axial zones, "
               f"{sum(len(r) for r in fuel_clones)} fuel material regions)")
-        print(f"B4C poison    (simulated geometry): {poison_volume:.4f} cm³")
+        print(f"B4C poison    (simulated geometry): {poison_volume_simulated:.4f} cm³")
         print(f"B4C poison    (full core):          {total_poison_volume:.4f} cm³")
+        print(f"  ({len(poison_clones)} rings × {len(poison_clones[0])} burnup bands, "
+              f"{sum(len(r) for r in poison_clones)} poison material regions)")
         print(f"B-10 mass     (full core):          {total_B10_mass_kg:.4f} kg")
 
         params["total_HM_mass_kg"]  = total_HM_mass_kg
@@ -1493,11 +1712,10 @@ def run_depletion_simulation(params, run_dir):
             'n_trisos':                    n_trisos,
             'use_homogenized_fuel':        params.get("use_homogenized_fuel", False),
             'use_spatial_burnup':          params.get("use_spatial_burnup", True),
-            'poison_material_id':          mats.b4c_poison.id,
             'fuel_volume_simulated_cm3':   fuel_volume_simulated,
             'fuel_volume_full_core_cm3':   total_fuel_volume,
             'total_HM_mass_kg':            total_HM_mass_kg,
-            'poison_volume_simulated_cm3': poison_volume,
+            'poison_volume_simulated_cm3': poison_volume_simulated,
             'poison_volume_full_core_cm3': total_poison_volume,
             'total_B10_mass_kg':           total_B10_mass_kg,
             'fuel_mat_volumes': {
@@ -1508,6 +1726,15 @@ def run_depletion_simulation(params, run_dir):
             'fuel_mat_ids': [
                 [fuel_clones[ri][ai].id for ai in range(len(fuel_clones[ri]))]
                 for ri in range(len(fuel_clones))
+            ],
+            'poison_mat_volumes': {
+                str(poison_clones[ri][ai].id): poison_clones[ri][ai].volume
+                for ri in range(len(poison_clones))
+                for ai in range(len(poison_clones[ri]))
+            },
+            'poison_mat_ids': [
+                [poison_clones[ri][ai].id for ai in range(len(poison_clones[ri]))]
+                for ri in range(len(poison_clones))
             ],
         })
         if params.get("deplete_graphite", False) and graphite_vol_simulated is not None:
@@ -1607,6 +1834,27 @@ def run_depletion_simulation(params, run_dir):
 
     integrator.integrate()
 
+    # Record zone heating fractions from the final statepoint.
+    # For multi-step DepletionStudy only the last step's statepoint survives;
+    # the postprocessing will apply those fractions uniformly across all steps.
+    if params.get("use_spatial_burnup", True):
+        if is_restart:
+            _fuel_ids_2d = saved_params.get("fuel_mat_ids", None)
+        else:
+            _fuel_ids_2d = [
+                [fuel_clones[ri][ai].id for ai in range(len(fuel_clones[ri]))]
+                for ri in range(len(fuel_clones))
+            ]
+        if _fuel_ids_2d is not None:
+            _total_days = sum(timesteps_days)
+            _append_zone_heating_step(
+                run_dir         = run_dir,
+                fuel_mat_ids_2d = _fuel_ids_2d,
+                step_idx        = len(timesteps_days) - 1,
+                step_start_days = _total_days - timesteps_days[-1],
+                step_end_days   = _total_days,
+            )
+
     print(f"\n{'=' * 80}")
     print("DEPLETION CALCULATION COMPLETE")
     print(f"{'=' * 80}\n")
@@ -1639,7 +1887,7 @@ def run_critical_search_depletion_simulation(params, run_dir):
 
     The function honours the same reduced-chain and power-scaling logic used
     by run_depletion_simulation() so it is a drop-in replacement for the
-    "CriticalSearchDepletion" study_execution_mode.
+    "CSDepletion" study_execution_mode.
 
     Parameters
     ----------
@@ -1755,8 +2003,8 @@ def run_critical_search_depletion_simulation(params, run_dir):
     max_iter    = params.get("critical_search_max_iter",   20)
     cs_particles = params.get("critical_search_particles",
                               max(50_000, params.get("particles", 100_000) // 2))
-    cs_batches  = params.get("critical_search_batches",   100)
-    cs_inactive = params.get("critical_search_inactive",  40)
+    cs_batches  = params.get("critical_search_batches",   50)
+    cs_inactive = params.get("critical_search_inactive",  25)
 
     print(f"\nCriticality search settings:")
     print(f"  k tolerance  : {k_tol}")
@@ -1796,14 +2044,12 @@ def run_critical_search_depletion_simulation(params, run_dir):
     bol_params["bank_3_insertion"] = 0.0
     bol_params["make_geometry_plots"] = params.get("make_geometry_plots", False)
 
-    model_bol, n_trisos_global, m_colors, fuel_clones_bol = build_model(
+    model_bol, n_trisos_global, m_colors, fuel_clones_bol, poison_clones_bol = build_model(
         bol_params, run_dir
     )
 
     # Compute and save volumes / masses (mirrors run_depletion_simulation logic)
-    geometry_factor       = 6 if params["use_1/6_geometry"] else 1
-    poison_volume         = mats.b4c_poison.volume
-    total_poison_volume   = poison_volume * geometry_factor
+    geometry_factor = 6 if params["use_1/6_geometry"] else 1
 
     seen_ids = set()
     fuel_volume_simulated = 0.0
@@ -1814,6 +2060,16 @@ def run_critical_search_depletion_simulation(params, run_dir):
                 seen_ids.add(mat.id)
                 fuel_volume_simulated += mat.volume
     total_fuel_volume = fuel_volume_simulated * geometry_factor
+
+    seen_pids = set()
+    poison_volume_simulated = 0.0
+    for ri in range(len(poison_clones_bol)):
+        for ai in range(len(poison_clones_bol[ri])):
+            mat = poison_clones_bol[ri][ai]
+            if mat.id not in seen_pids:
+                seen_pids.add(mat.id)
+                poison_volume_simulated += mat.volume
+    total_poison_volume = poison_volume_simulated * geometry_factor
 
     uco_density_g_cm3 = params["kernel_density"] / 1000.0
     u_mass_fraction   = 238.0 / 268.0
@@ -1828,10 +2084,74 @@ def run_critical_search_depletion_simulation(params, run_dir):
     )
     total_B10_mass_kg = total_poison_volume * b4c_density_g_cm3 * b10_mass_fraction / 1000.0
 
+    # Export XML now so materials.xml / geometry.xml / settings.xml exist on
+    # disk before calculate_volumes (and geometry plots) need them.
+    model_bol.export_to_xml()
+
+    # --- Stochastic volume calculation for graphite depletion ---
+    # Only runs once: if graphite_volume_simulated_cm3 is already in
+    # run_params.json (written by a prior run), load it and skip the
+    # expensive stochastic calculation.
+    graphite_vol_simulated = None
+    graphite_vol_full      = None
+    if params.get("deplete_graphite", False):
+        _saved_g_vol = None
+        _rp_path_check = os.path.join(run_dir, "run_params.json")
+        if os.path.exists(_rp_path_check):
+            _rp_check = json.load(open(_rp_path_check))
+            _saved_g_vol = _rp_check.get("graphite_volume_simulated_cm3")
+
+        if _saved_g_vol is not None:
+            graphite_vol_simulated = float(_saved_g_vol)
+            graphite_vol_full      = graphite_vol_simulated * geometry_factor
+            mats.graphite.volume   = graphite_vol_simulated
+            print(f"\nGraphite volume loaded from run_params.json (skipping stochastic calc): "
+                  f"{graphite_vol_simulated:.4f} cm³")
+        else:
+            n_vol_particles = params.get("graphite_volume_particles", 1_000_000)
+            core_r  = params["core_radius"]
+            refl_t  = params["reflector_thickness"]
+            core_h  = params["core_height"]
+            lower_left  = [-core_r, -core_r, -refl_t]
+            upper_right = [ core_r,  core_r,  core_h + refl_t]
+
+            print(f"\nRunning stochastic volume calculation for graphite "
+                  f"({n_vol_particles:,} particles)...")
+            vol_calc = openmc.VolumeCalculation(
+                [mats.graphite], n_vol_particles, lower_left, upper_right
+            )
+            model_bol.settings.volume_calculations = [vol_calc]
+            model_bol.settings.export_to_xml()
+            openmc.calculate_volumes(output=True, cwd=run_dir)
+
+            vol_h5_path = os.path.join(run_dir, "volume_1.h5")
+            with h5py.File(vol_h5_path, 'r') as vf:
+                mat_id_str = str(mats.graphite.id)
+                mat_key = next(
+                    (k for k in vf.keys() if mat_id_str in k), None
+                )
+                if mat_key is None:
+                    raise KeyError(
+                        f"Graphite material (id={mats.graphite.id}) not found in {vol_h5_path}. "
+                        f"Available keys: {list(vf.keys())}"
+                    )
+                graphite_vol_simulated = float(vf[mat_key]['volume'][0])
+            graphite_vol_full = graphite_vol_simulated * geometry_factor
+            mats.graphite.volume = graphite_vol_simulated
+            model_bol.materials.export_to_xml()
+
+            # Clear volume_calculations so they don't re-run during depletion
+            model_bol.settings.volume_calculations = []
+            model_bol.settings.export_to_xml()
+
+            print(f"Graphite volume (simulated geometry): {graphite_vol_simulated:.4f} cm³")
+            print(f"Graphite volume (full core):          {graphite_vol_full:.4f} cm³")
+
     print(f"\nFuel volume   (simulated): {fuel_volume_simulated:.4f} cm³")
     print(f"Fuel volume   (full core): {total_fuel_volume:.4f} cm³")
     print(f"Uranium mass  (full core): {total_HM_mass_kg:.2f} kg")
-    print(f"B4C poison    (simulated): {poison_volume:.4f} cm³")
+    print(f"B4C poison    (simulated): {poison_volume_simulated:.4f} cm³")
+    print(f"B4C poison    (full core): {total_poison_volume:.4f} cm³")
     print(f"B-10 mass     (full core): {total_B10_mass_kg:.4f} kg")
 
     # Persist metadata to run_params.json
@@ -1841,11 +2161,10 @@ def run_critical_search_depletion_simulation(params, run_dir):
         "n_trisos":                    n_trisos_global,
         "use_homogenized_fuel":        params.get("use_homogenized_fuel", False),
         "use_spatial_burnup":          params.get("use_spatial_burnup", True),
-        "poison_material_id":          mats.b4c_poison.id,
         "fuel_volume_simulated_cm3":   fuel_volume_simulated,
         "fuel_volume_full_core_cm3":   total_fuel_volume,
         "total_HM_mass_kg":            total_HM_mass_kg,
-        "poison_volume_simulated_cm3": poison_volume,
+        "poison_volume_simulated_cm3": poison_volume_simulated,
         "poison_volume_full_core_cm3": total_poison_volume,
         "total_B10_mass_kg":           total_B10_mass_kg,
         "fuel_mat_volumes": {
@@ -1857,13 +2176,22 @@ def run_critical_search_depletion_simulation(params, run_dir):
             [fuel_clones_bol[ri][ai].id for ai in range(len(fuel_clones_bol[ri]))]
             for ri in range(len(fuel_clones_bol))
         ],
+        "poison_mat_volumes": {
+            str(poison_clones_bol[ri][ai].id): poison_clones_bol[ri][ai].volume
+            for ri in range(len(poison_clones_bol))
+            for ai in range(len(poison_clones_bol[ri]))
+        },
+        "poison_mat_ids": [
+            [poison_clones_bol[ri][ai].id for ai in range(len(poison_clones_bol[ri]))]
+            for ri in range(len(poison_clones_bol))
+        ],
     })
+    if params.get("deplete_graphite", False) and graphite_vol_simulated is not None:
+        saved_params["graphite_material_id"]          = mats.graphite.id
+        saved_params["graphite_volume_simulated_cm3"] = graphite_vol_simulated
+        saved_params["graphite_volume_full_core_cm3"] = graphite_vol_full
     with open(params_path, "w") as f:
         json.dump(saved_params, f, indent=2)
-
-    # Export XML before any geometry plotting — plot_geometry requires
-    # materials.xml / geometry.xml / settings.xml to exist on disk.
-    model_bol.export_to_xml()
 
     if params.get("make_geometry_plots", False):
         n_plot_threads = str(params.get("plot_threads", os.cpu_count() or 4))
@@ -1902,11 +2230,14 @@ def run_critical_search_depletion_simulation(params, run_dir):
             depleted_for_search = None   # signals "use fresh fuel"
             prev_results        = None
         else:
-            # Reconstruct depleted compositions from the accumulated h5
+            # Reconstruct depleted compositions from the accumulated chained h5.
+            # Results index convention: atoms[0] = initial state (t=0),
+            # atoms[i] = end of step i.  Pass step_idx to get the state
+            # at the end of the most recently completed depletion step.
             print(f"\n  Loading depleted materials from step {step_idx} "
                   f"(t = {step_start_day:.1f} d)...")
             depleted_for_search, _, _, _ = reconstruct_depleted_materials(
-                run_dir, step_idx - 1   # 0-indexed; step_idx-1 is the last completed step
+                run_dir, step_idx   # Results index: 0=initial, i=end of step i
             )
             prev_results = openmc.deplete.Results(depletion_h5)
 
@@ -1992,8 +2323,21 @@ def run_critical_search_depletion_simulation(params, run_dir):
             print(f"    WARNING: Could not delete search dir: {e}")
 
         # ------------------------------------------------------------
-        # 3. Build the depletion model at the critical rod position
+        # 3. Build the depletion model at the critical rod position.
+        #    Read run_params.json NOW — before build_model() overwrites it
+        #    — to capture the previous step's material IDs for the remap.
         # ------------------------------------------------------------
+        _params_path_remap = os.path.join(run_dir, "run_params.json")
+        if step_idx > 0 and os.path.exists(_params_path_remap):
+            _prev_saved       = json.load(open(_params_path_remap))
+            _prev_fuel_ids    = _prev_saved.get("fuel_mat_ids", [])
+            _prev_poison_ids  = _prev_saved.get("poison_mat_ids", [])
+            _prev_graphite_id = _prev_saved.get("graphite_material_id")
+        else:
+            _prev_fuel_ids    = []
+            _prev_poison_ids  = []
+            _prev_graphite_id = None
+
         depletion_params = copy.deepcopy(params)
         depletion_params["bank_1_insertion"] = critical_b1
         depletion_params["bank_2_insertion"] = critical_b2
@@ -2001,19 +2345,70 @@ def run_critical_search_depletion_simulation(params, run_dir):
         depletion_params["make_geometry_plots"] = False
 
         print(f"\n  Building depletion model at critical rod position...")
-        model_step, _, _, fuel_clones_step = build_model(depletion_params, run_dir)
+        model_step, _, _, fuel_clones_step, poison_clones_step = build_model(depletion_params, run_dir)
+
+        # Remap material IDs to match the previous step's IDs so that
+        # CoupledOperator(prev_results=...) / transfer_volumes can find them
+        # in the chained depletion_results.h5.  Each build_model() call
+        # auto-increments material IDs, so without this remap the IDs would
+        # differ from the previous step and transfer_volumes would KeyError.
+        # We set _id directly to avoid triggering OpenMC's used_ids warning
+        # (the old material objects still exist but are no longer used).
+        if step_idx > 0 and _prev_fuel_ids:
+            _remapped = set()
+            for _ri, _row in enumerate(fuel_clones_step):
+                for _ai, _mat in enumerate(_row):
+                    _tid = int(_prev_fuel_ids[_ri][_ai])
+                    if _tid not in _remapped:
+                        _mat._id = _tid
+                        _remapped.add(_tid)
+
+            if _prev_poison_ids:
+                _remapped_p = set()
+                for _ri, _prow in enumerate(_prev_poison_ids):
+                    for _ai, _tpid in enumerate(_prow):
+                        _tpid = int(_tpid)
+                        if _tpid not in _remapped_p and _ri < len(poison_clones_step) and _ai < len(poison_clones_step[_ri]):
+                            poison_clones_step[_ri][_ai]._id = _tpid
+                            _remapped_p.add(_tpid)
+
+            if _prev_graphite_id is not None and params.get("deplete_graphite", False):
+                _tgid = int(_prev_graphite_id)
+                for _mat in model_step.materials:
+                    if _mat.name == "Graphite":
+                        _mat._id = _tgid
+                        break
+
+        # Rebuild the zone_heating_local MaterialFilter after the ID remap.
+        # MaterialFilter stores IDs as integers at construction time (not live
+        # object references), so changing _mat._id above does NOT update the
+        # stored bins.  We must reconstruct the filter with the now-remapped IDs.
+        if step_idx > 0 and params.get("use_spatial_burnup", True):
+            try:
+                _zheat_tally = next(
+                    t for t in model_step.tallies if t.name == "zone_heating_local"
+                )
+                _remapped_zone_mats = [
+                    fc for row in fuel_clones_step for fc in row if fc.volume
+                ]
+                _zheat_tally.filters = [openmc.MaterialFilter(_remapped_zone_mats)]
+            except StopIteration:
+                pass
 
         # Inject depleted materials from the previous step (if not BOL)
         if step_idx > 0 and depleted_for_search:
-            print(f"  Injecting depleted compositions into fuel clones...")
+            print(f"  Injecting depleted compositions into fuel and poison clones...")
             _inject_depleted_materials(
-                fuel_clones_step, depleted_for_search, model=model_step
+                fuel_clones_step, depleted_for_search,
+                model=model_step, poison_clones=poison_clones_step
             )
 
         model_step.export_to_xml()
 
         # ------------------------------------------------------------
-        # 4. Run single-timestep depletion with prev_results chaining
+        # 4. Run single-timestep depletion with prev_results chaining.
+        #    The ID remap above ensures transfer_volumes can match every
+        #    depletable material in model_step to the previous h5 entry.
         # ------------------------------------------------------------
         print(f"\n  Running depletion for Δt = {dt_days:.1f} d "
               f"at bank_1 = {critical_b1:.4f}, bank_2 = {critical_b2:.4f}...")
@@ -2032,7 +2427,27 @@ def run_critical_search_depletion_simulation(params, run_dir):
             timestep_units = "d",
         )
 
-        integrator.integrate()
+        # write_rates=True is REQUIRED for multi-step depletion with prev_results.
+        # When the next step calls _get_bos_data_from_restart(), it reads
+        # prev_res[-1].rates from the h5.  Without write_rates=True the
+        # "reaction rates" dataset is never stored, so prev_res[-1].rates is
+        # all zeros → pure radioactive decay (zero-power Bateman integration).
+        integrator.integrate(write_rates=True)
+
+        # Record zone heating for this step immediately after integrate()
+        # while the statepoint is still the one for this step.
+        if params.get("use_spatial_burnup", True):
+            _cs_fuel_ids_2d = [
+                [fuel_clones_step[ri][ai].id for ai in range(len(fuel_clones_step[ri]))]
+                for ri in range(len(fuel_clones_step))
+            ]
+            _append_zone_heating_step(
+                run_dir         = run_dir,
+                fuel_mat_ids_2d = _cs_fuel_ids_2d,
+                step_idx        = step_idx,
+                step_start_days = step_start_day,
+                step_end_days   = step_end_day,
+            )
 
         cumulative_days = step_end_day
 
@@ -2050,27 +2465,50 @@ def run_critical_search_depletion_simulation(params, run_dir):
         # ------------------------------------------------------------
         params_path = os.path.join(run_dir, "run_params.json")
         saved_params = json.load(open(params_path)) if os.path.exists(params_path) else {}
+        _step_graphite = next(
+            (m for m in model_step.materials if m.name == "Graphite"),
+            mats.graphite,
+        )
+        # Compute poison volume for this step from the step's poison clones
+        _seen_sp = set()
+        _step_poison_vol = 0.0
+        for _ri in range(len(poison_clones_step)):
+            for _ai in range(len(poison_clones_step[_ri])):
+                _pm = poison_clones_step[_ri][_ai]
+                if _pm.id not in _seen_sp:
+                    _seen_sp.add(_pm.id)
+                    _step_poison_vol += (_pm.volume or 0.0)
         saved_params.update({
             "n_trisos":                    n_trisos_global,
             "use_homogenized_fuel":        params.get("use_homogenized_fuel", False),
             "use_spatial_burnup":          params.get("use_spatial_burnup", True),
-            "poison_material_id":          mats.b4c_poison.id,
             "fuel_volume_simulated_cm3":   fuel_volume_simulated,
             "fuel_volume_full_core_cm3":   total_fuel_volume,
             "total_HM_mass_kg":            total_HM_mass_kg,
-            "poison_volume_simulated_cm3": poison_volume,
-            "poison_volume_full_core_cm3": total_poison_volume,
+            "poison_volume_simulated_cm3": _step_poison_vol,
+            "poison_volume_full_core_cm3": _step_poison_vol * geometry_factor,
             "total_B10_mass_kg":           total_B10_mass_kg,
             "fuel_mat_volumes": {
-                str(fuel_clones_bol[ri][ai].id): fuel_clones_bol[ri][ai].volume
-                for ri in range(len(fuel_clones_bol))
-                for ai in range(len(fuel_clones_bol[ri]))
+                str(fuel_clones_step[ri][ai].id): fuel_clones_step[ri][ai].volume
+                for ri in range(len(fuel_clones_step))
+                for ai in range(len(fuel_clones_step[ri]))
             },
             "fuel_mat_ids": [
-                [fuel_clones_bol[ri][ai].id for ai in range(len(fuel_clones_bol[ri]))]
-                for ri in range(len(fuel_clones_bol))
+                [fuel_clones_step[ri][ai].id for ai in range(len(fuel_clones_step[ri]))]
+                for ri in range(len(fuel_clones_step))
+            ],
+            "poison_mat_volumes": {
+                str(poison_clones_step[ri][ai].id): poison_clones_step[ri][ai].volume
+                for ri in range(len(poison_clones_step))
+                for ai in range(len(poison_clones_step[ri]))
+            },
+            "poison_mat_ids": [
+                [poison_clones_step[ri][ai].id for ai in range(len(poison_clones_step[ri]))]
+                for ri in range(len(poison_clones_step))
             ],
         })
+        if params.get("deplete_graphite", False):
+            saved_params["graphite_material_id"] = _step_graphite.id
         os.chdir(run_dir)   # restore cwd after trial runs may have changed it
         with open(params_path, "w") as f:
             json.dump(saved_params, f, indent=2)
@@ -2078,6 +2516,13 @@ def run_critical_search_depletion_simulation(params, run_dir):
         # ------------------------------------------------------------
         # 5. Log this step's result
         # ------------------------------------------------------------
+        # operational = 0 only at end-of-cycle: both banks fully withdrawn (0)
+        # AND the core is still subcritical — rods can go no further out.
+        # Any other condition (rods still inserted, or keff≈1 within stats)
+        # is considered operational.
+        step_operational = 0 if (critical_b1 == 0.0 and critical_b2 == 0.0
+                                  and critical_k < 1.0) else 1
+
         step_entry = {
             "step":              step_idx + 1,
             "step_start_days":   step_start_day,
@@ -2088,6 +2533,7 @@ def run_critical_search_depletion_simulation(params, run_dir):
             "critical_keff":     critical_k,
             "critical_keff_std": critical_std,
             "converged":         converged,
+            "operational":       step_operational,
             "search_csv":        csv_dest,   # search_dir has been deleted
         }
         step_log.append(step_entry)
@@ -2443,9 +2889,9 @@ if __name__ == "__main__":
 
         # Reduced particle settings for fast search iterations
         sp = cfg.params.copy()
-        sp["total_batches"]       = 100
-        sp["inactive_batches"]    = 40
-        sp["particles"]           = max(50_000, cfg.params.get("particles", 100_000) // 2)
+        sp["total_batches"]       = 50
+        sp["inactive_batches"]    = 25
+        sp["particles"]           = 50_000
         sp["make_geometry_plots"] = False
         sp["use_mesh_tallies"]    = False
         sp["use_BeO_tallies"]     = False
@@ -2473,7 +2919,7 @@ if __name__ == "__main__":
         print(f"  k_eff = {k0:.5f} ± {k0_std:.5f}   "
               f"(Δ = {(k0 - 1.0)*1e5:+.0f} pcm)")
 
-        if abs(k0 - 1.0) < k_tol:
+        if abs(k0 - 1.0) < k_tol and k0 > 1.0:
             print(f"\n  ✓ Converged at stage 0: bank 1 = 1.0, bank 2 = 0.0")
             cs_result = {"critical_bank_1": 1.0, "critical_bank_2": 0.0,
                          "critical_keff": k0, "critical_keff_std": k0_std,
@@ -2518,7 +2964,7 @@ if __name__ == "__main__":
                 if best["k"] is None or abs(k - 1.0) < abs(best["k"] - 1.0):
                     best = {"ins": mid, "k": k, "std": k_std, "dir": it_dir}
 
-                if abs(k - 1.0) < k_tol:
+                if abs(k - 1.0) < k_tol and k > 1:
                     converged = True
                     print(f"\n  ✓ Converged: {active_bank} = {mid:.4f}, "
                           f"k = {k:.5f} ± {k_std:.5f}")

@@ -231,113 +231,145 @@ def _extract_nuclide_inventories_multi(results, mat_ids, nuclide_list, label, sy
     return nuclide_data
 
 # ====================================================================================================
-# PEAK BURNUP EXTRACTION (spatial burnup)
+# HEATING-TALLY BURNUP IN MWd/MtU (spatial burnup — primary method)
 # ====================================================================================================
 
-def extract_peak_burnup(results, fuel_mat_ids_2d, fuel_mat_volumes,
-                        time_days, burnup_MWd_per_MtU,
-                        symmetry_factor=1):
+def extract_min_max_burnup_MWdMtU(run_dir, fuel_mat_ids_2d, fuel_mat_volumes,
+                                   time_days, thermal_power_MW,
+                                   total_HM_mass_kg, fuel_volume_full_core_cm3,
+                                   symmetry_factor=1):
     """
-    Compute per-zone and peak burnup at every depletion timestep.
+    Compute per-zone min/max/avg burnup in MWd/MtU from zone_heating_per_step.json.
 
-    Method
-    ------
-    Uses U-235 fractional depletion as a proxy for local burnup:
+    Physics
+    -------
+    For each recorded depletion step s:
+        BU_z[s] = P_total_MW * (H_z[s] / H_total[s]) * dt[s] * 1000 / M_HM_z_full_kg
 
-        f_zone[t]  = (N_U235_zone_0 - N_U235_zone[t]) / N_U235_zone_0
-        f_core[t]  = (N_U235_core_0 - N_U235_core[t]) / N_U235_core_0
+    Cumulative per-zone burnup at each timestep t is the running sum of
+    BU_z over all recorded steps up to and including t.
 
-    Peak burnup:
-        BU_peak[t] = max_zone(f_zone[t]) / f_core[t] * BU_avg[t]
-
-    where BU_avg[t] = total cumulative energy / total HM mass (from burnup_MWd_per_MtU).
+    For DepletionStudy (single-entry file), the fractions from the final
+    statepoint are applied uniformly to all timesteps.
 
     Parameters
     ----------
-    results             : openmc.deplete.Results
-    fuel_mat_ids_2d     : list[list[int]] — [ring][axial_band] material IDs
-    fuel_mat_volumes    : dict str(mat_id) -> float (cm3, simulated geometry)
-    time_days           : np.ndarray  shape (n_steps,)
-    burnup_MWd_per_MtU  : np.ndarray or None — core-average burnup per step
-    symmetry_factor     : int (6 for 1/6 wedge, 1 for full core)
+    run_dir                   : str — directory containing zone_heating_per_step.json
+    fuel_mat_ids_2d           : list[list[int]] — [ring][axial_band] material IDs
+    fuel_mat_volumes          : dict str(mat_id) -> float (cm3, simulated geometry)
+    time_days                 : np.ndarray  shape (n_steps,)
+    thermal_power_MW          : float — full-core thermal power (MW)
+    total_HM_mass_kg          : float — full-core HM mass (kg)
+    fuel_volume_full_core_cm3 : float — full-core fuel volume (cm3)
+    symmetry_factor           : int (6 for 1/6 wedge, 1 for full core)
 
     Returns
     -------
-    dict with keys:
-        'zone_burnup_fraction'  : (n_rings, n_bands, n_steps) array — f_zone[t]
-        'zone_labels'           : list of "(ring, band)" strings
-        'peak_burnup_MWd_MtU'  : (n_steps,) array — peak zone burnup
-        'peak_zone'             : (n_steps,) int array — flat zone index of peak
-        'avg_burnup_MWd_MtU'   : (n_steps,) array — same as burnup_MWd_per_MtU
-    None if burnup_MWd_per_MtU is not available or fuel_mat_ids_2d is missing.
+    dict or None:
+        'zone_burnup_fraction'  : (n_rings, n_bands, n_steps) array — zone/avg ratio
+        'zone_labels'           : list of "ring{r}_band{b}" strings
+        'peak_burnup_MWd_MtU'  : (n_steps,) array
+        'peak_zone'             : (n_steps,) int array
+        'min_burnup_MWd_MtU'   : (n_steps,) array
+        'min_zone'              : (n_steps,) int array
+        'avg_burnup_MWd_MtU'   : (n_steps,) array
+        'method'                : "heating-local tally"
+    None if zone_heating_per_step.json is absent or empty.
     """
-
-    if burnup_MWd_per_MtU is None or fuel_mat_ids_2d is None:
+    heating_file = os.path.join(run_dir, "zone_heating_per_step.json")
+    if not os.path.exists(heating_file):
         return None
 
-    n_rings = len(fuel_mat_ids_2d)
-    n_bands = len(fuel_mat_ids_2d[0])
-    n_steps = len(time_days)
+    with open(heating_file) as f:
+        step_records = json.load(f)
 
-    # Collect per-zone U235 atom arrays
-    zone_u235 = np.zeros((n_rings, n_bands, n_steps))
-    zone_ok    = np.zeros((n_rings, n_bands), dtype=bool)
+    if not step_records:
+        return None
 
+    n_rings  = len(fuel_mat_ids_2d)
+    n_bands  = len(fuel_mat_ids_2d[0]) if n_rings > 0 else 0
+    n_steps  = len(time_days)
+    n_zones  = n_rings * n_bands
+
+    # Build per-zone HM mass (full core, kg)
+    fuel_volume_simulated = fuel_volume_full_core_cm3 / symmetry_factor
+    zone_HM_mass = np.zeros(n_zones)
     for ring_idx, row in enumerate(fuel_mat_ids_2d):
         for bax_idx, mat_id in enumerate(row):
-            mid_str = str(mat_id)
-            try:
-                _, atoms = results.get_atoms(mid_str, "U235")
-                atoms = np.array(atoms, dtype=float)
-                if len(atoms) >= n_steps:
-                    zone_u235[ring_idx, bax_idx, :] = atoms[:n_steps]
-                else:
-                    zone_u235[ring_idx, bax_idx, :len(atoms)] = atoms
-                zone_ok[ring_idx, bax_idx] = True
-            except Exception:
-                pass
+            flat_idx = ring_idx * n_bands + bax_idx
+            V_sim = fuel_mat_volumes.get(str(mat_id), 0.0)
+            if fuel_volume_simulated > 0:
+                zone_HM_mass[flat_idx] = total_HM_mass_kg * V_sim / fuel_volume_simulated
+            else:
+                zone_HM_mass[flat_idx] = 0.0
 
-    n_good = int(np.sum(zone_ok))
-    if n_good == 0:
-        print("  WARNING: No U235 data found for any zone — cannot compute peak burnup")
-        return None
-    print(f"  Peak burnup: using U235 depletion from {n_good}/{n_rings * n_bands} zones")
+    # Cumulative per-zone burnup per timestep — (n_zones, n_steps)
+    zone_bu = np.zeros((n_zones, n_steps))
 
-    # Core-total U235 (sum all zones, scaled to full core)
-    core_u235_total = zone_u235.sum(axis=(0, 1)) * symmetry_factor   # (n_steps,)
-    u235_core_0 = core_u235_total[0]
-    if u235_core_0 <= 0:
-        print("  WARNING: zero initial U235 — cannot compute peak burnup")
-        return None
+    # Map each recorded step to a time-index and accumulate
+    # Strategy:
+    #   Single-entry file  → apply to all steps uniformly
+    #   Multi-entry file   → match each record's step_end_days to the closest time_days entry
+    single_entry = (len(step_records) == 1)
 
-    f_core = (u235_core_0 - core_u235_total) / u235_core_0           # (n_steps,)
-    f_core = np.where(f_core <= 0, 1e-30, f_core)   # avoid divide-by-zero at step 0
+    def _step_contribution(record):
+        """Return per-zone burnup increment (MWd/MtU) for one recorded step."""
+        H_total = record.get("H_total", 0.0)
+        if H_total <= 0:
+            return np.zeros(n_zones)
+        dt      = record["dt_days"]
+        H_zones = record.get("H_zones", {})
+        contrib = np.zeros(n_zones)
+        for ring_idx, row in enumerate(fuel_mat_ids_2d):
+            for bax_idx, _ in enumerate(row):
+                flat_idx = ring_idx * n_bands + bax_idx
+                H_z = H_zones.get(f"{ring_idx}_{bax_idx}", 0.0)
+                M_HM = zone_HM_mass[flat_idx]
+                if M_HM > 0 and H_total > 0:
+                    contrib[flat_idx] = thermal_power_MW * (H_z / H_total) * dt * 1000.0 / M_HM
+        return contrib
 
-    # Per-zone fractional depletion
-    u235_zone_0 = zone_u235[:, :, 0]                                  # (n_rings, n_bands)
-    u235_zone_0_safe = np.where(u235_zone_0 > 0, u235_zone_0, np.nan)
+    if single_entry:
+        # Apply final-statepoint fractions uniformly: BU_z[t] = contrib_rate * t_cumulative
+        record     = step_records[0]
+        H_total    = record.get("H_total", 0.0)
+        H_zones    = record.get("H_zones", {})
+        for step_t in range(n_steps):
+            dt_t = time_days[step_t] - (time_days[step_t - 1] if step_t > 0 else 0.0)
+            for ring_idx, row in enumerate(fuel_mat_ids_2d):
+                for bax_idx, _ in enumerate(row):
+                    flat_idx = ring_idx * n_bands + bax_idx
+                    H_z = H_zones.get(f"{ring_idx}_{bax_idx}", 0.0)
+                    M_HM = zone_HM_mass[flat_idx]
+                    if M_HM > 0 and H_total > 0:
+                        incr = thermal_power_MW * (H_z / H_total) * dt_t * 1000.0 / M_HM
+                        zone_bu[flat_idx, step_t:] += incr
+    else:
+        # Multi-step: match each record's step_end_days to the nearest time_days bin
+        for record in step_records:
+            contrib = _step_contribution(record)
+            step_end = record["step_end_days"]
+            # Find the first time index where time_days >= step_end
+            t_idx = np.searchsorted(time_days, step_end, side='left')
+            t_idx = min(t_idx, n_steps - 1)
+            # Accumulate into this and all later timesteps
+            zone_bu[:, t_idx:] += contrib[:, np.newaxis]
 
-    # f_zone shape: (n_rings, n_bands, n_steps)
-    zone_burnup_frac = ((u235_zone_0_safe[:, :, np.newaxis] - zone_u235)
-                        / u235_zone_0_safe[:, :, np.newaxis])
-    zone_burnup_frac = np.nan_to_num(zone_burnup_frac, nan=0.0)
+    # Core-average burnup at each step from zone contributions (weighted by zone HM mass)
+    total_HM_zone_sum = zone_HM_mass.sum()
+    if total_HM_zone_sum > 0:
+        avg_bu = (zone_bu * zone_HM_mass[:, np.newaxis]).sum(axis=0) / total_HM_zone_sum
+    else:
+        avg_bu = np.zeros(n_steps)
 
-    # Relative burnup of each zone vs. core average
-    # BU_zone[t] = (f_zone[t] / f_core[t]) * BU_avg[t]
-    with np.errstate(invalid='ignore'):
-        zone_bu = (zone_burnup_frac / f_core[np.newaxis, np.newaxis, :]) * \
-                   burnup_MWd_per_MtU[np.newaxis, np.newaxis, :]
+    zone_ok = zone_HM_mass > 0
+    zone_bu_masked = zone_bu.copy()
+    zone_bu_masked[~zone_ok, :] = np.nan
 
-    # Peak: maximum over all zones at each timestep
-    zone_bu_flat = zone_bu.reshape(n_rings * n_bands, n_steps)        # flatten rings/bands
-    only_ok = zone_ok.flatten()
-    zone_bu_flat[~only_ok, :] = np.nan
-
-    peak_burnup = np.nanmax(zone_bu_flat, axis=0)                     # (n_steps,)
-    peak_zone_flat = np.nanargmax(zone_bu_flat, axis=0)               # flat index
-
-    min_burnup = np.nanmin(zone_bu_flat, axis=0)                      # (n_steps,)
-    min_zone_flat = np.nanargmin(zone_bu_flat, axis=0)                # flat index
+    peak_burnup    = np.nanmax(zone_bu_masked, axis=0)
+    min_burnup     = np.nanmin(zone_bu_masked, axis=0)
+    peak_zone_flat = np.nanargmax(zone_bu_masked, axis=0)
+    min_zone_flat  = np.nanargmin(zone_bu_masked, axis=0)
 
     zone_labels = [f"ring{r}_band{b}"
                    for r in range(n_rings)
@@ -345,21 +377,205 @@ def extract_peak_burnup(results, fuel_mat_ids_2d, fuel_mat_volumes,
 
     print(f"  Peak burnup at final step: "
           f"{peak_burnup[-1]:.0f} MWd/MtU  "
-          f"(avg = {burnup_MWd_per_MtU[-1]:.0f}  "
-          f"peaking = {peak_burnup[-1]/max(burnup_MWd_per_MtU[-1],1):.2f}×  "
+          f"(avg = {avg_bu[-1]:.0f}  "
+          f"peaking = {peak_burnup[-1]/max(avg_bu[-1], 1):.2f}×  "
           f"zone = {zone_labels[peak_zone_flat[-1]]})")
     print(f"  Min  burnup at final step: "
           f"{min_burnup[-1]:.0f} MWd/MtU  "
           f"zone = {zone_labels[min_zone_flat[-1]]}")
 
+    # Reshape zone_bu to (n_rings, n_bands, n_steps) for zone_burnup_fraction output
+    zone_bu_3d = zone_bu.reshape(n_rings, n_bands, n_steps)
+    with np.errstate(invalid='ignore'):
+        avg_safe     = np.where(avg_bu > 0, avg_bu, np.nan)
+        zone_bu_frac = zone_bu_3d / avg_safe[np.newaxis, np.newaxis, :]
+    zone_bu_frac = np.nan_to_num(zone_bu_frac, nan=0.0)
+
     return {
-        "zone_burnup_fraction": zone_burnup_frac,
+        "zone_burnup_fraction": zone_bu_frac,
         "zone_labels":          zone_labels,
         "peak_burnup_MWd_MtU": peak_burnup,
         "peak_zone":            peak_zone_flat,
         "min_burnup_MWd_MtU":  min_burnup,
         "min_zone":             min_zone_flat,
-        "avg_burnup_MWd_MtU":  burnup_MWd_per_MtU,
+        "avg_burnup_MWd_MtU":  avg_bu,
+        "method":               "heating-local tally",
+    }
+
+
+# ====================================================================================================
+# BURNUP IN %FIMA (spatial burnup — actinide inventory method)
+# ====================================================================================================
+
+# Comprehensive list of actinide nuclides to look for in depletion results.
+# Any nuclide absent from the chain is skipped silently.
+_ACTINIDE_NUCLIDES = [
+    # Thorium (Z=90)
+    "Th227", "Th228", "Th229", "Th230", "Th231", "Th232", "Th233", "Th234",
+    # Protactinium (Z=91)
+    "Pa231", "Pa232", "Pa233",
+    # Uranium (Z=92)
+    "U232", "U233", "U234", "U235", "U236", "U237", "U238", "U239", "U240",
+    # Neptunium (Z=93)
+    "Np235", "Np236", "Np237", "Np238", "Np239",
+    # Plutonium (Z=94)
+    "Pu236", "Pu237", "Pu238", "Pu239", "Pu240", "Pu241", "Pu242", "Pu243", "Pu244",
+    # Americium (Z=95)
+    "Am241", "Am242", "Am242_m1", "Am243", "Am244", "Am244_m1",
+    # Curium (Z=96)
+    "Cm241", "Cm242", "Cm243", "Cm244", "Cm245", "Cm246", "Cm247", "Cm248",
+    # Berkelium (Z=97)
+    "Bk249", "Bk250",
+    # Californium (Z=98)
+    "Cf249", "Cf250", "Cf251", "Cf252",
+]
+
+
+def extract_min_max_burnup_FIMA(results, fuel_mat_ids_2d,
+                                 time_days, burnup_MWd_per_MtU,
+                                 symmetry_factor=1):
+    """
+    Compute per-zone min/max/avg burnup in %FIMA from the actual actinide inventory.
+
+    Physics
+    -------
+    Every fission event removes one HM atom from the fuel (fission products are
+    not actinides).  Neutron capture + transmutation conserves HM atom count
+    (U238 → Pu239 etc. all stay in the HM pool).  Therefore:
+
+        %FIMA_z[t] = (N_HM_z[0] - N_HM_z[t]) / N_HM_z[0]  × 100%
+
+    where N_HM_z[t] = sum of all tracked actinide atoms in zone z at time t.
+    Isotopes are pulled from the depletion results for each specific burnup-zone
+    material, so min and max are per-zone quantities.
+
+    Core-average %FIMA is computed as an atom-weighted mean over all zones:
+
+        avg_%FIMA[t] = (ΣN_HM_z[0] - ΣN_HM_z[t]) / ΣN_HM_z[0]  × 100%
+
+    Parameters
+    ----------
+    results             : openmc.deplete.Results
+    fuel_mat_ids_2d     : list[list[int]] — [ring][axial_band] material IDs
+    time_days           : np.ndarray  shape (n_steps,)
+    burnup_MWd_per_MtU  : np.ndarray or None — core-average MWd/MtU for x-axis reference
+    symmetry_factor     : int (unused in ratio calc; kept for API consistency)
+
+    Returns
+    -------
+    dict or None:
+        'zone_burnup_fraction'  : (n_rings, n_bands, n_steps) — zone %FIMA / avg %FIMA
+        'zone_labels'           : list of "ring{r}_band{b}" strings
+        'peak_burnup_pct_FIMA'  : (n_steps,) array
+        'peak_zone'             : (n_steps,) int array
+        'min_burnup_pct_FIMA'   : (n_steps,) array
+        'min_zone'              : (n_steps,) int array
+        'avg_burnup_pct_FIMA'   : (n_steps,) array
+        'avg_burnup_MWd_MtU'    : (n_steps,) array or None — reference for x-axis
+        'tracked_actinides'     : list of str — nuclides found in at least one zone
+        'method'                : "actinide inventory"
+    None if no actinide data is found for any zone.
+    """
+
+    if fuel_mat_ids_2d is None:
+        return None
+
+    n_rings = len(fuel_mat_ids_2d)
+    n_bands = len(fuel_mat_ids_2d[0])
+    n_steps = len(time_days)
+
+    # zone_HM[r, b, t] = total actinide atom count in zone (r, b) at step t
+    zone_HM  = np.zeros((n_rings, n_bands, n_steps))
+    zone_ok  = np.zeros((n_rings, n_bands), dtype=bool)
+    found_nuclides = set()
+
+    for ring_idx, row in enumerate(fuel_mat_ids_2d):
+        for bax_idx, mat_id in enumerate(row):
+            mat_str   = str(mat_id)
+            zone_sum  = np.zeros(n_steps)
+            any_found = False
+            for nuc in _ACTINIDE_NUCLIDES:
+                try:
+                    _, atoms = results.get_atoms(mat_str, nuc)
+                    atoms = np.array(atoms, dtype=float)
+                    if len(atoms) >= n_steps:
+                        zone_sum += atoms[:n_steps]
+                    else:
+                        zone_sum[:len(atoms)] += atoms
+                    any_found = True
+                    found_nuclides.add(nuc)
+                except Exception:
+                    pass
+            if any_found and zone_sum[0] > 0:
+                zone_HM[ring_idx, bax_idx, :] = zone_sum
+                zone_ok[ring_idx, bax_idx]    = True
+
+    n_good = int(np.sum(zone_ok))
+    if n_good == 0:
+        print("  WARNING: No actinide data found for any zone — cannot compute %FIMA")
+        return None
+
+    print(f"  %FIMA burnup: actinide inventory from {n_good}/{n_rings * n_bands} zones")
+    print(f"  Tracked actinides found: {len(found_nuclides)}  "
+          f"({', '.join(sorted(found_nuclides)[:8])}"
+          f"{'...' if len(found_nuclides) > 8 else ''})")
+
+    # --- Per-zone %FIMA = (N_HM_z[0] - N_HM_z[t]) / N_HM_z[0] * 100 ---
+    N_HM_z0      = zone_HM[:, :, 0:1]                        # (n_rings, n_bands, 1)
+    N_HM_z0_safe = np.where(N_HM_z0 > 0, N_HM_z0, np.nan)
+
+    with np.errstate(invalid='ignore'):
+        zone_FIMA_3d = (N_HM_z0_safe - zone_HM) / N_HM_z0_safe * 100.0
+    zone_FIMA_3d = np.nan_to_num(zone_FIMA_3d, nan=0.0)
+
+    # --- Core-average %FIMA (atom-weighted across all zones in simulated geometry) ---
+    N_HM_core_0 = zone_HM[:, :, 0][zone_ok].sum()
+    if N_HM_core_0 <= 0:
+        print("  WARNING: zero initial HM atoms in core — cannot compute avg %FIMA")
+        return None
+    N_HM_core_t = zone_HM[zone_ok, :].sum(axis=0)            # (n_steps,)
+    avg_FIMA    = (N_HM_core_0 - N_HM_core_t) / N_HM_core_0 * 100.0
+
+    # --- Peak / min over zones ---
+    zone_FIMA_flat = zone_FIMA_3d.reshape(n_rings * n_bands, n_steps)
+    only_ok        = zone_ok.flatten()
+    zone_FIMA_flat[~only_ok, :] = np.nan
+
+    peak_FIMA      = np.nanmax(zone_FIMA_flat, axis=0)
+    min_FIMA       = np.nanmin(zone_FIMA_flat, axis=0)
+    peak_zone_flat = np.nanargmax(zone_FIMA_flat, axis=0)
+    min_zone_flat  = np.nanargmin(zone_FIMA_flat, axis=0)
+
+    zone_labels = [f"ring{r}_band{b}"
+                   for r in range(n_rings)
+                   for b in range(n_bands)]
+
+    print(f"  Peak %FIMA at final step: "
+          f"{peak_FIMA[-1]:.3f}%  "
+          f"(avg = {avg_FIMA[-1]:.3f}%  "
+          f"peaking = {peak_FIMA[-1]/max(avg_FIMA[-1], 1e-9):.2f}×  "
+          f"zone = {zone_labels[peak_zone_flat[-1]]})")
+    print(f"  Min  %FIMA at final step: "
+          f"{min_FIMA[-1]:.3f}%  "
+          f"zone = {zone_labels[min_zone_flat[-1]]}")
+
+    # zone_burnup_fraction: zone %FIMA relative to core-average (for peaking factor)
+    avg_FIMA_safe = np.where(avg_FIMA > 0, avg_FIMA, np.nan)
+    with np.errstate(invalid='ignore'):
+        zone_burnup_frac = zone_FIMA_3d / avg_FIMA_safe[np.newaxis, np.newaxis, :]
+    zone_burnup_frac = np.nan_to_num(zone_burnup_frac, nan=0.0)
+
+    return {
+        "zone_burnup_fraction":  zone_burnup_frac,
+        "zone_labels":           zone_labels,
+        "peak_burnup_pct_FIMA":  peak_FIMA,
+        "peak_zone":             peak_zone_flat,
+        "min_burnup_pct_FIMA":   min_FIMA,
+        "min_zone":              min_zone_flat,
+        "avg_burnup_pct_FIMA":   avg_FIMA,
+        "avg_burnup_MWd_MtU":    burnup_MWd_per_MtU,
+        "tracked_actinides":     sorted(found_nuclides),
+        "method":                "actinide inventory",
     }
 
 
@@ -599,10 +815,56 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
     time_days  = time_steps / 86400.0
     time_years = time_days  / 365.25
 
-    # Operational flag: 1 if k_eff >= 1.0 at that step, 0 otherwise
-    operational = (keff_mean >= 1.0).astype(int)
-    op_indices = np.where(keff_mean >= 1.0)[0]
+    # Operational flag — source depends on study mode:
+    #   CSDepletionStudy : read from critical_search_depletion_log.json.
+    #                      EOS keff (stored in depletion_results.h5) is always < 1 by
+    #                      design — it uses the BOS rod position after the fuel has
+    #                      burned for a full step.  BOS keff (≈ 1.0 while critical) is
+    #                      the meaningful reactivity metric and lives in the log.
+    #   DepletionStudy   : keff >= 1.0 from depletion results (ARO approximation).
+    cs_log = None   # preserved for CSV section below
+    if params.get("study_execution_mode") == "CSDepletionStudy":
+        cs_log_path = os.path.join(run_dir, "critical_search_depletion_log.json")
+        if os.path.exists(cs_log_path):
+            with open(cs_log_path) as _f:
+                cs_log = json.load(_f)
+            # Log has one entry per step (step=1..N).
+            # time_days index 0 = initial state (always operational).
+            # time_days index i = end of step i → operational flag from log entry step=i.
+            cs_operational = np.ones(len(keff_mean), dtype=int)
+            for entry in cs_log:
+                idx = entry["step"]   # 1-based step index == time_days index for that EOS
+                if idx < len(cs_operational):
+                    cs_operational[idx] = entry["operational"]
+            operational = cs_operational
+            print(f"   [Operational] Loaded from critical_search_depletion_log.json "
+                  f"({int(operational.sum())} / {len(operational)} steps operational)")
+        else:
+            print("   [Operational] WARNING: CSDepletionStudy but no "
+                  "critical_search_depletion_log.json found — falling back to keff >= 1.0")
+            operational = (keff_mean >= 1.0).astype(int)
+    else:
+        operational = (keff_mean >= 1.0).astype(int)
+
+    op_indices = np.where(operational == 1)[0]
     last_operational_idx = int(op_indices[-1]) if len(op_indices) > 0 else 0
+
+    # BOS arrays (CSDepletionStudy only) — built once, reused in plots and CSV.
+    # log entry step=i was run at step_start = time_days[i-1]; last time point has no BOS.
+    bos_keff = bos_keff_std = bos_bank1 = bos_bank2 = None
+    if cs_log:
+        _n = len(time_days)
+        bos_keff     = np.full(_n, np.nan)
+        bos_keff_std = np.full(_n, np.nan)
+        bos_bank1    = np.full(_n, np.nan)
+        bos_bank2    = np.full(_n, np.nan)
+        for _e in cs_log:
+            _idx = _e["step"] - 1   # step=i BOS → time_days[i-1]
+            if 0 <= _idx < _n:
+                bos_keff[_idx]     = _e["critical_keff"]
+                bos_keff_std[_idx] = _e["critical_keff_std"]
+                bos_bank1[_idx]    = _e["bank_1_insertion"]
+                bos_bank2[_idx]    = _e["bank_2_insertion"]
 
     thermal_power_MW  = params.get("thermal_power_MW", 10.0)
     total_HM_mass_kg  = params.get("total_HM_mass_kg", None)
@@ -619,23 +881,36 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
     x_label_short = "burnup"            if burnup_MWd_per_MtU is not None else "time"
 
     # ================================================================================
-    # 2. DISCHARGE BURNUP (k_eff crosses 1.0)
+    # 2. DISCHARGE BURNUP
     # ================================================================================
+    # CSDepletionStudy : discharge = end of last operational step (operational 1→0
+    #                    transition), read from the operational array sourced from the
+    #                    critical search log.  EOS keff is meaningless here (always < 1).
+    # DepletionStudy   : discharge = interpolated time where EOS keff crosses 1.0.
 
     discharge_burnup     = None
     discharge_time_days  = None
     discharge_time_years = None
 
-    for i in range(len(keff_mean) - 1):
-        if keff_mean[i] >= 1.0 and keff_mean[i + 1] < 1.0:
-            frac = (keff_mean[i] - 1.0) / (keff_mean[i] - keff_mean[i + 1])
-            discharge_time_days  = time_days[i] + frac * (time_days[i + 1] - time_days[i])
-            discharge_time_years = discharge_time_days / 365.25
-            if burnup_MWd_per_MtU is not None:
-                discharge_burnup = burnup_MWd_per_MtU[i] + frac * (
-                    burnup_MWd_per_MtU[i + 1] - burnup_MWd_per_MtU[i]
-                )
-            break
+    if cs_log:
+        for i in range(len(operational) - 1):
+            if operational[i] == 1 and operational[i + 1] == 0:
+                discharge_time_days  = float(time_days[i + 1])
+                discharge_time_years = discharge_time_days / 365.25
+                if burnup_MWd_per_MtU is not None:
+                    discharge_burnup = float(burnup_MWd_per_MtU[i + 1])
+                break
+    else:
+        for i in range(len(keff_mean) - 1):
+            if keff_mean[i] >= 1.0 and keff_mean[i + 1] < 1.0:
+                frac = (keff_mean[i] - 1.0) / (keff_mean[i] - keff_mean[i + 1])
+                discharge_time_days  = time_days[i] + frac * (time_days[i + 1] - time_days[i])
+                discharge_time_years = discharge_time_days / 365.25
+                if burnup_MWd_per_MtU is not None:
+                    discharge_burnup = burnup_MWd_per_MtU[i] + frac * (
+                        burnup_MWd_per_MtU[i + 1] - burnup_MWd_per_MtU[i]
+                    )
+                break
 
     # ================================================================================
     # 3. LOCATE MATERIALS AND EXTRACT NUCLIDE INVENTORIES
@@ -681,11 +956,43 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
         fuel_data = _extract_nuclide_inventories(results, fuel_mat_id, fuel_nuclides,
                                                  "Fuel", symmetry_factor)
 
-    poison_mat_id = _find_material_id(results, params,
-                                       "poison_material_id", "B10",  "Burnable poison")
-    print(f"\n   Extracting burnable poison inventories ({len(poison_tracked_nuclides)} nuclides)...")
-    poison_data = _extract_nuclide_inventories(results, poison_mat_id, poison_tracked_nuclides,
-                                                "Poison", symmetry_factor)
+    # ---- Poison: spatial burnup (multiple materials) vs. single material ----
+    poison_mat_ids_2d = params.get("poison_mat_ids", None)
+
+    if poison_mat_ids_2d:
+        all_poison_ids = [str(mid)
+                          for row in poison_mat_ids_2d
+                          for mid in row]
+        seen_p = set()
+        unique_poison_ids = []
+        for mid in all_poison_ids:
+            if mid not in seen_p:
+                seen_p.add(mid)
+                unique_poison_ids.append(mid)
+        n_prings = len(poison_mat_ids_2d)
+        n_pbands = len(poison_mat_ids_2d[0]) if poison_mat_ids_2d else 0
+        print(f"\n   Spatial burnup poison: summing {len(unique_poison_ids)} poison zones "
+              f"({n_prings} rings × {n_pbands} axial bands)...")
+        poison_data = _extract_nuclide_inventories_multi(
+            results, unique_poison_ids, poison_tracked_nuclides, "Poison", symmetry_factor
+        )
+    else:
+        poison_mat_id = _find_material_id(results, params,
+                                          "poison_material_id", "B10", "Burnable poison")
+        print(f"\n   Extracting burnable poison inventories ({len(poison_tracked_nuclides)} nuclides)...")
+        poison_data = _extract_nuclide_inventories(results, poison_mat_id, poison_tracked_nuclides,
+                                                   "Poison", symmetry_factor)
+
+    # Graphite B10 — only extracted when deplete_graphite=True
+    graphite_data = {}
+    if params.get("deplete_graphite", False):
+        graphite_mat_id = _find_material_id(results, params,
+                                            "graphite_material_id", "B10", "Graphite")
+        if graphite_mat_id:
+            print(f"\n   Extracting graphite inventories (B10)...")
+            graphite_data = _extract_nuclide_inventories(
+                results, graphite_mat_id, ["B10"], "Graphite", symmetry_factor
+            )
 
     # Merge for plotting — poison data keyed separately to avoid name collision
     # B10 from poison material is canonical; if also in fuel, prefer poison
@@ -693,6 +1000,14 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
     for nuc, atoms in poison_data.items():
         all_nuclide_data[f"{nuc}_poison"] = atoms  # keep separate key
         all_nuclide_data[nuc] = atoms               # also overwrite top-level with poison value
+    for nuc, atoms in graphite_data.items():
+        all_nuclide_data[f"{nuc}_graphite"] = atoms  # keep separate key
+        # If a poison source also exists, overwrite the top-level key with
+        # the combined total so group plots show a single summed line.
+        if f"{nuc}_poison" in all_nuclide_data:
+            all_nuclide_data[nuc] = all_nuclide_data[f"{nuc}_poison"] + atoms
+        else:
+            all_nuclide_data[nuc] = atoms
 
     # ================================================================================
     # 4. PRINT SUMMARY
@@ -758,57 +1073,117 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
         'lines.markersize': 6,
     })
 
-    # k_eff vs burnup/time
-    fig, ax = plt.subplots(figsize=(12, 6), dpi=fig_dpi)
-    ax.errorbar(x_data, keff_mean, yerr=keff_std, fmt="o-", capsize=3, label="k-effective")
-    ax.axhline(1.0, color="red", linestyle="--", alpha=0.7, linewidth=1, label="k = 1.0")
-    if discharge_burnup is not None and burnup_MWd_per_MtU is not None:
-        ax.axvline(discharge_burnup, color="green", linestyle=":", alpha=0.7,
-                   label=f"Discharge: {discharge_burnup:.0f} MWd/MtU")
-    ax.set_xlabel(x_label)
-    ax.set_ylabel("k-effective")
-    if show_titles:
-        ax.set_title("k-effective vs. Burnup")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    plt.savefig(os.path.join(POSTPROCESSING_RESULTS_DIR, f"depletion_keff_vs_{x_label_short}.{fig_fmt}"), bbox_inches="tight")
-    plt.close()
-
-    # k_eff vs time with year secondary axis
-    if burnup_MWd_per_MtU is not None:
-        fig, ax = plt.subplots(figsize=(12, 6), dpi=fig_dpi)
-        ax.errorbar(time_days, keff_mean, yerr=keff_std, fmt="o-", capsize=3, label="k-effective")
-        ax.axhline(1.0, color="red", linestyle="--", alpha=0.7, linewidth=1, label="k = 1.0")
-        if discharge_time_years is not None and discharge_time_days is not None:
+    def _add_discharge_vline(ax, is_burnup):
+        """Add a vertical discharge line if discharge data is available."""
+        if is_burnup and discharge_burnup is not None:
+            ax.axvline(discharge_burnup, color="green", linestyle=":", alpha=0.7,
+                       label=f"Discharge: {discharge_burnup:.0f} MWd/MtU")
+        elif not is_burnup and discharge_time_days is not None:
             ax.axvline(discharge_time_days, color="green", linestyle=":", alpha=0.7,
                        label=f"Discharge: {discharge_time_years:.2f} years")
+
+    if cs_log:
+        # CSDepletionStudy: plot BOS keff (≈ 1.0, meaningful) and EOS keff (always < 1)
+        # as separate traces on the same axes.
+        valid_bos = ~np.isnan(bos_keff)
+
+        # vs. burnup / x_data
+        fig, ax = plt.subplots(figsize=(12, 6), dpi=fig_dpi)
+        ax.errorbar(x_data, keff_mean, yerr=keff_std, fmt="o-", capsize=3,
+                    color="tab:blue", label="EOS k-effective")
+        ax.errorbar(x_data[valid_bos], bos_keff[valid_bos],
+                    yerr=bos_keff_std[valid_bos], fmt="s--", capsize=3,
+                    color="tab:orange", label="BOS k-effective (critical search)")
+        ax.axhline(1.0, color="red", linestyle="--", alpha=0.7, linewidth=1, label="k = 1.0")
+        _add_discharge_vline(ax, is_burnup=(burnup_MWd_per_MtU is not None))
+        ax.set_xlabel(x_label)
+        ax.set_ylabel("k-effective")
+        if show_titles:
+            ax.set_title("k-effective vs. Burnup (BOS & EOS)")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        plt.savefig(os.path.join(POSTPROCESSING_RESULTS_DIR,
+                                  f"depletion_keff_vs_{x_label_short}.{fig_fmt}"),
+                    bbox_inches="tight")
+        plt.close()
+
+        # vs. time
+        fig, ax = plt.subplots(figsize=(12, 6), dpi=fig_dpi)
+        ax.errorbar(time_days, keff_mean, yerr=keff_std, fmt="o-", capsize=3,
+                    color="tab:blue", label="EOS k-effective")
+        ax.errorbar(time_days[valid_bos], bos_keff[valid_bos],
+                    yerr=bos_keff_std[valid_bos], fmt="s--", capsize=3,
+                    color="tab:orange", label="BOS k-effective (critical search)")
+        ax.axhline(1.0, color="red", linestyle="--", alpha=0.7, linewidth=1, label="k = 1.0")
+        _add_discharge_vline(ax, is_burnup=False)
         ax.set_xlabel("Time (days)")
         ax.set_ylabel("k-effective")
         if show_titles:
-            ax.set_title("k-effective vs. Time")
+            ax.set_title("k-effective vs. Time (BOS & EOS)")
         ax.legend()
         ax.grid(True, alpha=0.3)
         ax2 = ax.twiny()
         ax2.set_xlim(ax.get_xlim()[0] / 365.25, ax.get_xlim()[1] / 365.25)
         ax2.set_xlabel("Time (years)")
-        plt.savefig(os.path.join(POSTPROCESSING_RESULTS_DIR, f"depletion_keff_vs_time.{fig_fmt}"), bbox_inches="tight")
+        plt.savefig(os.path.join(POSTPROCESSING_RESULTS_DIR,
+                                  f"depletion_keff_vs_time.{fig_fmt}"),
+                    bbox_inches="tight")
+        plt.close()
+        # No reactivity plot for CSDepletionStudy (EOS keff is always < 1 by design)
+
+    else:
+        # DepletionStudy: single EOS keff trace
+        fig, ax = plt.subplots(figsize=(12, 6), dpi=fig_dpi)
+        ax.errorbar(x_data, keff_mean, yerr=keff_std, fmt="o-", capsize=3, label="k-effective")
+        ax.axhline(1.0, color="red", linestyle="--", alpha=0.7, linewidth=1, label="k = 1.0")
+        _add_discharge_vline(ax, is_burnup=(burnup_MWd_per_MtU is not None))
+        ax.set_xlabel(x_label)
+        ax.set_ylabel("k-effective")
+        if show_titles:
+            ax.set_title("k-effective vs. Burnup")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        plt.savefig(os.path.join(POSTPROCESSING_RESULTS_DIR,
+                                  f"depletion_keff_vs_{x_label_short}.{fig_fmt}"),
+                    bbox_inches="tight")
         plt.close()
 
-    # Reactivity (pcm)
-    reactivity_pcm = (keff_mean - 1.0) / keff_mean * 1e5
-    fig, ax = plt.subplots(figsize=(12, 6), dpi=fig_dpi)
-    ax.plot(x_data, reactivity_pcm, "o-")
-    ax.axhline(0, color="red", linestyle="--", alpha=0.7, linewidth=1)
-    ax.set_xlabel(x_label)
-    ax.set_ylabel("Reactivity (pcm)")
-    if show_titles:
-        ax.set_title("Excess Reactivity vs. Burnup")
-    ax.grid(True, alpha=0.3)
-    plt.savefig(os.path.join(POSTPROCESSING_RESULTS_DIR, f"depletion_reactivity_vs_{x_label_short}.{fig_fmt}"), bbox_inches="tight")
-    plt.close()
+        if burnup_MWd_per_MtU is not None:
+            fig, ax = plt.subplots(figsize=(12, 6), dpi=fig_dpi)
+            ax.errorbar(time_days, keff_mean, yerr=keff_std, fmt="o-", capsize=3,
+                        label="k-effective")
+            ax.axhline(1.0, color="red", linestyle="--", alpha=0.7, linewidth=1, label="k = 1.0")
+            _add_discharge_vline(ax, is_burnup=False)
+            ax.set_xlabel("Time (days)")
+            ax.set_ylabel("k-effective")
+            if show_titles:
+                ax.set_title("k-effective vs. Time")
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            ax2 = ax.twiny()
+            ax2.set_xlim(ax.get_xlim()[0] / 365.25, ax.get_xlim()[1] / 365.25)
+            ax2.set_xlabel("Time (years)")
+            plt.savefig(os.path.join(POSTPROCESSING_RESULTS_DIR,
+                                      f"depletion_keff_vs_time.{fig_fmt}"),
+                        bbox_inches="tight")
+            plt.close()
+
+        reactivity_pcm = (keff_mean - 1.0) / keff_mean * 1e5
+        fig, ax = plt.subplots(figsize=(12, 6), dpi=fig_dpi)
+        ax.plot(x_data, reactivity_pcm, "o-")
+        ax.axhline(0, color="red", linestyle="--", alpha=0.7, linewidth=1)
+        ax.set_xlabel(x_label)
+        ax.set_ylabel("Reactivity (pcm)")
+        if show_titles:
+            ax.set_title("Excess Reactivity vs. Burnup")
+        ax.grid(True, alpha=0.3)
+        plt.savefig(os.path.join(POSTPROCESSING_RESULTS_DIR,
+                                  f"depletion_reactivity_vs_{x_label_short}.{fig_fmt}"),
+                    bbox_inches="tight")
+        plt.close()
 
     # Nuclide group plots — driven entirely by params["depletion_plot_groups"]
-    plot_groups   = params.get("depletion_plot_groups", DEFAULT_PLOT_GROUPS)
+    plot_groups = params.get("depletion_plot_groups", DEFAULT_PLOT_GROUPS)
     plotted_nuclides = set()
 
     for group_name, group_nuclides in plot_groups.items():
@@ -855,60 +1230,143 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
                     bbox_inches="tight")
         plt.close()
 
-    # B-10 burnout — two-panel: absolute atoms and fractional remaining
-    if "B10" in all_nuclide_data:
-        b10         = all_nuclide_data["B10"]
-        b10_initial = b10[0]
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5), dpi=fig_dpi)
-        ax1.plot(x_data, b10, "o-", color="purple")
-        ax1.set_xlabel(x_label)
-        ax1.set_ylabel("B-10 Atoms")
-        if show_titles:
-            ax1.set_title("B-10 Absolute Inventory (Burnable Poison)")
-        ax1.grid(True, alpha=0.3)
-        ax1.ticklabel_format(style='scientific', axis='y', scilimits=(0, 0))
-        if b10_initial > 0:
-            ax2.plot(x_data, b10 / b10_initial * 100, "o-", color="darkviolet")
-            ax2.set_xlabel(x_label)
-            ax2.set_ylabel("Remaining B-10 (%)")
-            if show_titles:
-                ax2.set_title("B-10 Fractional Burnout")
-            ax2.grid(True, alpha=0.3)
-            ax2.set_ylim(0, 105)
-        plt.tight_layout()
-        plt.savefig(os.path.join(POSTPROCESSING_RESULTS_DIR, f"depletion_B10_burnout.{fig_fmt}"), bbox_inches="tight")
+    # ---- B-10 burnout helpers ----
+    def _save_fig(name):
+        path = os.path.join(POSTPROCESSING_RESULTS_DIR, f"{name}.{fig_fmt}")
+        plt.savefig(path, bbox_inches="tight")
         plt.close()
-        print(f"  Saved: depletion_B10_burnout.{fig_fmt}")
+        print(f"  Saved: {name}.{fig_fmt}")
+
+    def _b10_absolute(b10_array, label, filename, color):
+        fig, ax = plt.subplots(figsize=(10, 5), dpi=fig_dpi)
+        ax.plot(x_data, b10_array, "o-", color=color)
+        ax.set_xlabel(x_label)
+        ax.set_ylabel("B-10 Atoms")
+        if show_titles:
+            ax.set_title(f"B-10 Absolute Inventory ({label})")
+        ax.ticklabel_format(style='scientific', axis='y', scilimits=(0, 0))
+        ax.grid(True, alpha=0.3)
+        _save_fig(filename)
+
+    def _b10_fractional(b10_array, b10_initial, label, filename, color):
+        if b10_initial <= 0:
+            return
+        fig, ax = plt.subplots(figsize=(10, 5), dpi=fig_dpi)
+        ax.plot(x_data, b10_array / b10_initial * 100, "o-", color=color)
+        ax.set_xlabel(x_label)
+        ax.set_ylabel("Remaining B-10 (%)")
+        if show_titles:
+            ax.set_title(f"B-10 Fractional Burnout ({label})")
+        ax.set_ylim(0, 105)
+        ax.grid(True, alpha=0.3)
+        _save_fig(filename)
+
+    # B-10 burnout — burnable poison
+    b10_p = all_nuclide_data.get("B10_poison") if "B10_poison" in all_nuclide_data \
+            else all_nuclide_data.get("B10")
+    if b10_p is not None:
+        _b10_absolute(b10_p, "Burnable Poison",
+                      "depletion_B10_burnout_poison_absolute", "purple")
+        _b10_fractional(b10_p, b10_p[0], "Burnable Poison",
+                        "depletion_B10_burnout_poison_fractional", "purple")
+
+    # B-10 burnout — graphite
+    b10_g = all_nuclide_data.get("B10_graphite")
+    if b10_g is not None:
+        _b10_absolute(b10_g, "Graphite",
+                      "depletion_B10_burnout_graphite_absolute", "steelblue")
+        _b10_fractional(b10_g, b10_g[0], "Graphite",
+                        "depletion_B10_burnout_graphite_fractional", "steelblue")
+
+    # B-10 combined — only when both sources present
+    if b10_p is not None and b10_g is not None:
+        b10_combined  = b10_p + b10_g
+        b10_comb_init = b10_combined[0]
+
+        # Absolute — all three traces
+        fig, ax = plt.subplots(figsize=(10, 5), dpi=fig_dpi)
+        ax.plot(x_data, b10_combined, "o-",  color="black",     label="Total")
+        ax.plot(x_data, b10_p,        "s--", color="purple",    label="Burnable Poison")
+        ax.plot(x_data, b10_g,        "^--", color="steelblue", label="Graphite")
+        ax.set_xlabel(x_label)
+        ax.set_ylabel("B-10 Atoms")
+        if show_titles:
+            ax.set_title("B-10 Absolute Inventory (Combined)")
+        ax.ticklabel_format(style='scientific', axis='y', scilimits=(0, 0))
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        _save_fig("depletion_B10_burnout_combined_absolute")
+
+        # Fractional — all three traces normalised to combined initial
+        if b10_comb_init > 0:
+            fig, ax = plt.subplots(figsize=(10, 5), dpi=fig_dpi)
+            ax.plot(x_data, b10_combined / b10_comb_init * 100, "o-",  color="black",     label="Total")
+            ax.plot(x_data, b10_p        / b10_comb_init * 100, "s--", color="purple",    label="Burnable Poison")
+            ax.plot(x_data, b10_g        / b10_comb_init * 100, "^--", color="steelblue", label="Graphite")
+            ax.set_xlabel(x_label)
+            ax.set_ylabel("Remaining B-10 (% of initial total)")
+            if show_titles:
+                ax.set_title("B-10 Fractional Burnout (Combined)")
+            ax.set_ylim(0, 105)
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            _save_fig("depletion_B10_burnout_combined_fractional")
+
+        # By-source stacked area
+        if b10_comb_init > 0:
+            fig, ax = plt.subplots(figsize=(10, 5), dpi=fig_dpi)
+            ax.stackplot(x_data,
+                         b10_p / b10_comb_init * 100,
+                         b10_g / b10_comb_init * 100,
+                         labels=["Burnable Poison", "Graphite"],
+                         colors=["purple", "steelblue"], alpha=0.7)
+            ax.set_xlabel(x_label)
+            ax.set_ylabel("B-10 Source Fraction (%)")
+            if show_titles:
+                ax.set_title("B-10 Inventory by Source")
+            ax.set_ylim(0, 105)
+            ax.legend(loc="lower left")
+            ax.grid(True, alpha=0.3)
+            _save_fig("depletion_B10_burnout_combined_bysource")
 
     # ================================================================================
-    # 5b. PEAK BURNUP (spatial burnup only)
+    # 5b. ZONE BURNUP IN MWd/MtU  (heating-local tally — primary method)
     # ================================================================================
 
     fuel_mat_volumes_raw = params.get("fuel_mat_volumes", {})
     fuel_mat_volumes_str = {str(k): float(v) for k, v in fuel_mat_volumes_raw.items()}
 
-    peak_burnup_data = extract_peak_burnup(
-        results            = results,
-        fuel_mat_ids_2d    = fuel_mat_ids_2d,
-        fuel_mat_volumes   = fuel_mat_volumes_str,
-        time_days          = time_days,
-        burnup_MWd_per_MtU = burnup_MWd_per_MtU,
-        symmetry_factor    = symmetry_factor,
-    )
+    mwdmtu_data = None
+    if fuel_mat_ids_2d is not None:
+        thermal_power_MW      = params.get("thermal_power_MW", 10.0)
+        total_HM_mass_kg      = params.get("total_HM_mass_kg")
+        fuel_volume_full_core = params.get("fuel_volume_full_core_cm3")
+        if total_HM_mass_kg and fuel_volume_full_core:
+            print("\n  --- MWd/MtU zone burnup (heating-local tally) ---")
+            mwdmtu_data = extract_min_max_burnup_MWdMtU(
+                run_dir                   = run_dir,
+                fuel_mat_ids_2d           = fuel_mat_ids_2d,
+                fuel_mat_volumes          = fuel_mat_volumes_str,
+                time_days                 = time_days,
+                thermal_power_MW          = thermal_power_MW,
+                total_HM_mass_kg          = float(total_HM_mass_kg),
+                fuel_volume_full_core_cm3 = float(fuel_volume_full_core),
+                symmetry_factor           = symmetry_factor,
+            )
 
-    if peak_burnup_data is not None:
-        peak_bu    = peak_burnup_data["peak_burnup_MWd_MtU"]
-        min_bu     = peak_burnup_data["min_burnup_MWd_MtU"]
-        avg_bu     = peak_burnup_data["avg_burnup_MWd_MtU"]
-        peak_zone  = peak_burnup_data["peak_zone"]
-        min_zone   = peak_burnup_data["min_zone"]
-        zone_lbl   = peak_burnup_data["zone_labels"]
+    if mwdmtu_data is not None:
+        peak_bu   = mwdmtu_data["peak_burnup_MWd_MtU"]
+        min_bu    = mwdmtu_data["min_burnup_MWd_MtU"]
+        avg_bu    = mwdmtu_data["avg_burnup_MWd_MtU"]
+        peak_zone = mwdmtu_data["peak_zone"]
+        min_zone  = mwdmtu_data["min_zone"]
+        zone_lbl  = mwdmtu_data["zone_labels"]
 
-        # Peak / average / minimum burnup plot
+        # Plot: peak / avg / min burnup in MWd/MtU
         fig, ax = plt.subplots(figsize=(12, 6), dpi=fig_dpi)
-        ax.plot(x_data, avg_bu,  "o-",  color="black",     label="Core-average burnup")
-        ax.plot(x_data, peak_bu, "s--", color="firebrick",  label="Peak zone burnup")
-        ax.plot(x_data, min_bu,  "^--", color="steelblue",  label="Minimum zone burnup")
+        ax.plot(x_data, avg_bu,  "o-",  color="black",    label="Core-average burnup")
+        ax.plot(x_data, peak_bu, "s--", color="firebrick", label="Peak zone burnup")
+        ax.plot(x_data, min_bu,  "^--", color="steelblue", label="Minimum zone burnup")
         ax.fill_between(x_data, avg_bu, peak_bu, alpha=0.10, color="firebrick",
                         label="Peak-to-average margin")
         ax.fill_between(x_data, min_bu, avg_bu, alpha=0.10, color="steelblue",
@@ -916,55 +1374,143 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
         ax.set_xlabel(x_label)
         ax.set_ylabel("Burnup (MWd/MtU)")
         if show_titles:
-            ax.set_title("Peak / Average / Minimum Burnup\n(U-235 depletion proxy)")
+            ax.set_title("Peak / Average / Minimum Burnup (MWd/MtU)\n(heating-local tally)")
         ax.legend()
         ax.grid(True, alpha=0.3)
         plt.savefig(os.path.join(POSTPROCESSING_RESULTS_DIR,
-                                  f"depletion_peak_burnup_vs_{x_label_short}.{fig_fmt}"),
+                                  f"depletion_burnup_MWdMtU_vs_{x_label_short}.{fig_fmt}"),
                     bbox_inches="tight")
         plt.close()
-        print(f"  Saved: depletion_peak_burnup_vs_{x_label_short}.{fig_fmt}")
+        print(f"  Saved: depletion_burnup_MWdMtU_vs_{x_label_short}.{fig_fmt}")
 
-        # Peak-to-average burnup ratio vs burnup
+        # Peaking factor vs burnup (MWd/MtU basis)
         with np.errstate(divide='ignore', invalid='ignore'):
-            pf_burnup = np.where(avg_bu > 0, peak_bu / avg_bu, np.nan)
+            pf_MWd = np.where(avg_bu > 0, peak_bu / avg_bu, np.nan)
         fig, ax = plt.subplots(figsize=(12, 5), dpi=fig_dpi)
-        ax.plot(x_data, pf_burnup, "o-", color="darkorange")
+        ax.plot(x_data, pf_MWd, "o-", color="darkorange")
         ax.axhline(1.0, color="gray", linewidth=0.8, linestyle=":")
         ax.set_xlabel(x_label)
         ax.set_ylabel("Peak-to-Average Burnup Ratio")
         if show_titles:
-            ax.set_title("Burnup Peaking Factor vs. Burnup")
+            ax.set_title("Burnup Peaking Factor vs. Burnup (MWd/MtU)")
         ax.grid(True, alpha=0.3)
         plt.savefig(os.path.join(POSTPROCESSING_RESULTS_DIR,
-                                  f"depletion_burnup_peaking_vs_{x_label_short}.{fig_fmt}"),
+                                  f"depletion_burnup_peaking_MWdMtU_vs_{x_label_short}.{fig_fmt}"),
                     bbox_inches="tight")
         plt.close()
-        print(f"  Saved: depletion_burnup_peaking_vs_{x_label_short}.{fig_fmt}")
+        print(f"  Saved: depletion_burnup_peaking_MWdMtU_vs_{x_label_short}.{fig_fmt}")
 
-        # CSV: avg, peak, and min burnup per step
-        peak_csv = os.path.join(POSTPROCESSING_RESULTS_DIR, "depletion_peak_burnup.csv")
-        header = ("step,time_days,time_years"
-                  + (",burnup_avg_MWd_MtU" if burnup_MWd_per_MtU is not None else "")
-                  + ",burnup_peak_MWd_MtU,burnup_min_MWd_MtU,peak_to_avg_ratio,peak_zone,min_zone,operational")
-        rows = []
+        # CSV: MWd/MtU zone burnup per step
+        mwdmtu_csv = os.path.join(POSTPROCESSING_RESULTS_DIR, "depletion_burnup_MWdMtU.csv")
+        header_mwd = ("step,time_days,time_years"
+                      + (",burnup_avg_MWd_MtU" if burnup_MWd_per_MtU is not None else "")
+                      + ",burnup_peak_MWd_MtU,burnup_min_MWd_MtU,peak_to_avg_ratio"
+                        ",peak_zone,min_zone,operational")
+        rows_mwd = []
         for i in range(len(time_days)):
             row = f"{i},{time_days[i]:.4f},{time_years[i]:.6f}"
             if burnup_MWd_per_MtU is not None:
                 row += f",{avg_bu[i]:.2f}"
-            pf_val = float(pf_burnup[i]) if not np.isnan(pf_burnup[i]) else 0.0
+            pf_val = float(pf_MWd[i]) if not np.isnan(pf_MWd[i]) else 0.0
             op_val = int(operational[i])
             row += (f",{peak_bu[i]:.2f},{min_bu[i]:.2f},{pf_val:.4f},"
                     f"{zone_lbl[int(peak_zone[i])]},{zone_lbl[int(min_zone[i])]},{op_val}")
-            rows.append(row)
-        with open(peak_csv, "w") as f:
-            f.write(header + "\n")
-            for r in rows:
+            rows_mwd.append(row)
+        with open(mwdmtu_csv, "w") as f:
+            f.write(header_mwd + "\n")
+            for r in rows_mwd:
                 f.write(r + "\n")
-        print(f"  Saved: {peak_csv}")
+        print(f"  Saved: {mwdmtu_csv}")
 
     # ================================================================================
-    # 5c. CONVERSION RATIO
+    # 5c. ZONE BURNUP IN %FIMA  (actinide inventory method)
+    # ================================================================================
+
+    fima_data = None
+    if fuel_mat_ids_2d is not None:
+        print("\n  --- %FIMA zone burnup (actinide inventory) ---")
+        fima_data = extract_min_max_burnup_FIMA(
+            results            = results,
+            fuel_mat_ids_2d    = fuel_mat_ids_2d,
+            time_days          = time_days,
+            burnup_MWd_per_MtU = burnup_MWd_per_MtU,
+            symmetry_factor    = symmetry_factor,
+        )
+
+    if fima_data is not None:
+        peak_FIMA      = fima_data["peak_burnup_pct_FIMA"]
+        min_FIMA       = fima_data["min_burnup_pct_FIMA"]
+        avg_FIMA       = fima_data["avg_burnup_pct_FIMA"]
+        avg_bu_ref     = fima_data["avg_burnup_MWd_MtU"]   # x-axis: always MWd/MtU
+        peak_zone_f    = fima_data["peak_zone"]
+        min_zone_f     = fima_data["min_zone"]
+        zone_lbl_f     = fima_data["zone_labels"]
+
+        x_fima      = avg_bu_ref                            # x = core-average burnup MWd/MtU
+        x_fima_lbl  = "Core-Average Burnup (MWd/MtU)"
+
+        # Plot: peak / avg / min burnup in %FIMA vs. average burnup MWd/MtU
+        fig, ax = plt.subplots(figsize=(12, 6), dpi=fig_dpi)
+        ax.plot(x_fima, avg_FIMA,  "o-",  color="black",    label="Core-average burnup")
+        ax.plot(x_fima, peak_FIMA, "s--", color="firebrick", label="Peak zone burnup")
+        ax.plot(x_fima, min_FIMA,  "^--", color="steelblue", label="Minimum zone burnup")
+        ax.fill_between(x_fima, avg_FIMA, peak_FIMA, alpha=0.10, color="firebrick",
+                        label="Peak-to-average margin")
+        ax.fill_between(x_fima, min_FIMA, avg_FIMA, alpha=0.10, color="steelblue",
+                        label="Average-to-minimum margin")
+        ax.set_xlabel(x_fima_lbl)
+        ax.set_ylabel("Burnup (%FIMA)")
+        if show_titles:
+            bu_method_fima = fima_data.get("method", "actinide inventory")
+            ax.set_title(f"Peak / Average / Minimum Burnup (%FIMA)\n({bu_method_fima})")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        plt.savefig(os.path.join(POSTPROCESSING_RESULTS_DIR,
+                                  f"depletion_burnup_FIMA_vs_MWdMtU.{fig_fmt}"),
+                    bbox_inches="tight")
+        plt.close()
+        print(f"  Saved: depletion_burnup_FIMA_vs_MWdMtU.{fig_fmt}")
+
+        # Peaking factor vs burnup (%FIMA basis)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            pf_FIMA = np.where(avg_FIMA > 0, peak_FIMA / avg_FIMA, np.nan)
+        fig, ax = plt.subplots(figsize=(12, 5), dpi=fig_dpi)
+        ax.plot(x_fima, pf_FIMA, "o-", color="darkorange")
+        ax.axhline(1.0, color="gray", linewidth=0.8, linestyle=":")
+        ax.set_xlabel(x_fima_lbl)
+        ax.set_ylabel("Peak-to-Average Burnup Ratio")
+        if show_titles:
+            ax.set_title("Burnup Peaking Factor vs. Burnup (%FIMA)")
+        ax.grid(True, alpha=0.3)
+        plt.savefig(os.path.join(POSTPROCESSING_RESULTS_DIR,
+                                  f"depletion_burnup_peaking_FIMA_vs_MWdMtU.{fig_fmt}"),
+                    bbox_inches="tight")
+        plt.close()
+        print(f"  Saved: depletion_burnup_peaking_FIMA_vs_MWdMtU.{fig_fmt}")
+
+        # CSV: %FIMA zone burnup per step
+        fima_csv = os.path.join(POSTPROCESSING_RESULTS_DIR, "depletion_burnup_FIMA.csv")
+        header_fima = ("step,time_days,time_years,burnup_avg_MWd_MtU"
+                       ",burnup_avg_pct_FIMA,burnup_peak_pct_FIMA,burnup_min_pct_FIMA"
+                       ",peak_to_avg_ratio,peak_zone,min_zone,operational")
+        rows_fima = []
+        for i in range(len(time_days)):
+            pf_val = float(pf_FIMA[i]) if not np.isnan(pf_FIMA[i]) else 0.0
+            op_val = int(operational[i])
+            rows_fima.append(
+                f"{i},{time_days[i]:.4f},{time_years[i]:.6f},"
+                f"{avg_bu_ref[i]:.2f},{avg_FIMA[i]:.5f},"
+                f"{peak_FIMA[i]:.5f},{min_FIMA[i]:.5f},{pf_val:.4f},"
+                f"{zone_lbl_f[int(peak_zone_f[i])]},{zone_lbl_f[int(min_zone_f[i])]},{op_val}"
+            )
+        with open(fima_csv, "w") as f:
+            f.write(header_fima + "\n")
+            for r in rows_fima:
+                f.write(r + "\n")
+        print(f"  Saved: {fima_csv}")
+
+    # ================================================================================
+    # 5d. CONVERSION RATIO
     # ================================================================================
 
     cr_data = calculate_conversion_ratio(fuel_data, time_days)
@@ -1056,10 +1602,12 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
         "n_steps":                       len(keff_mean),
         "geometry":                      "1/6 wedge" if is_wedge else "full core",
         "symmetry_factor":               symmetry_factor,
+        "study_execution_mode":          params.get("study_execution_mode", "DepletionStudy"),
         "time_days":                     time_days.tolist(),
         "time_years":                    time_years.tolist(),
         "keff_mean":                     keff_mean.tolist(),
         "keff_std":                      keff_std.tolist(),
+        "operational":                   operational.tolist(),
         "burnup_MWd_per_MtU":           burnup_MWd_per_MtU.tolist() if burnup_MWd_per_MtU is not None else None,
         "discharge_burnup_MWd_per_MtU": discharge_burnup,
         "discharge_time_days":           discharge_time_days,
@@ -1091,14 +1639,26 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
         json.dump(summary, f, indent=2, default=float)
 
     # ----- k-eff CSV Report -----
+    # keff / keff_std are always EOS values from the depletion h5.
+    # For CSDepletionStudy, BOS critical keff and rod positions are appended
+    # from critical_search_depletion_log.json.
+    #   Alignment: log entry step=i (BOS of step i) → time_days[i-1] (start of step i).
+    #   The final time point has no BOS entry and is filled with NaN.
 
-    header = "time_days,time_years,keff,keff_std"
+    header = "time_days,time_years,keff_eos,keff_eos_std" if cs_log else \
+             "time_days,time_years,keff,keff_std"
     cols   = [time_days, time_years, keff_mean, keff_std]
     if burnup_MWd_per_MtU is not None:
         header += ",burnup_MWd_per_MtU"
         cols.append(burnup_MWd_per_MtU)
     header += ",operational"
     cols.append(operational)
+
+    if cs_log:
+        # Reuse BOS arrays computed earlier
+        header += ",keff_bos,keff_bos_std,bank_1_insertion,bank_2_insertion"
+        cols.extend([bos_keff, bos_keff_std, bos_bank1, bos_bank2])
+
     np.savetxt(os.path.join(POSTPROCESSING_RESULTS_DIR, "depletion_keff_data.csv"),
                np.column_stack(cols), delimiter=",", header=header, comments="")
 
@@ -1109,6 +1669,33 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
         POSTPROCESSING_RESULTS_DIR, time_days, time_years, burnup_MWd_per_MtU,
         fuel_data, poison_data, operational=operational
     )
+
+    if graphite_data:
+        n_steps   = len(time_days)
+        index_cols   = [np.arange(n_steps), time_days, time_years]
+        index_header = "step,time_days,time_years"
+        fmt_cols     = ["%.0f", "%.6f", "%.8f"]
+        if burnup_MWd_per_MtU is not None:
+            index_cols.append(burnup_MWd_per_MtU)
+            index_header += ",burnup_MWd_per_MtU"
+            fmt_cols.append("%.4f")
+        if operational is not None:
+            index_cols.append(operational[:n_steps])
+            index_header += ",operational"
+            fmt_cols.append("%.0f")
+        nuclides  = sorted(graphite_data.keys())
+        nuc_cols  = [graphite_data[n][:n_steps] for n in nuclides]
+        out_path  = os.path.join(POSTPROCESSING_RESULTS_DIR, "nuclide_inventory_graphite.csv")
+        np.savetxt(
+            out_path,
+            np.column_stack(index_cols + nuc_cols),
+            delimiter=",",
+            header=index_header + "," + ",".join(nuclides),
+            comments="",
+            fmt=fmt_cols + ["%.6e"] * len(nuclides),
+        )
+        print(f"  [Graphite] Nuclide inventory saved → {out_path}  "
+              f"({n_steps} steps × {len(nuclides)} nuclides)")
 
     # ----- Text Report -----
 
@@ -1173,6 +1760,22 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
             f.write(f"{'Nuclide':<12}  {'Initial':>16}  {'Final (op)':>16}  {'Change (%)':>12}\n")
             f.write("-" * 62 + "\n")
             for nuc, atoms in poison_data.items():
+                initial = atoms[0]
+                final   = atoms[last_operational_idx]
+                pct     = (final - initial) / initial * 100 if initial > 0 else float('nan')
+                f.write(f"{nuc:<12}  {initial:>16.4e}  {final:>16.4e}  {pct:>+12.2f}%\n")
+
+        # Isotopic summary — Graphite (final values from last operational step)
+        if graphite_data:
+            f.write("\n" + "=" * 80 + "\n")
+            f.write("GRAPHITE ISOTOPIC INVENTORY SUMMARY (atoms)\n")
+            f.write(f"  Final values at last operational step: {last_operational_idx} "
+                    f"(t = {time_days[last_operational_idx]:.1f} days, "
+                    f"k = {keff_mean[last_operational_idx]:.5f})\n")
+            f.write("=" * 80 + "\n")
+            f.write(f"{'Nuclide':<12}  {'Initial':>16}  {'Final (op)':>16}  {'Change (%)':>12}\n")
+            f.write("-" * 62 + "\n")
+            for nuc, atoms in graphite_data.items():
                 initial = atoms[0]
                 final   = atoms[last_operational_idx]
                 pct     = (final - initial) / initial * 100 if initial > 0 else float('nan')

@@ -183,14 +183,36 @@ def extract_beo_peak_fluence(run_dir, time_steps_s, keff_mean, params):
         except Exception as e:
             print(f"    [{step_label}] ERROR: {e}")
 
-    # ---- Find shutdown step (first k < 1.0 among result indices 0..n_results-1) ---
-    shutdown_idx = n_results   # default: never shuts down within these results
-    for idx in range(n_results):
-        if keff_mean[idx] < 1.0:
-            shutdown_idx = idx
-            break
+    # ---- Load operational array from depletion_summary.json if available -----
+    # Prefer the summary's operational array (consistent with depletion_postprocessing.py).
+    # Falls back to keff < 1.0 if the summary is not yet written.
+    operational_arr = None
+    summary_path = os.path.join(run_dir, "depletion_results", "depletion_summary.json")
+    if os.path.exists(summary_path):
+        try:
+            with open(summary_path) as _sf:
+                _summary = json.load(_sf)
+            if "operational" in _summary and _summary["operational"] is not None:
+                operational_arr = np.array(_summary["operational"], dtype=int)
+                print(f"  BeO: loaded operational array from depletion_summary.json")
+        except Exception as _e:
+            print(f"  BeO: WARNING: could not read depletion_summary.json: {_e}")
 
-    # ---- Integrate cumulative fluence (only while k >= 1.0) -----------------
+    # ---- Find shutdown step ---------------------------------------------------
+    shutdown_idx = n_results   # default: never shuts down
+    if operational_arr is not None and len(operational_arr) >= n_results:
+        for idx in range(n_results):
+            if operational_arr[idx] == 0:
+                shutdown_idx = idx
+                break
+    else:
+        # Fallback: first step where keff < 1.0
+        for idx in range(n_results):
+            if keff_mean[idx] < 1.0:
+                shutdown_idx = idx
+                break
+
+    # ---- Integrate cumulative fluence (only while operational) ---------------
     cumulative = np.zeros(n_results)
     running_total = 0.0
 
@@ -213,9 +235,9 @@ def extract_beo_peak_fluence(run_dir, time_steps_s, keff_mean, params):
     print(f"\n  BeO peak fluence summary:")
     print(f"    Total peak fluence:  {total_fluence:.4e} n/cm²")
     if shutdown_idx < n_results:
-        print(f"    Shutdown at step {shutdown_idx} (k_eff = {keff_mean[shutdown_idx]:.4f} < 1.0)")
+        print(f"    Shutdown at step {shutdown_idx}")
     else:
-        print(f"    Reactor remained supercritical throughout all steps")
+        print(f"    Reactor remained operational throughout all steps")
 
     return {
         "peak_flux_per_step_n_cm2_s": peak_flux,
@@ -262,7 +284,7 @@ def plot_and_save_beo_results(beo_fluence_data, x_data, x_label, x_label_short,
     if beo_sd_idx < len(keff_mean):
         sd_x = x_data[beo_sd_idx]
         ax.axvline(sd_x, color="red", linestyle="--", alpha=0.7,
-                   label=f"Shutdown (k < 1.0)")
+                   label=f"Shutdown (non-operational)")
     ax.set_xlabel(x_label, fontsize=12)
     ax.set_ylabel("Cumulative Peak Fluence (n/cm²)", fontsize=12)
     if show_titles:

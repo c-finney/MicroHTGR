@@ -579,6 +579,7 @@ def create_assembly_univs(
     T_matrix_z: list[float],
     T_reflector_z: list[float],
     ring_triso_lattices: dict,
+    ring_poison_mats: dict,
     axial_coords: list[float],
     reactor_bottom: float,
     reactor_top: float,
@@ -612,6 +613,9 @@ def create_assembly_univs(
         ring_triso_lattices (dict): Nested dict {ring_idx: {ax_idx: fill_object}} where
             fill_object is either an openmc.RectLattice (explicit TRISO) or openmc.Universe
             (homogenized RPT) — one fill object per (core ring, axial zone)
+        ring_poison_mats (dict): Nested dict {ring_idx: {ax_idx: openmc.Material}} holding
+            the depletable B4C_Poison clone for each (core ring, axial zone), mirroring
+            ring_triso_lattices but for burnable poison spatial burnup tracking.
         axial_coords (list[float]): Z-coordinates of axial zone boundaries in cm
         reactor_bottom (float): Bottom of the active core in cm
         reactor_top (float): Top of the active core in cm
@@ -696,8 +700,9 @@ def create_assembly_univs(
             fuel_ch_matrix_cell = openmc.Cell(region=+fuel_cyl, fill=mats.graphite)
             fuel_ch_matrix_cell.temperature = T_matrix
 
-            # Poison Channel
-            poison_ch_cell = openmc.Cell(region=-poison_cyl, fill=mats.b4c_poison)
+            # Poison Channel — use the ring- and axial-zone-specific poison material
+            this_poison_mat = ring_poison_mats[ring_idx][idx]
+            poison_ch_cell = openmc.Cell(region=-poison_cyl, fill=this_poison_mat)
             poison_ch_cell.temperature = T_matrix
             poison_ch_matrix_cell = openmc.Cell(region=+poison_cyl, fill=mats.graphite)
             poison_ch_matrix_cell.temperature = T_matrix

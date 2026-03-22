@@ -40,6 +40,7 @@ import sys
 import json
 import copy
 import subprocess
+import csv
 import numpy as np
 from datetime import datetime
 
@@ -63,16 +64,19 @@ openmc.config['cross_sections'] = cross_sections_path
 # STEP 1 — RECONSTRUCT DEPLETED MATERIAL COMPOSITIONS
 # ============================================================================
 
-def reconstruct_depleted_materials(depletion_run_dir, step_idx):
+def reconstruct_depleted_materials(depletion_run_dir, step_idx, h5_path=None):
     """
     Read depletion_results.h5 and return atom-density maps for all fuel zones.
 
     Parameters
     ----------
     depletion_run_dir : str
-        Directory containing depletion_results.h5 and run_params.json.
+        Directory containing run_params.json (and optionally depletion_results.h5).
     step_idx : int
         Depletion step index.  -1 = final (EOL) step.
+    h5_path : str, optional
+        Explicit path to the depletion HDF5 file.  If omitted, defaults to
+        ``depletion_run_dir/depletion_results.h5``.
 
     Returns
     -------
@@ -93,9 +97,10 @@ def reconstruct_depleted_materials(depletion_run_dir, step_idx):
     with open(params_path) as f:
         run_params = json.load(f)
 
-    h5_path = os.path.join(depletion_run_dir, "depletion_results.h5")
+    if h5_path is None:
+        h5_path = os.path.join(depletion_run_dir, "depletion_results.h5")
     if not os.path.exists(h5_path):
-        raise FileNotFoundError(f"depletion_results.h5 not found in {depletion_run_dir}")
+        raise FileNotFoundError(f"Depletion HDF5 not found: {h5_path}")
 
     results = openmc.deplete.Results(h5_path)
     n_steps = len(results)
@@ -183,33 +188,65 @@ def reconstruct_depleted_materials(depletion_run_dir, step_idx):
     print(f"  Reconstructed {len(depleted)} / "
           f"{len(fuel_mat_ids_2d) * len(fuel_mat_ids_2d[0])} fuel zones")
 
-    # ── Burnable poison (B4C) ──────────────────────────────────────────────
-    # The poison depletes heavily (B-10 burns up).  Injecting the depleted
-    # composition is essential for a correct post-depletion keff.
-    poison_mat_id_str = str(run_params.get("poison_material_id", ""))
-    poison_vol_cm3    = float(run_params.get("poison_volume_simulated_cm3", 0.0))
+    # ── Burnable poison (B4C) — spatial burnup (2D grid) ──────────────────
+    # Each ring × burnup-band has its own depletable poison clone.
+    # We reconstruct per-zone densities using the same pattern as fuel,
+    # storing them under ('poison', ring_idx, bax_idx) keys.
+    poison_mat_ids_2d  = run_params.get("poison_mat_ids", None)
+    poison_mat_volumes = {str(k): v
+                          for k, v in run_params.get("poison_mat_volumes", {}).items()}
 
-    if poison_mat_id_str and poison_mat_id_str in tracked_mat_ids and poison_vol_cm3 > 0:
-        poison_densities = {}
+    if poison_mat_ids_2d and poison_mat_volumes:
+        n_poison_reconstructed = 0
+        for p_ring_idx, p_row in enumerate(poison_mat_ids_2d):
+            for p_bax_idx, p_mat_id in enumerate(p_row):
+                p_mat_id_str = str(p_mat_id)
+                if p_mat_id_str not in tracked_mat_ids:
+                    continue
+                p_vol_cm3 = float(poison_mat_volumes.get(p_mat_id_str, 0.0))
+                if p_vol_cm3 <= 0:
+                    continue
+                p_densities = {}
+                for nuc in all_nuclides:
+                    if xs_nuclides is not None and nuc not in xs_nuclides:
+                        continue
+                    try:
+                        _, atoms = results.get_atoms(p_mat_id_str, nuc)
+                        n_at = float(atoms[step_idx])
+                        if n_at > 0:
+                            p_densities[nuc] = n_at / p_vol_cm3
+                    except Exception:
+                        pass
+                if p_densities:
+                    depleted[('poison', p_ring_idx, p_bax_idx)] = p_densities
+                    n_poison_reconstructed += 1
+        print(f"  Reconstructed {n_poison_reconstructed} / "
+              f"{sum(len(r) for r in poison_mat_ids_2d)} poison zones "
+              f"({len(poison_mat_ids_2d)} rings × {len(poison_mat_ids_2d[0])} axial bands)")
+    else:
+        print(f"  WARNING: poison_mat_ids / poison_mat_volumes not found in run_params.json "
+              f"— burnable poison compositions NOT reconstructed")
+
+    # ── Depletable graphite ────────────────────────────────────────────────
+    graphite_mat_id_str = str(run_params.get("graphite_material_id", ""))
+    graphite_vol_cm3    = float(run_params.get("graphite_volume_simulated_cm3", 0.0))
+
+    if graphite_mat_id_str and graphite_mat_id_str in tracked_mat_ids and graphite_vol_cm3 > 0:
+        graphite_densities = {}
         for nuc in all_nuclides:
             if xs_nuclides is not None and nuc not in xs_nuclides:
                 continue
             try:
-                _, atoms = results.get_atoms(poison_mat_id_str, nuc)
+                _, atoms = results.get_atoms(graphite_mat_id_str, nuc)
                 n_at = float(atoms[step_idx])
                 if n_at > 0:
-                    poison_densities[nuc] = n_at / poison_vol_cm3
+                    graphite_densities[nuc] = n_at / graphite_vol_cm3
             except Exception:
                 pass
-        if poison_densities:
-            depleted['poison'] = poison_densities
-            print(f"  Reconstructed burnable poison (mat {poison_mat_id_str}): "
-                  f"{len(poison_densities)} nuclides")
-        else:
-            print(f"  WARNING: no poison nuclide data found for mat {poison_mat_id_str}")
-    else:
-        print(f"  WARNING: burnable poison not found in depletion results "
-              f"(id={poison_mat_id_str!r}, vol={poison_vol_cm3:.1f} cm3)")
+        if graphite_densities:
+            depleted['graphite'] = graphite_densities
+            print(f"  Reconstructed depletable graphite (mat {graphite_mat_id_str}): "
+                  f"{len(graphite_densities)} nuclides")
 
     return depleted, fuel_mat_ids_2d, run_params, step_time_days
 
@@ -218,10 +255,10 @@ def reconstruct_depleted_materials(depletion_run_dir, step_idx):
 # STEP 2 — INJECT DEPLETED COMPOSITIONS INTO A FRESHLY BUILT MODEL
 # ============================================================================
 
-def _inject_depleted_materials(fuel_clones, depleted, model=None):
+def _inject_depleted_materials(fuel_clones, depleted, model=None, poison_clones=None):
     """
     Overwrite fuel-clone nuclide compositions with depleted atom densities.
-    Also injects the depleted burnable-poison (B4C) composition if present.
+    Also injects depleted burnable-poison (B4C) compositions if present.
 
     Called AFTER build_model() returns fuel_clones but BEFORE
     model.export_to_xml() is called, so the modified compositions are
@@ -233,9 +270,12 @@ def _inject_depleted_materials(fuel_clones, depleted, model=None):
         From build_model() — [ring_idx][bax_idx].
     depleted : dict
         From reconstruct_depleted_materials() — (ring, bax) -> {nuc: dens},
-        plus optional 'poison' key for the burnable poison material.
+        plus ('poison', ring, bax) keys for per-zone burnable poison.
     model : openmc.model.Model, optional
-        The freshly-built model; used to locate the B4C_Poison material.
+        The freshly-built model (unused for poison when poison_clones provided).
+    poison_clones : list[list[openmc.Material]], optional
+        From build_model() — [ring_idx][bax_idx] poison materials.
+        When provided, per-zone poison compositions are injected directly.
     """
     def _overwrite_mat(mat, nuc_densities):
         total_density = sum(nuc_densities.values())   # atoms/cm3
@@ -262,20 +302,32 @@ def _inject_depleted_materials(fuel_clones, depleted, model=None):
 
     print(f"  Injected depleted compositions into {injected} fuel material clones")
 
-    # ── Burnable poison ────────────────────────────────────────────────────
-    if 'poison' in depleted and model is not None:
-        poison_mat = next(
-            (m for m in model.materials if m.name == "B4C_Poison"), None
+    # ── Burnable poison — per-zone injection ───────────────────────────────
+    if poison_clones is not None:
+        poison_injected = 0
+        for p_ring_idx, p_ring in enumerate(poison_clones):
+            for p_bax_idx, p_mat in enumerate(p_ring):
+                key = ('poison', p_ring_idx, p_bax_idx)
+                if key not in depleted:
+                    continue
+                nuc_densities = depleted[key]
+                if not nuc_densities:
+                    continue
+                _overwrite_mat(p_mat, nuc_densities)
+                poison_injected += 1
+        print(f"  Injected depleted compositions into {poison_injected} poison material clones")
+
+    # ── Depletable graphite ────────────────────────────────────────────────
+    if 'graphite' in depleted and model is not None:
+        graphite_mat = next(
+            (m for m in model.materials if m.name == "Graphite"), None
         )
-        if poison_mat is not None:
-            _overwrite_mat(poison_mat, depleted['poison'])
-            print(f"  Injected depleted composition into B4C_Poison material")
+        if graphite_mat is not None:
+            _overwrite_mat(graphite_mat, depleted['graphite'])
+            print(f"  Injected depleted composition into Graphite material")
         else:
-            print(f"  WARNING: 'poison' key in depleted but no B4C_Poison "
-                  f"material found in model — poison NOT injected")
-    elif 'poison' in depleted and model is None:
-        print(f"  WARNING: 'poison' key in depleted but model not passed — "
-              f"B4C_Poison NOT injected")
+            print(f"  WARNING: 'graphite' key in depleted but no Graphite "
+                  f"material found in model — graphite NOT injected")
 
 
 def _assert_new_dir(run_dir, depletion_run_dir=None):
@@ -324,10 +376,10 @@ def _run_eigenvalue_with_depleted(params, depleted, run_dir, depletion_run_dir=N
 
     _assert_new_dir(run_dir, depletion_run_dir)
     os.makedirs(run_dir, exist_ok=True)
-    model, n_trisos, m_colors, fuel_clones = build_model(params, run_dir)
+    model, n_trisos, m_colors, fuel_clones, poison_clones = build_model(params, run_dir)
 
     print(f"\n  Injecting depleted compositions...")
-    _inject_depleted_materials(fuel_clones, depleted, model=model)
+    _inject_depleted_materials(fuel_clones, depleted, model=model, poison_clones=poison_clones)
 
     model.export_to_xml()
 
@@ -359,12 +411,18 @@ def _run_eigenvalue_with_depleted(params, depleted, run_dir, depletion_run_dir=N
 
 
 def _read_keff(run_dir):
-    """Read k_eff and std_dev from the statepoint in run_dir."""
+    """Read the Combined k-effective and its std_dev from the statepoint in run_dir.
+
+    sp.keff reads the 'k_combined' dataset from the HDF5 statepoint, which is
+    the combined (analog + track-length + collision) estimator — the same value
+    reported as 'Combined k-effective' in OpenMC's terminal output.
+    """
     import glob
     sp_files = sorted(glob.glob(os.path.join(run_dir, "statepoint.*.h5")))
     if not sp_files:
         raise FileNotFoundError(f"No statepoint file in {run_dir}")
     sp = openmc.StatePoint(sp_files[-1])
+    # sp.keff == sp.k_combined (the 'k_combined' HDF5 dataset)
     return float(sp.keff.n), float(sp.keff.s)
 
 
@@ -518,8 +576,8 @@ def find_critical_rod_insertion(
  
     # Reduced-particle settings for all search iterations
     search_params = copy.deepcopy(params)
-    search_params["total_batches"]       = params.get("critical_search_batches",  100)
-    search_params["inactive_batches"]    = params.get("critical_search_inactive",  40)
+    search_params["total_batches"]       = params.get("critical_search_batches",  50)
+    search_params["inactive_batches"]    = params.get("critical_search_inactive",  25)
     search_params["particles"]           = params.get(
         "critical_search_particles",
         max(50_000, params.get("particles", 100_000) // 2)
@@ -563,7 +621,7 @@ def find_critical_rod_insertion(
     print(f"  k_eff = {k0:.5f} +/- {k0_std:.5f}   "
           f"(delta = {(k0 - k_target)*1e5:+.0f} pcm)")
  
-    if abs(k0 - k_target) < k_tol:
+    if abs(k0 - k_target) < k_tol and k0 > 1.0:
         print(f"\n  Converged at stage 0: bank 1 = 1.0, bank 2 = 0.0")
         print(f"  CSV summary -> {csv_path}")
         return {
@@ -691,7 +749,7 @@ def find_critical_rod_insertion(
             best_ins = mid
             best_dir = trial_dir
  
-        if abs(k - k_target) < k_tol:
+        if abs(k - k_target) < k_tol and k > 1.0:
             converged = True
             print(f"\n  Converged: {active_bank} = {mid:.4f}, "
                   f"k = {k:.5f} +/- {k_std:.5f}")
@@ -1082,7 +1140,7 @@ def run_mol_eol_heat_map(
         k_check, k_check_std = _read_keff(quick_dir)
         print(f"  k_eff (rods out) = {k_check:.5f} ± {k_check_std:.5f}")
 
-        if abs(k_check - 1.0) < k_tol:
+        if abs(k_check - 1.0) < k_tol and k_check > 1.0:
             # Already critical — no search needed
             print(f"  Core is already critical with rods out — skipping search")
             rod_insertion = 0.0

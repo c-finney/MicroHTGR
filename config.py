@@ -116,8 +116,8 @@ params = {
     "plot_threads": 128,         # OpenMP threads used by openmc --plot
 
     # ----- Spatial Burnup Resolution -----
-    "ax_zones_per_burnup_region": 10,
-    "use_spatial_burnup": False,
+    "ax_zones_per_burnup_region": 10, # Number of axial zones per burnup region, note there are as many radial zones as there are rings in core_rings
+    "use_spatial_burnup": True,       # Adds axial and radial burnup zones and heating-local tallies for each zone to calculate min/max burnup
 
     # ----- RPT Homogenization (Reactivity Equivalent Physical Transform) -----
     # Set use_homogenized_fuel=True to activate the two-region RPT model.
@@ -151,15 +151,15 @@ params = {
     "critical_search_max_iter": 20,
 
     # ----- Graphite Depletion -----
-    "deplete_graphite": False,               # Deplete graphite as a single lumped core-averaged material
-    "graphite_volume_particles": 1_000_000, # Stochastic volume calculation samples (auto-enabled when deplete_graphite=True)
+    "deplete_graphite": True,               # Deplete graphite as a single lumped core-averaged material
+    "graphite_volume_particles": 10_000_000, # Stochastic volume calculation samples (auto-enabled when deplete_graphite=True)
 
     # ----- Depletion Study Configuration -----
     "thermal_power_MW": 10.0,
     # "depletion_chain_file": "/home/cade/Desktop/OpenMC/CrossSections/chain_endfb81_thermal.xml",
     "depletion_chain_file": "/home/cade/Desktop/OpenMC/CrossSections/chain_casl_pwr.xml",
     "use_reduced_chain_file": False,
-    "depletion_timesteps_days": [2, 2, 2, 2, 2, 10, 10, 10, 30, 30, 30, 60, 60, 60, 120, 120, 120, 180, 180, 180, 180],
+    "depletion_timesteps_days": [1, 3, 3, 3],
     "depletion_integrator": "PredictorIntegrator",
     # Integrator options:
     #    "PredictorIntegrator" — simplest, one transport solve per step
@@ -251,5 +251,5 @@ params = {
     #                         Runs one explicit-TRISO reference then scans rpt_calibration_n_points RPT models.
     #                         After running, set rpt_radius in this file to the reported optimal value.
     "run_post_processing": True, # Note this controls individual study post-processing for ParametricStudy runs as parametric post-processing is always run
-    "show_titles": True,
+    "show_titles": True,         # Determines whether titles should be shown on plots generated during study
 }
