@@ -1037,16 +1037,16 @@ def run_rpt_calibration(params, output_base_dir, run_simulation_fn):
     ---------
     1. Run an explicit-TRISO reference simulation (use_homogenized_fuel=False)
        to obtain k_eff_ref.
-    2. Scan rpt_calibration_n_points values of r_rpt linearly from
-         r_min = compact_radius * sqrt(triso_pf)   (maximum self-shielding)
-       to
-         r_max = compact_radius                    (flat homogenization baseline)
-    3. Interpolate linearly between the two bracketing points to estimate the
-       r_rpt at which k_eff(RPT) = k_eff_ref.
+    2. Establish an initial bracket by running both endpoints:
+         r_lo = compact_radius * sqrt(triso_pf)   (maximum self-shielding → highest k_eff)
+         r_hi = compact_radius                    (flat homogenization   → lowest  k_eff)
+    3. Iterate with regula falsi + Illinois anti-stagnation until
+       |k_eff - k_eff_ref| < rpt_calibration_k_tol or rpt_calibration_max_iter is reached.
     4. Save results to rpt_calibration_results.json and print a summary table.
 
-    Because k_eff is monotonically increasing as r_rpt decreases, the scan
-    is guaranteed to find at most one crossing.
+    k_eff is monotonically DECREASING as r_rpt increases (r_lo → r_hi), so a
+    single bracket is guaranteed to exist if k_eff_ref lies within the RPT
+    model's achievable range.
 
     After running, set  rpt_radius = <optimal value>  in config.py, then use
     study_execution_mode = "SingleStudy" or "DepletionStudy" with
@@ -1064,15 +1064,18 @@ def run_rpt_calibration(params, output_base_dir, run_simulation_fn):
 
     r_compact = params["compact_radius"]
     pf        = params["triso_pf"]
-    r_min     = r_compact * pf**0.5         # minimum r_rpt (pf_inner = 1)
-    r_max     = r_compact                    # maximum r_rpt (flat homogenization)
-    n_pts     = params.get("rpt_calibration_n_points", 8)
+    r_lo      = r_compact * pf**0.5         # lower bound (pf_inner = 1, highest k_eff)
+    r_hi      = r_compact                    # upper bound (flat homogenization, lowest k_eff)
+    k_tol     = params.get("rpt_calibration_k_tol",   0.005)
+    max_iter  = params.get("rpt_calibration_max_iter", 20)
 
     print(f"\n{'='*80}")
     print("RPT CALIBRATION STUDY")
     print(f"  compact_radius  = {r_compact:.4f} cm")
     print(f"  triso_pf        = {pf:.3f}")
-    print(f"  r_rpt scan      = [{r_min:.4f}, {r_max:.4f}] cm  ({n_pts} points)")
+    print(f"  r_rpt bracket   = [{r_lo:.4f}, {r_hi:.4f}] cm")
+    print(f"  k_tol           = {k_tol}")
+    print(f"  max_iter        = {max_iter}")
     print(f"  Output dir      = {output_base_dir}")
     print(f"{'='*80}")
 
@@ -1093,89 +1096,124 @@ def run_rpt_calibration(params, output_base_dir, run_simulation_fn):
     print(f"\nReference k_eff (explicit TRISO): {k_eff_ref:.5f} ± {k_eff_ref_std:.5f}")
 
     # ------------------------------------------------------------------
-    # Step 2: scan r_rpt values with early exit on bracket
-    #
-    # k_eff is monotonically DECREASING as r_rpt increases (r_min → r_max):
-    #   r_min → pf_inner = 1  → maximum self-shielding → highest k_eff
-    #   r_max → pf_inner = pf → flat homogenization   → lowest  k_eff
-    #
-    # As soon as two consecutive points straddle k_eff_ref we have a
-    # bracket and can interpolate immediately — no further runs needed.
+    # Step 2: initial bracket runs at r_lo and r_hi
     # ------------------------------------------------------------------
-    r_rpt_values    = np.linspace(r_min, r_max, n_pts)
-    rpt_results     = []
-    optimal_r_rpt   = None
-    optimal_delta_k = None
-    bracket_found   = False
+    rpt_results = []
+    case_counter = [0]
 
-    for i, r_rpt in enumerate(r_rpt_values):
+    def _run_rpt_case(r_rpt, label):
+        case_counter[0] += 1
         pf_inner = pf * (r_compact / r_rpt)**2
-        print(f"\n--- RPT Case {i+1}/{n_pts}: r_rpt = {r_rpt:.4f} cm  "
+        print(f"\n--- RPT Case {case_counter[0]} ({label}): r_rpt = {r_rpt:.4f} cm  "
               f"(pf_inner = {pf_inner:.4f}) ---")
-
-        rpt_params = copy.copy(params)
-        rpt_params["use_homogenized_fuel"] = True
-        rpt_params["rpt_radius"]           = r_rpt
-        rpt_params["make_geometry_plots"]  = False
-
+        rpt_p = copy.copy(params)
+        rpt_p["use_homogenized_fuel"] = True
+        rpt_p["rpt_radius"]           = r_rpt
+        rpt_p["make_geometry_plots"]  = False
         case_dir = os.path.join(output_base_dir,
-                                f"rpt_case_{i+1:02d}_r{r_rpt:.4f}cm")
-        run_simulation_fn(rpt_params, case_dir)
-
-        k_eff, k_eff_std = _extract_keff(case_dir)
-        delta_k_pcm = (k_eff - k_eff_ref) * 1e5
-        print(f"  k_eff = {k_eff:.5f} ± {k_eff_std:.5f}  "
-              f"(Δk = {delta_k_pcm:+.0f} pcm vs. reference)")
-
+                                f"rpt_case_{case_counter[0]:02d}_r{r_rpt:.4f}cm")
+        run_simulation_fn(rpt_p, case_dir)
+        k, k_std = _extract_keff(case_dir)
+        dk_pcm = (k - k_eff_ref) * 1e5
+        print(f"  k_eff = {k:.5f} ± {k_std:.5f}  (Δk = {dk_pcm:+.0f} pcm vs. reference)")
         rpt_results.append({
             "r_rpt":       float(r_rpt),
             "pf_inner":    float(pf_inner),
-            "k_eff":       float(k_eff),
-            "k_eff_std":   float(k_eff_std),
-            "delta_k_pcm": float(delta_k_pcm),
+            "k_eff":       float(k),
+            "k_eff_std":   float(k_std),
+            "delta_k_pcm": float(dk_pcm),
         })
+        return k, k_std
 
-        # Early exit: check if the last two points bracket k_eff_ref
-        if len(rpt_results) >= 2:
-            k_prev = rpt_results[-2]["k_eff"]
-            r_prev = rpt_results[-2]["r_rpt"]
-            if (k_prev - k_eff_ref) * (k_eff - k_eff_ref) <= 0:
-                # Linear interpolation within the bracket
-                optimal_r_rpt   = r_prev + (k_eff_ref - k_prev) / (k_eff - k_prev) * (r_rpt - r_prev)
-                optimal_delta_k = 0.0
-                bracket_found   = True
-                remaining       = n_pts - i - 1
-                print(f"\n  >>> Bracket found between cases {i} and {i+1}. "
-                      f"Interpolated r_rpt = {optimal_r_rpt:.4f} cm")
-                if remaining > 0:
-                    print(f"  Early exit: skipping remaining {remaining} case(s).")
+    print(f"\n--- Step 2: Initial bracket runs ---")
+    k_lo, _ = _run_rpt_case(r_lo, "lower bound")
+    k_hi, _ = _run_rpt_case(r_hi, "upper bound")
+
+    optimal_r_rpt = None
+    converged     = False
+
+    # Verify k_eff_ref lies within the achievable range
+    if (k_lo - k_eff_ref) * (k_hi - k_eff_ref) >= 0:
+        best = min(rpt_results, key=lambda r: abs(r["k_eff"] - k_eff_ref))
+        optimal_r_rpt = best["r_rpt"]
+        print(f"\nWARNING: k_eff_ref = {k_eff_ref:.5f} is outside the RPT model's "
+              f"achievable range [{k_hi:.5f}, {k_lo:.5f}].")
+        print(f"  Using nearest endpoint r_rpt = {optimal_r_rpt:.4f} cm as best estimate.")
+        print(f"  Check whether the explicit-TRISO k_eff lies within the RPT model's achievable range.")
+    else:
+        # ------------------------------------------------------------------
+        # Step 3: Illinois regula falsi iteration
+        #
+        # Bracket invariant: k(r_lo_b) > k_eff_ref > k(r_hi_b)
+        # ------------------------------------------------------------------
+        r_lo_b, k_lo_b = r_lo, k_lo
+        r_hi_b, k_hi_b = r_hi, k_hi
+        last_side       = None
+        same_side_count = 0
+
+        print(f"\n--- Step 3: Illinois interpolation search "
+              f"(k_tol = {k_tol}, max_iter = {max_iter}) ---")
+
+        for _ in range(max_iter):
+            dk = k_lo_b - k_hi_b
+            if abs(dk) < 1e-9:
+                r_mid = 0.5 * (r_lo_b + r_hi_b)
+            else:
+                # Illinois: halve stale endpoint's residual after two same-side hits
+                k_lo_eff = k_lo_b
+                k_hi_eff = k_hi_b
+                if same_side_count >= 2:
+                    if last_side == "lo":   # new pts keep landing on lo side → stale hi
+                        k_hi_eff = k_eff_ref + 0.5 * (k_hi_b - k_eff_ref)
+                    else:                   # new pts keep landing on hi side → stale lo
+                        k_lo_eff = k_eff_ref + 0.5 * (k_lo_b - k_eff_ref)
+                r_mid = r_lo_b + (k_eff_ref - k_lo_eff) / (k_hi_eff - k_lo_eff) * (r_hi_b - r_lo_b)
+                # Safety clamp against noisy MC k_eff pushing interpolation outside bracket
+                margin = 0.02 * (r_hi_b - r_lo_b)
+                r_mid  = max(r_lo_b + margin, min(r_hi_b - margin, r_mid))
+
+            k_mid, _ = _run_rpt_case(r_mid, "iter")
+
+            if abs(k_mid - k_eff_ref) < k_tol:
+                optimal_r_rpt = r_mid
+                converged     = True
+                print(f"\n  >>> Converged: |Δk| = {abs(k_mid - k_eff_ref):.5f} < {k_tol}")
                 break
 
-    # ------------------------------------------------------------------
-    # Step 3: fallback if no bracket was found in the scan range
-    # ------------------------------------------------------------------
-    if not bracket_found:
-        best = min(rpt_results, key=lambda r: abs(r["k_eff"] - k_eff_ref))
-        optimal_r_rpt   = best["r_rpt"]
-        optimal_delta_k = best["delta_k_pcm"]
-        print(f"\nWARNING: No bracketing crossing found across the full scan range "
-              f"[{r_min:.4f}, {r_max:.4f}] cm.")
-        print(f"  Nearest point ({optimal_r_rpt:.4f} cm, Δk = {optimal_delta_k:+.0f} pcm) "
-              f"used as best estimate.")
-        print(f"  Consider increasing rpt_calibration_n_points or checking whether "
-              f"the explicit-TRISO k_eff lies within the RPT model's achievable range.")
+            # Update bracket and track same-side count for Illinois
+            if (k_mid - k_eff_ref) > 0:
+                new_side = "lo"
+                r_lo_b, k_lo_b = r_mid, k_mid
+            else:
+                new_side = "hi"
+                r_hi_b, k_hi_b = r_mid, k_mid
+
+            same_side_count = same_side_count + 1 if new_side == last_side else 1
+            last_side = new_side
+
+        if not converged:
+            best = min(rpt_results, key=lambda r: abs(r["k_eff"] - k_eff_ref))
+            optimal_r_rpt = best["r_rpt"]
+            print(f"\nWARNING: Did not converge within {max_iter} iterations.")
+            print(f"  Best estimate: r_rpt = {optimal_r_rpt:.4f} cm  "
+                  f"(Δk = {best['delta_k_pcm']:+.0f} pcm)")
 
     # ------------------------------------------------------------------
     # Step 4: save results and print summary
     # ------------------------------------------------------------------
+    optimal_result  = next((r for r in rpt_results if r["r_rpt"] == optimal_r_rpt), None)
+    optimal_delta_k = optimal_result["delta_k_pcm"] if optimal_result else None
+
     calibration_results = {
         "reference_k_eff":         k_eff_ref,
         "reference_k_eff_std":     k_eff_ref_std,
         "r_compact":               r_compact,
         "triso_pf":                pf,
-        "r_rpt_min":               float(r_min),
-        "r_rpt_max":               float(r_max),
-        "n_points":                n_pts,
+        "r_rpt_min":               float(r_lo),
+        "r_rpt_max":               float(r_hi),
+        "k_tol":                   k_tol,
+        "max_iter":                max_iter,
+        "converged":               converged,
         "rpt_cases":               rpt_results,
         "optimal_r_rpt":           float(optimal_r_rpt),
         "optimal_delta_k_pcm":     float(optimal_delta_k) if optimal_delta_k is not None else None,
@@ -1195,7 +1233,7 @@ def run_rpt_calibration(params, output_base_dir, run_simulation_fn):
         print(f"  {r['r_rpt']:>12.4f}  {r['pf_inner']:>9.4f}  "
               f"{r['k_eff']:>10.5f}  ±  {r['k_eff_std']:>8.5f}  "
               f"{r['delta_k_pcm']:>+10.0f}")
-    print(f"\n  >>> Estimated optimal r_rpt = {optimal_r_rpt:.4f} cm")
+    print(f"\n  >>> Estimated optimal r_rpt = {optimal_r_rpt:.4f} cm  (converged: {converged})")
     print(f"\n  Set the following in config.py:")
     print(f"    \"rpt_radius\": {optimal_r_rpt:.4f},")
     print(f"\n  Full results saved to: {results_path}")
@@ -1362,7 +1400,17 @@ def _read_zone_heating_entry(run_dir, fuel_mat_ids_2d):
     try:
         sp = openmc.StatePoint(sp_files[-1])
         zone_tally = sp.get_tally(name="zone_heating_local")
-        df = zone_tally.get_pandas_dataframe()
+
+        # Read material filter bins and mean values directly from numpy arrays
+        # to avoid get_pandas_dataframe() failures on some OpenMC versions.
+        mat_filter = next(
+            f for f in zone_tally.filters
+            if isinstance(f, openmc.MaterialFilter)
+        )
+        # bins may be Material objects or plain ints depending on OpenMC version
+        mat_bins = [m.id if hasattr(m, 'id') else int(m) for m in mat_filter.bins]
+        # zone_tally.mean shape: (n_materials, n_nuclides, n_scores)
+        means = zone_tally.mean[:, 0, 0]   # scalar per material bin
 
         # Global heating (no filter) for normalisation denominator
         try:
@@ -1373,11 +1421,12 @@ def _read_zone_heating_entry(run_dir, fuel_mat_ids_2d):
 
         H_zones   = {}
         H_zone_sum = 0.0
+        mat_id_to_idx = {mid: i for i, mid in enumerate(mat_bins)}
         for ring_idx, row in enumerate(fuel_mat_ids_2d):
             for bax_idx, mat_id in enumerate(row):
-                key   = f"{ring_idx}_{bax_idx}"
-                rows  = df[df['material'] == mat_id]['mean'].values
-                H_z   = float(rows[0]) if len(rows) > 0 else 0.0
+                key = f"{ring_idx}_{bax_idx}"
+                idx = mat_id_to_idx.get(mat_id)
+                H_z = float(means[idx]) if idx is not None else 0.0
                 H_zones[key] = H_z
                 H_zone_sum  += H_z
 
@@ -2027,6 +2076,9 @@ def run_critical_search_depletion_simulation(params, run_dir):
     # Cumulative time (days) for logging
     cumulative_days = 0.0
 
+    # Critical search result from the previous timestep (used for warm-start)
+    prev_crit_result = None
+
     # ================================================================
     # STEP 0: Build the initial model at fresh (BOL) conditions and
     #         record material volumes / IDs in run_params.json.
@@ -2287,7 +2339,9 @@ def run_critical_search_depletion_simulation(params, run_dir):
             k_target      = 1.0,
             k_tol         = k_tol,
             max_iter      = max_iter,
+            prev_result   = prev_crit_result if step_idx > 0 else None,
         )
+        prev_crit_result = crit_result
 
         critical_b1  = crit_result["critical_bank_1"]
         critical_b2  = crit_result["critical_bank_2"]
@@ -2867,124 +2921,34 @@ if __name__ == "__main__":
     # ----- Run Critical Rod Search -----
 
     elif cfg.params["study_execution_mode"] == "CriticalSearch":
-        # ── BOL critical rod search ──────────────────────────────────────────
-        # Two-stage binary search to find the critical rod position at BOL:
-        #   Stage 0: bank 1 = 1.0, bank 2 = 0.0  →  quick k_eff check
-        #   Stage 1a: if k < 1, binary search bank 1 in [0,1] (bank 2 = 0)
-        #   Stage 1b: if k > 1, fix bank 1 = 1.0, binary search bank 2 in [0,1]
-        #   Bank 3 is unused and always left at 0.
-
-        def _read_keff_cs(run_dir):
-            sp_files = sorted(glob.glob(os.path.join(run_dir, "statepoint.*.h5")))
-            if not sp_files:
-                raise FileNotFoundError(f"No statepoint in {run_dir}")
-            sp = openmc.StatePoint(sp_files[-1])
-            return float(sp.keff.n), float(sp.keff.s)
+        try:
+            from mol_eol_analysis import find_critical_rod_insertion
+        except ImportError as exc:
+            raise ImportError(
+                "CriticalSearch mode requires mol_eol_analysis.py to be "
+                "importable from SCRIPT_DIR."
+            ) from exc
 
         BASE_DIR_CS = os.path.join(OUTPUT_BASE, run_name + "_CriticalSearch")
         os.makedirs(BASE_DIR_CS, exist_ok=True)
 
-        k_tol        = cfg.params.get("critical_search_k_tol",  0.003)
-        max_iter     = cfg.params.get("critical_search_max_iter", 20)
-
-        # Reduced particle settings for fast search iterations
-        sp = cfg.params.copy()
-        sp["total_batches"]       = 50
-        sp["inactive_batches"]    = 25
-        sp["particles"]           = 50_000
-        sp["make_geometry_plots"] = False
-        sp["use_mesh_tallies"]    = False
-        sp["use_BeO_tallies"]     = False
-        sp["use_leakage_tallies"] = False
-        sp["use_global_tallies"]  = False
+        k_tol    = cfg.params.get("critical_search_k_tol",     0.003)
+        max_iter = cfg.params.get("critical_search_max_iter",   20)
 
         print(f"\n{'='*80}")
         print(f"CRITICAL SEARCH — BOL")
         print(f"  Target: k_eff = 1.0  ±  {k_tol}")
-        print(f"  Particles per iter: {sp['particles']:,}  "
-              f"({sp['total_batches']} batches, {sp['inactive_batches']} inactive)")
         print(f"  Output: {BASE_DIR_CS}")
         print(f"{'='*80}")
 
-        # ── Stage 0 ─────────────────────────────────────────────────────────
-        s0 = sp.copy()
-        s0["bank_1_insertion"] = 1.0
-        s0["bank_2_insertion"] = 0.0
-        s0["bank_3_insertion"] = 0.0
-        s0_dir = os.path.join(BASE_DIR_CS, "stage0_bank1_full_bank2_out")
-
-        print(f"\n  Stage 0: bank 1 = 1.0, bank 2 = 0.0")
-        run_simulation(s0, s0_dir)
-        k0, k0_std = _read_keff_cs(s0_dir)
-        print(f"  k_eff = {k0:.5f} ± {k0_std:.5f}   "
-              f"(Δ = {(k0 - 1.0)*1e5:+.0f} pcm)")
-
-        if abs(k0 - 1.0) < k_tol and k0 > 1.0:
-            print(f"\n  ✓ Converged at stage 0: bank 1 = 1.0, bank 2 = 0.0")
-            cs_result = {"critical_bank_1": 1.0, "critical_bank_2": 0.0,
-                         "critical_keff": k0, "critical_keff_std": k0_std,
-                         "search_stage": "bank1", "converged": True,
-                         "n_iterations": 1, "critical_run_dir": s0_dir}
-        else:
-            # ── Stage 1 ─────────────────────────────────────────────────────
-            if k0 < 1.0:
-                active_bank  = "bank_1"
-                fixed_b1, fixed_b2 = None, 0.0
-                search_stage = "bank1"
-                print(f"\n  k < 1 with bank 1 full → binary search on bank 1 (bank 2 = 0)")
-            else:
-                active_bank  = "bank_2"
-                fixed_b1, fixed_b2 = 1.0, None
-                search_stage = "bank2"
-                print(f"\n  k > 1 with bank 1 full → binary search on bank 2 (bank 1 = 1.0)")
-
-            lo, hi = 0.0, 1.0
-            best = {"ins": None, "k": None, "std": None, "dir": None}
-            converged = False
-
-            for i in range(max_iter):
-                mid = 0.5 * (lo + hi)
-                it = sp.copy()
-                it["bank_3_insertion"] = 0.0
-                if active_bank == "bank_1":
-                    it["bank_1_insertion"] = mid
-                    it["bank_2_insertion"] = fixed_b2
-                else:
-                    it["bank_1_insertion"] = fixed_b1
-                    it["bank_2_insertion"] = mid
-
-                it_dir = os.path.join(BASE_DIR_CS,
-                                      f"search_{search_stage}_iter{i+1:02d}_ins{mid:.4f}")
-                print(f"\n  Iter {i+1:2d}: {active_bank} = {mid:.4f}  [{lo:.4f}, {hi:.4f}]")
-                run_simulation(it, it_dir)
-                k, k_std = _read_keff_cs(it_dir)
-                print(f"         k_eff = {k:.5f} ± {k_std:.5f}   "
-                      f"(Δ = {(k - 1.0)*1e5:+.0f} pcm)")
-
-                if best["k"] is None or abs(k - 1.0) < abs(best["k"] - 1.0):
-                    best = {"ins": mid, "k": k, "std": k_std, "dir": it_dir}
-
-                if abs(k - 1.0) < k_tol and k > 1:
-                    converged = True
-                    print(f"\n  ✓ Converged: {active_bank} = {mid:.4f}, "
-                          f"k = {k:.5f} ± {k_std:.5f}")
-                    break
-
-                if k > 1.0:
-                    lo = mid
-                else:
-                    hi = mid
-
-            if not converged:
-                print(f"\n  WARNING: Did not converge in {max_iter} iterations.")
-                print(f"  Best: {active_bank} = {best['ins']:.4f}, k = {best['k']:.5f}")
-
-            final_b1 = best["ins"] if search_stage == "bank1" else 1.0
-            final_b2 = best["ins"] if search_stage == "bank2" else 0.0
-            cs_result = {"critical_bank_1": final_b1, "critical_bank_2": final_b2,
-                         "critical_keff": best["k"], "critical_keff_std": best["std"],
-                         "search_stage": search_stage, "converged": converged,
-                         "n_iterations": i + 1, "critical_run_dir": best["dir"]}
+        cs_result = find_critical_rod_insertion(
+            params     = cfg.params,
+            depleted   = {},
+            output_dir = BASE_DIR_CS,
+            k_target   = 1.0,
+            k_tol      = k_tol,
+            max_iter   = max_iter,
+        )
 
         print(f"\n{'='*80}")
         print(f"  CRITICAL SEARCH RESULT — BOL")

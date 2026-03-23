@@ -1619,13 +1619,13 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
         "total_B10_mass_kg":             total_B10_mass_kg,
         "fuel_nuclides_extracted":       list(fuel_data.keys()),
         "poison_nuclides_extracted":     list(poison_data.keys()),
-        "peak_burnup_MWd_per_MtU":      (peak_burnup_data["peak_burnup_MWd_MtU"].tolist()
-                                         if peak_burnup_data is not None else None),
-        "peak_burnup_final_MWd_per_MtU":(float(peak_burnup_data["peak_burnup_MWd_MtU"][-1])
-                                         if peak_burnup_data is not None else None),
-        "peak_burnup_zone_final":        (peak_burnup_data["zone_labels"][
-                                              int(peak_burnup_data["peak_zone"][-1])]
-                                         if peak_burnup_data is not None else None),
+        "peak_burnup_MWd_per_MtU":      (mwdmtu_data["peak_burnup_MWd_MtU"].tolist()
+                                         if mwdmtu_data is not None else None),
+        "peak_burnup_final_MWd_per_MtU":(float(mwdmtu_data["peak_burnup_MWd_MtU"][-1])
+                                         if mwdmtu_data is not None else None),
+        "peak_burnup_zone_final":        (mwdmtu_data["zone_labels"][
+                                              int(mwdmtu_data["peak_zone"][-1])]
+                                         if mwdmtu_data is not None else None),
         # Conversion ratio
         "conversion_ratio":              (cr_data["CR"].tolist()
                                           if cr_data is not None else None),

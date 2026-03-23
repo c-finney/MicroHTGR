@@ -517,6 +517,7 @@ def find_critical_rod_insertion(
     k_target=1.0,
     k_tol=0.003,
     max_iter=20,
+    prev_result=None,
 ):
     """
     Two-stage interpolation search to find the critical rod insertion fraction.
@@ -549,6 +550,24 @@ def find_critical_rod_insertion(
         Convergence tolerance on |k_eff - k_target|.
     max_iter : int
         Maximum interpolation-search iterations per stage.
+    prev_result : dict or None
+        Result dict returned by a previous call to this function (e.g. from the
+        preceding depletion timestep).  When provided, the search uses warm-start
+        brackets derived from the previous critical insertion, reducing the number
+        of trial runs needed:
+
+        * Previous stage was "bank1" (bank 2 remained at 0):
+          Stage 0 is skipped.  Two bracketing runs are made at bank_1 = 0.0
+          and bank_1 = prev_result["critical_bank_1"].  The search then
+          proceeds in [0, prev_b1] instead of [0, 1].
+
+        * Previous stage was "bank2" (bank 1 stayed at 1.0):
+          Stage 0 (bank_1=1, bank_2=0) is still run.  The upper bracket for
+          bank 2 is set to prev_result["critical_bank_2"] instead of 1.0.
+
+        In both cases, if the warm hint does not provide a valid bracket (the
+        core reactivity increased unexpectedly), the algorithm falls back to the
+        normal full-range bracket automatically.
  
     Returns
     -------
@@ -614,37 +633,30 @@ def find_critical_rod_insertion(
  
         return k, k_std
  
-    # ── Stage 0: bank 1 fully inserted, bank 2 out ─────────────────────────
-    s0_dir = os.path.join(output_dir, "stage0")
-    print(f"\n  Stage 0: bank 1 = 1.0, bank 2 = 0.0")
-    k0, k0_std = _run_trial("stage0", 0, b1=1.0, b2=0.0, trial_dir=s0_dir)
-    print(f"  k_eff = {k0:.5f} +/- {k0_std:.5f}   "
-          f"(delta = {(k0 - k_target)*1e5:+.0f} pcm)")
- 
-    if abs(k0 - k_target) < k_tol and k0 > 1.0:
-        print(f"\n  Converged at stage 0: bank 1 = 1.0, bank 2 = 0.0")
-        print(f"  CSV summary -> {csv_path}")
-        return {
-            "critical_bank_1":    1.0,
-            "critical_bank_2":    0.0,
-            "critical_insertion": 1.0,
-            "search_stage":       "bank1",
-            "critical_keff":      k0,
-            "critical_keff_std":  k0_std,
-            "critical_run_dir":   s0_dir,
-            "converged":          True,
-            "n_iterations":       1,
-            "csv_path":           csv_path,
-        }
- 
-    # ── Stage 1: choose which bank to search ───────────────────────────────
-    if k0 < k_target:
+    # Extract warm-start hints from a previous critical search result (if any).
+    # As fuel depletes (loses reactivity), the critical insertion fraction
+    # decreases — meaning the previous step's critical insertion is a valid
+    # upper bracket for the current search, tightening the initial interval.
+    _prev_stage   = prev_result.get("search_stage") if prev_result else None
+    _prev_b1_hint = prev_result.get("critical_bank_1") if prev_result else None
+    _prev_b2_hint = prev_result.get("critical_bank_2") if prev_result else None
+
+    # ── Bank-1 warm-start path (stage 0 skipped) ───────────────────────────────────
+    # When the previous step converged in the bank-1 stage (bank 2 stayed at
+    # 0), the critical bank-1 insertion is expected to be <= prev_b1_hint at
+    # the current (more depleted) step.  Use prev_b1_hint directly as the
+    # upper bracket and skip the expensive stage-0 run at bank_1=1.0.
+    if (_prev_stage == "bank1"
+            and _prev_b1_hint is not None
+            and 0.0 < _prev_b1_hint <= 1.0):
+
         active_bank  = "bank_1"
         fixed_b2     = 0.0
         search_stage = "bank1"
-        print(f"\n  k < k_target with bank 1 full -> interpolation search on "
-              f"bank 1  (bank 2 = 0.0)")
-        # Need k at insertion=0 to open the high-k end of the bracket
+        print(f"\n  Warm-start (bank1 stage): skipping stage 0; "
+              f"previous critical bank_1 = {_prev_b1_hint:.4f}")
+
+        # Iter 0: fully withdrawn — establishes the high-k (lo) bracket end
         lo_dir = os.path.join(output_dir, "stage1_iter00_b1_0.0000")
         print(f"\n  Iter  0: bank_1 = 0.0000  [bracketing rods-out end]")
         k_at_0, k_at_0_std = _run_trial(search_stage, 0,
@@ -652,7 +664,7 @@ def find_critical_rod_insertion(
                                          trial_dir=lo_dir)
         print(f"         k_eff = {k_at_0:.5f} +/- {k_at_0_std:.5f}   "
               f"(delta = {(k_at_0 - k_target)*1e5:+.0f} pcm)")
- 
+
         if k_at_0 < k_target:
             print(f"\n  WARNING: k_eff < k_target with all rods withdrawn. "
                   f"Core is subcritical. Returning rods-out result.")
@@ -666,49 +678,232 @@ def find_critical_rod_insertion(
                 "critical_keff_std":  k_at_0_std,
                 "critical_run_dir":   lo_dir,
                 "converged":          False,
+                "n_iterations":       1,
+                "csv_path":           csv_path,
+            }
+
+        # Iter 1: previous critical insertion — should give k < k_target
+        hint_dir = os.path.join(output_dir,
+                                f"stage1_iter01_b1_{_prev_b1_hint:.4f}")
+        print(f"\n  Iter  1: bank_1 = {_prev_b1_hint:.4f}  "
+              f"[warm-start upper bracket]")
+        k_at_hint, k_at_hint_std = _run_trial(search_stage, 1,
+                                               b1=_prev_b1_hint, b2=fixed_b2,
+                                               trial_dir=hint_dir)
+        print(f"         k_eff = {k_at_hint:.5f} +/- {k_at_hint_std:.5f}   "
+              f"(delta = {(k_at_hint - k_target)*1e5:+.0f} pcm)")
+
+        if abs(k_at_hint - k_target) < k_tol and k_at_hint > 1.0:
+            print(f"\n  Converged at warm-start bracket: bank_1 = "
+                  f"{_prev_b1_hint:.4f}, k = {k_at_hint:.5f} +/- {k_at_hint_std:.5f}")
+            print(f"  CSV summary -> {csv_path}")
+            return {
+                "critical_bank_1":    _prev_b1_hint,
+                "critical_bank_2":    0.0,
+                "critical_insertion": _prev_b1_hint,
+                "search_stage":       search_stage,
+                "critical_keff":      k_at_hint,
+                "critical_keff_std":  k_at_hint_std,
+                "critical_run_dir":   hint_dir,
+                "converged":          True,
                 "n_iterations":       2,
                 "csv_path":           csv_path,
             }
- 
-        lo, k_lo   = 0.0, k_at_0   # high k side (rods out)
-        hi, k_hi   = 1.0, k0       # low  k side (rods in)
-        iter_offset = 1
- 
+
+        if k_at_hint > k_target:
+            # Warm hint did not bracket (core still supercritical at prev_b1).
+            # Extend to bank_1=1.0 for a valid upper bracket.
+            print(f"\n  Warm hint gave k > k_target; "
+                  f"extending upper bracket to bank_1 = 1.0")
+            ext_dir = os.path.join(output_dir, "stage1_iter02_b1_1.0000")
+            print(f"\n  Iter  2: bank_1 = 1.0000  [extended upper bracket]")
+            k_at_1, k_at_1_std = _run_trial(search_stage, 2,
+                                             b1=1.0, b2=fixed_b2,
+                                             trial_dir=ext_dir)
+            print(f"         k_eff = {k_at_1:.5f} +/- {k_at_1_std:.5f}   "
+                  f"(delta = {(k_at_1 - k_target)*1e5:+.0f} pcm)")
+            lo, k_lo   = 0.0, k_at_0
+            hi, k_hi   = 1.0, k_at_1
+            iter_offset = 3
+        else:
+            # Warm hint is a valid upper bracket: search in [0.0, prev_b1]
+            lo, k_lo   = 0.0, k_at_0
+            hi, k_hi   = _prev_b1_hint, k_at_hint
+            iter_offset = 2
+
     else:
-        active_bank  = "bank_2"
-        fixed_b1     = 1.0
-        search_stage = "bank2"
-        print(f"\n  k > k_target with bank 1 full -> interpolation search on "
-              f"bank 2  (bank 1 = 1.0)")
-        # Need k at bank_2=1 to open the low-k end of the bracket
-        hi_dir = os.path.join(output_dir, "stage1_iter00_b2_1.0000")
-        print(f"\n  Iter  0: bank_2 = 1.0000  [bracketing all-rods-in end]")
-        k_at_1, k_at_1_std = _run_trial(search_stage, 0,
-                                          b1=fixed_b1, b2=1.0,
-                                          trial_dir=hi_dir)
-        print(f"         k_eff = {k_at_1:.5f} +/- {k_at_1_std:.5f}   "
-              f"(delta = {(k_at_1 - k_target)*1e5:+.0f} pcm)")
- 
-        if k_at_1 > k_target:
-            print(f"\n  WARNING: k_eff > k_target with all rods inserted. "
-                  f"Cannot suppress to k_target. Returning all-rods-in result.")
+        # ── Stage 0: bank 1 fully inserted, bank 2 out ─────────────────────────────
+        s0_dir = os.path.join(output_dir, "stage0")
+        print(f"\n  Stage 0: bank 1 = 1.0, bank 2 = 0.0")
+        k0, k0_std = _run_trial("stage0", 0, b1=1.0, b2=0.0, trial_dir=s0_dir)
+        print(f"  k_eff = {k0:.5f} +/- {k0_std:.5f}   "
+              f"(delta = {(k0 - k_target)*1e5:+.0f} pcm)")
+
+        if abs(k0 - k_target) < k_tol and k0 > 1.0:
+            print(f"\n  Converged at stage 0: bank 1 = 1.0, bank 2 = 0.0")
             print(f"  CSV summary -> {csv_path}")
             return {
                 "critical_bank_1":    1.0,
-                "critical_bank_2":    1.0,
+                "critical_bank_2":    0.0,
                 "critical_insertion": 1.0,
-                "search_stage":       search_stage,
-                "critical_keff":      k_at_1,
-                "critical_keff_std":  k_at_1_std,
-                "critical_run_dir":   hi_dir,
-                "converged":          False,
-                "n_iterations":       2,
+                "search_stage":       "bank1",
+                "critical_keff":      k0,
+                "critical_keff_std":  k0_std,
+                "critical_run_dir":   s0_dir,
+                "converged":          True,
+                "n_iterations":       1,
                 "csv_path":           csv_path,
             }
- 
-        lo, k_lo   = 0.0, k0      # high k side (bank_2 out)
-        hi, k_hi   = 1.0, k_at_1  # low  k side (bank_2 in)
-        iter_offset = 1
+
+        # ── Stage 1: choose which bank to search ────────────────────────────────────
+        if k0 < k_target:
+            active_bank  = "bank_1"
+            fixed_b2     = 0.0
+            search_stage = "bank1"
+            print(f"\n  k < k_target with bank 1 full -> interpolation search on "
+                  f"bank 1  (bank 2 = 0.0)")
+            # Need k at insertion=0 to open the high-k end of the bracket
+            lo_dir = os.path.join(output_dir, "stage1_iter00_b1_0.0000")
+            print(f"\n  Iter  0: bank_1 = 0.0000  [bracketing rods-out end]")
+            k_at_0, k_at_0_std = _run_trial(search_stage, 0,
+                                             b1=0.0, b2=fixed_b2,
+                                             trial_dir=lo_dir)
+            print(f"         k_eff = {k_at_0:.5f} +/- {k_at_0_std:.5f}   "
+                  f"(delta = {(k_at_0 - k_target)*1e5:+.0f} pcm)")
+
+            if k_at_0 < k_target:
+                print(f"\n  WARNING: k_eff < k_target with all rods withdrawn. "
+                      f"Core is subcritical. Returning rods-out result.")
+                print(f"  CSV summary -> {csv_path}")
+                return {
+                    "critical_bank_1":    0.0,
+                    "critical_bank_2":    0.0,
+                    "critical_insertion": 0.0,
+                    "search_stage":       search_stage,
+                    "critical_keff":      k_at_0,
+                    "critical_keff_std":  k_at_0_std,
+                    "critical_run_dir":   lo_dir,
+                    "converged":          False,
+                    "n_iterations":       2,
+                    "csv_path":           csv_path,
+                }
+
+            lo, k_lo   = 0.0, k_at_0   # high k side (rods out)
+            hi, k_hi   = 1.0, k0       # low  k side (rods in)
+            iter_offset = 1
+
+        else:
+            active_bank  = "bank_2"
+            fixed_b1     = 1.0
+            search_stage = "bank2"
+            print(f"\n  k > k_target with bank 1 full -> interpolation search on "
+                  f"bank 2  (bank 1 = 1.0)")
+
+            # Determine upper bracket for bank 2: use warm-start hint if available
+            if (_prev_stage == "bank2"
+                    and _prev_b2_hint is not None
+                    and 0.0 < _prev_b2_hint <= 1.0):
+                # Warm-start: previous critical bank_2 should give k < k_target
+                # (core less reactive now), so use it as the upper bracket.
+                hint_dir = os.path.join(output_dir,
+                                        f"stage1_iter00_b2_{_prev_b2_hint:.4f}")
+                print(f"\n  Warm-start (bank2 stage): using previous critical "
+                      f"bank_2 = {_prev_b2_hint:.4f} as upper bracket")
+                print(f"\n  Iter  0: bank_2 = {_prev_b2_hint:.4f}  "
+                      f"[warm-start upper bracket]")
+                k_at_hint, k_at_hint_std = _run_trial(search_stage, 0,
+                                                       b1=fixed_b1,
+                                                       b2=_prev_b2_hint,
+                                                       trial_dir=hint_dir)
+                print(f"         k_eff = {k_at_hint:.5f} +/- {k_at_hint_std:.5f}   "
+                      f"(delta = {(k_at_hint - k_target)*1e5:+.0f} pcm)")
+
+                if abs(k_at_hint - k_target) < k_tol and k_at_hint > 1.0:
+                    print(f"\n  Converged at warm-start bracket: bank_2 = "
+                          f"{_prev_b2_hint:.4f}, "
+                          f"k = {k_at_hint:.5f} +/- {k_at_hint_std:.5f}")
+                    print(f"  CSV summary -> {csv_path}")
+                    return {
+                        "critical_bank_1":    1.0,
+                        "critical_bank_2":    _prev_b2_hint,
+                        "critical_insertion": _prev_b2_hint,
+                        "search_stage":       search_stage,
+                        "critical_keff":      k_at_hint,
+                        "critical_keff_std":  k_at_hint_std,
+                        "critical_run_dir":   hint_dir,
+                        "converged":          True,
+                        "n_iterations":       2,
+                        "csv_path":           csv_path,
+                    }
+
+                if k_at_hint > k_target:
+                    # Hint didn't bracket — fall back to full bank_2 insertion
+                    print(f"\n  Warm hint gave k > k_target; "
+                          f"extending bracket to bank_2 = 1.0")
+                    ext_dir = os.path.join(output_dir, "stage1_iter01_b2_1.0000")
+                    print(f"\n  Iter  1: bank_2 = 1.0000  [extended upper bracket]")
+                    k_at_1, k_at_1_std = _run_trial(search_stage, 1,
+                                                     b1=fixed_b1, b2=1.0,
+                                                     trial_dir=ext_dir)
+                    print(f"         k_eff = {k_at_1:.5f} +/- {k_at_1_std:.5f}   "
+                          f"(delta = {(k_at_1 - k_target)*1e5:+.0f} pcm)")
+
+                    if k_at_1 > k_target:
+                        print(f"\n  WARNING: k_eff > k_target with all rods inserted. "
+                              f"Cannot suppress to k_target. Returning all-rods-in result.")
+                        print(f"  CSV summary -> {csv_path}")
+                        return {
+                            "critical_bank_1":    1.0,
+                            "critical_bank_2":    1.0,
+                            "critical_insertion": 1.0,
+                            "search_stage":       search_stage,
+                            "critical_keff":      k_at_1,
+                            "critical_keff_std":  k_at_1_std,
+                            "critical_run_dir":   ext_dir,
+                            "converged":          False,
+                            "n_iterations":       3,
+                            "csv_path":           csv_path,
+                        }
+
+                    lo, k_lo   = 0.0, k0
+                    hi, k_hi   = 1.0, k_at_1
+                    iter_offset = 2
+                else:
+                    # Warm hint is a valid upper bracket: search in [0.0, prev_b2]
+                    lo, k_lo   = 0.0, k0
+                    hi, k_hi   = _prev_b2_hint, k_at_hint
+                    iter_offset = 1
+
+            else:
+                # Normal: need k at bank_2=1 to open the low-k end of the bracket
+                hi_dir = os.path.join(output_dir, "stage1_iter00_b2_1.0000")
+                print(f"\n  Iter  0: bank_2 = 1.0000  [bracketing all-rods-in end]")
+                k_at_1, k_at_1_std = _run_trial(search_stage, 0,
+                                                  b1=fixed_b1, b2=1.0,
+                                                  trial_dir=hi_dir)
+                print(f"         k_eff = {k_at_1:.5f} +/- {k_at_1_std:.5f}   "
+                      f"(delta = {(k_at_1 - k_target)*1e5:+.0f} pcm)")
+
+                if k_at_1 > k_target:
+                    print(f"\n  WARNING: k_eff > k_target with all rods inserted. "
+                          f"Cannot suppress to k_target. Returning all-rods-in result.")
+                    print(f"  CSV summary -> {csv_path}")
+                    return {
+                        "critical_bank_1":    1.0,
+                        "critical_bank_2":    1.0,
+                        "critical_insertion": 1.0,
+                        "search_stage":       search_stage,
+                        "critical_keff":      k_at_1,
+                        "critical_keff_std":  k_at_1_std,
+                        "critical_run_dir":   hi_dir,
+                        "converged":          False,
+                        "n_iterations":       2,
+                        "csv_path":           csv_path,
+                    }
+
+                lo, k_lo   = 0.0, k0      # high k side (bank_2 out)
+                hi, k_hi   = 1.0, k_at_1  # low  k side (bank_2 in)
+                iter_offset = 1
  
     # ── Interpolation search loop ───────────────────────────────────────────
     best_dir        = None

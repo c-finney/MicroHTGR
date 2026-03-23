@@ -116,7 +116,7 @@ params = {
     "plot_threads": 128,         # OpenMP threads used by openmc --plot
 
     # ----- Spatial Burnup Resolution -----
-    "ax_zones_per_burnup_region": 10, # Number of axial zones per burnup region, note there are as many radial zones as there are rings in core_rings
+    "ax_zones_per_burnup_region": 10, # Number of axial zones per burnup region (must be an integer and factor of n_ax_zones), note there are as many radial zones as there are rings in core_rings
     "use_spatial_burnup": True,       # Adds axial and radial burnup zones and heating-local tallies for each zone to calculate min/max burnup
 
     # ----- RPT Homogenization (Reactivity Equivalent Physical Transform) -----
@@ -133,7 +133,8 @@ params = {
     #   Upper bound: flat homogenization (no benefit over simple mixing)
     "use_homogenized_fuel": False,
     "rpt_radius": None,                   # Calibrated inner cylinder radius (cm). None = not yet calibrated.
-    "rpt_calibration_n_points": 20,       # Number of r_rpt values to scan in RPTCalibration study.
+    "rpt_calibration_max_iter": 20,       # Maximum Illinois interpolation iterations in RPTCalibration study.
+    "rpt_calibration_k_tol": 0.005,       # k_eff convergence tolerance for RPTCalibration study.
 
     # ----- Parametric Study Configuration -----
     "parametric_param": "BeO_thickness",
@@ -147,8 +148,11 @@ params = {
     "reactivity_coefficients": ["FTC", "MTC", "ITC"],
 
     # ----- Critical Rod Search Configuration -----
-    "critical_search_k_tol": 0.003,
+    "critical_search_k_tol": 0.005,
     "critical_search_max_iter": 20,
+    "critical_search_batches": 50,
+    "critical_search_inactive": 25,
+    "critical_search_particles": 50_000,
 
     # ----- Graphite Depletion -----
     "deplete_graphite": True,               # Deplete graphite as a single lumped core-averaged material
@@ -248,7 +252,8 @@ params = {
     #    "DepletionStudy"   — Performs depletion run on specified core layout using specified depletion timesteps
     #    "CSDepletionStudy" — Performs depletion run on specified core layout moving control rods to obtain criticality at each depletion timestep
     #    "RPTCalibration"   — Finds the RPT inner radius (rpt_radius) that matches explicit-TRISO k_eff.
-    #                         Runs one explicit-TRISO reference then scans rpt_calibration_n_points RPT models.
+    #                         Runs one explicit-TRISO reference, brackets with r_min/r_max endpoints, then
+    #                         iterates with Illinois regula falsi until |Δk| < rpt_calibration_k_tol.
     #                         After running, set rpt_radius in this file to the reported optimal value.
     "run_post_processing": True, # Note this controls individual study post-processing for ParametricStudy runs as parametric post-processing is always run
     "show_titles": True,         # Determines whether titles should be shown on plots generated during study
