@@ -2,6 +2,7 @@ import math
 import types
 import openmc
 import numpy as np
+import b4c_spheres as b4c_sph
 
 # ====================================================================================================
 # CONTROL ROD ASSEMBLY UNIVERSES BUILDER FUNCTION
@@ -439,6 +440,22 @@ def build_ss_assemblies(
     ss_cyl_refl = openmc.ZCylinder(r=r_ss_refl)
     ss_cyl_fuel = openmc.ZCylinder(r=r_ss_fuel)
 
+    use_homogenized_ss = params.get("use_homogenized_SS_rods", True)
+
+    # Build B4C sphere lattices (one per unique rod radius) if using explicit sphere model
+    b4c_sphere_lattice_refl = None
+    b4c_sphere_lattice_fuel = None
+    if not use_homogenized_ss and ss_inserted:
+        b4c_sphere_lattice_refl, _ = b4c_sph.create_b4c_sphere_lattice(
+            params, mats, axial_section_height, r_ss_refl
+        )
+        if r_ss_fuel == r_ss_refl:
+            b4c_sphere_lattice_fuel = b4c_sphere_lattice_refl
+        else:
+            b4c_sphere_lattice_fuel, _ = b4c_sph.create_b4c_sphere_lattice(
+                params, mats, axial_section_height, r_ss_fuel
+            )
+
     # ==================================================================
     # REFLECTOR ASSEMBLY WITH SS ROD (rss)
     # ==================================================================
@@ -449,7 +466,10 @@ def build_ss_assemblies(
         T_coolant = T_coolant_z[idx]
 
         if ss_inserted:
-            ss_cell = openmc.Cell(fill=mats.b4c_ss, region=-ss_cyl_refl)
+            if use_homogenized_ss:
+                ss_cell = openmc.Cell(fill=mats.b4c_ss, region=-ss_cyl_refl)
+            else:
+                ss_cell = openmc.Cell(fill=b4c_sphere_lattice_refl, region=-ss_cyl_refl)
             ss_cell.temperature = T_matrix
         else:
             ss_cell = openmc.Cell(fill=mats.helium, region=-ss_cyl_refl)
@@ -528,9 +548,40 @@ def build_ss_assemblies(
                 cells.append(ss_he_cell)
         return cells
 
+    # Builds per-axial-zone universes for the fuel SS rod using an axial HexLattice.
+    # Used when use_homogenized_SS_rods=False; allows reuse of a single B4C sphere lattice
+    # across all axial zones via HexLattice z-translation to local coordinates.
+    def make_fuel_ss_axial_lat_univs():
+        univs = []
+        for idx in range(len(axial_coords) - 1):
+            T_matrix  = T_matrix_z[idx]
+            T_coolant = T_coolant_z[idx]
+            if ss_inserted:
+                ss_cell = openmc.Cell(fill=b4c_sphere_lattice_fuel, region=-ss_cyl_fuel)
+                ss_cell.temperature = T_matrix
+            else:
+                ss_cell = openmc.Cell(fill=mats.helium, region=-ss_cyl_fuel)
+                ss_cell.temperature = T_coolant
+                m_colors[mats.helium] = 'red'
+            g_cell = openmc.Cell(fill=mats.graphite, region=+ss_cyl_fuel)
+            g_cell.temperature = T_matrix
+            univs.append(openmc.Universe(cells=[ss_cell, g_cell]))
+        return univs
+
     # ==================================================================
     # FUEL ASSEMBLY WITH CENTRAL SS ROD (fss)
     # ==================================================================
+
+    # When using explicit B4C spheres, build the fuel SS rod axial lattice once
+    # (reused for both fss and fssp since the rod geometry is identical)
+    if not use_homogenized_ss:
+        _fuel_ss_rod_univs = make_fuel_ss_axial_lat_univs()
+        fss_rod_axial_lat = openmc.HexLattice(name="Fuel SS Rod Axial Lattice")
+        fss_rod_axial_lat.orientation = 'x'
+        fss_rod_axial_lat.center = (0.0, 0.0, 0.5 * (reactor_bottom + reactor_top))
+        fss_rod_axial_lat.pitch = (bundle_pitch, axial_section_height)
+        fss_rod_axial_lat.universes = [[[u]] for u in _fuel_ss_rod_univs]
+        fss_rod_axial_lat.outer = inf_graphite_universe
 
     hex_inner_ss = +ss_cyl_fuel & hex_prism_fuel & +min_z & -max_z
 
@@ -541,9 +592,15 @@ def build_ss_assemblies(
     fss_lat.universes = make_ss_fuel_lattice_univs(fuel_lattice_univs)
     fss_lat.outer = inf_graphite_universe
 
-    fss_univ = openmc.Universe(
-        cells=make_fuel_ss_cells(hex_prism_fuel)
-              + [openmc.Cell(fill=fss_lat, region=hex_inner_ss)])
+    if use_homogenized_ss:
+        fss_univ = openmc.Universe(
+            cells=make_fuel_ss_cells(hex_prism_fuel)
+                  + [openmc.Cell(fill=fss_lat, region=hex_inner_ss)])
+    else:
+        fss_univ = openmc.Universe(cells=[
+            openmc.Cell(fill=fss_rod_axial_lat,
+                        region=-ss_cyl_fuel & hex_prism_fuel & +min_z & -max_z),
+            openmc.Cell(fill=fss_lat, region=hex_inner_ss)])
 
     # ==================================================================
     # FUEL ASSEMBLY WITH SS ROD AND EDGE POISON RODS (fssp)
@@ -556,9 +613,15 @@ def build_ss_assemblies(
     fssp_lat.universes = make_ss_fuel_lattice_univs(poison_lattice_univs)
     fssp_lat.outer = inf_graphite_universe
 
-    fssp_univ = openmc.Universe(
-        cells=make_fuel_ss_cells(hex_prism_fuel)
-              + [openmc.Cell(fill=fssp_lat, region=hex_inner_ss)])
+    if use_homogenized_ss:
+        fssp_univ = openmc.Universe(
+            cells=make_fuel_ss_cells(hex_prism_fuel)
+                  + [openmc.Cell(fill=fssp_lat, region=hex_inner_ss)])
+    else:
+        fssp_univ = openmc.Universe(cells=[
+            openmc.Cell(fill=fss_rod_axial_lat,
+                        region=-ss_cyl_fuel & hex_prism_fuel & +min_z & -max_z),
+            openmc.Cell(fill=fssp_lat, region=hex_inner_ss)])
 
     return {
         "rss":  rss_univ,

@@ -97,7 +97,7 @@ b4c_control.set_density("kg/m3", params["B4C_density_control"])
 # ----- Secondary Shutdown Rod Material -----
 b4c_ss = openmc.Material.mix_materials(
     [b4c_control, helium],
-    [0.55, 0.45], # 55% b4c_control + 45% helium by volume
+    [params["b4c_ss_pf"], 1.0 - params["b4c_ss_pf"]], # b4c_ss_pf b4c_control + (1 - b4c_ss_pf) helium by volume
     'vo',
     name="B4C_SS"
 )

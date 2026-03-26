@@ -30,7 +30,7 @@ params = {
     "coolant_density": 2.873, 
 
     # ----- Graphite Moderator/Reflector -----
-    "boron_ppm": 1.1,
+    "boron_ppm": 0.5,
     "matrix_density": 1850,
 
     # ----- Fuel Lattice -----
@@ -49,22 +49,27 @@ params = {
     "B4C_density_poison": 2380,
 
     # ----- Control Rods -----
-    "control_radius": 2.54,                  # Radius for reflector assembly control rods
-    "fuel_assembly_control_radius": 2.54,    # Radius for circular control rods in fuel assemblies
+    "control_radius": 2.54,                  # Radius for reflector assembly control rod absorber material
+    "fuel_assembly_control_radius": 2.54,    # Radius for fuel assembly control rod absorber material
     "sheath_thickness": 0.1, 
     "guide_tube_thickness": 0.2,  
     "bank_1_insertion": 0.0,                 # Fractional control rod insertion for bank 1 (0-1.0)
     "bank_2_insertion": 0.0,                 # Fractional control rod insertion for bank 2 (0-1.0)
     "bank_3_insertion": 0.0,                 # Fractional control rod insertion for bank 3 (0-1.0)
-    "secondary_SD_rods_inserted": False,     # True = all SS rods fully inserted, False = all removed
     "B10_enrichment_control": 0.9,
     "B10_wt_percent_control": 0.687,
     "B4C_density_control": 2380,
     "Incoloy800H_density": 7940,
 
+    # ----- Secondary Shutdown System -----
+    "secondary_SD_rods_inserted": False,     # True = all SS rods fully inserted, False = all removed
+    "b4c_ss_pf": 0.55,                       # B4C sphere volume fraction in secondary shutdown system
+    "b4c_ss_sphere_radius": 0.5,             # B4C sphere radius for secondary shutdown system
+    "use_homogenized_SS_rods": True,         # True = homogenized B4C+He mix, False = explicit B4C spheres
+
     # ----- Beryllium Reflector -----
     "use_BeO_reflector": True,
-    "BeO_inner_radius": 70,                # If none defaults to lattice extent (defined as (n_rings-1)*bundle_pitch+bundle_pitch/4)
+    "BeO_inner_radius": 70,                  # If none defaults to lattice extent (defined as (n_rings-1)*bundle_pitch+bundle_pitch/4)
     "BeO_thickness": 20.0,                   # Will not exceed core radius if inner radius + thickness > core radius
     "BeO_density": 3010,
 
@@ -107,8 +112,8 @@ params = {
     "use_BeO_tallies": True,
 
     # ----- OpenMC Monte Carlo Settings -----
-    "total_batches": 50,
-    "inactive_batches": 25,
+    "total_batches": 100,
+    "inactive_batches": 40,
     "particles": 100_000,
 
     # ----- Geometry Plots -----
@@ -117,7 +122,7 @@ params = {
 
     # ----- Spatial Burnup Resolution -----
     "ax_zones_per_burnup_region": 10, # Number of axial zones per burnup region (must be an integer and factor of n_ax_zones), note there are as many radial zones as there are rings in core_rings
-    "use_spatial_burnup": True,       # Adds axial and radial burnup zones and heating-local tallies for each zone to calculate min/max burnup
+    "use_spatial_burnup": False,       # Adds axial and radial burnup zones and heating-local tallies for each zone to calculate min/max burnup
 
     # ----- RPT Homogenization (Reactivity Equivalent Physical Transform) -----
     # Set use_homogenized_fuel=True to activate the two-region RPT model.
@@ -148,11 +153,11 @@ params = {
     "reactivity_coefficients": ["FTC", "MTC", "ITC"],
 
     # ----- Critical Rod Search Configuration -----
-    "critical_search_k_tol": 0.005,
+    "critical_search_k_tol": 0.0005,
     "critical_search_max_iter": 20,
-    "critical_search_batches": 50,
-    "critical_search_inactive": 25,
-    "critical_search_particles": 50_000,
+    "critical_search_batches": 200,
+    "critical_search_inactive": 50,
+    "critical_search_particles": 100_000,
 
     # ----- Graphite Depletion -----
     "deplete_graphite": True,               # Deplete graphite as a single lumped core-averaged material
@@ -163,7 +168,7 @@ params = {
     # "depletion_chain_file": "/home/cade/Desktop/OpenMC/CrossSections/chain_endfb81_thermal.xml",
     "depletion_chain_file": "/home/cade/Desktop/OpenMC/CrossSections/chain_casl_pwr.xml",
     "use_reduced_chain_file": False,
-    "depletion_timesteps_days": [1, 3, 3, 3],
+    "depletion_timesteps_days": [1, 3, 3, 3, 10, 10, 10, 30, 30, 30, 60, 60, 60, 120, 120, 120, 180, 180, 180],
     "depletion_integrator": "PredictorIntegrator",
     # Integrator options:
     #    "PredictorIntegrator" — simplest, one transport solve per step
@@ -243,7 +248,7 @@ params = {
     },
 
     # ----- Study Execution Mode Configuration -----
-    "study_execution_mode": "CSDepletionStudy",
+    "study_execution_mode": "DepletionStudy",
     # Study Execution Mode Options:
     #    "SingleStudy"      — Singular steady state monte carlo simulation of specified core layout
     #    "ParametricStudy"  — Creates multiple steady state monte carlo simulations varying a single core parameter
