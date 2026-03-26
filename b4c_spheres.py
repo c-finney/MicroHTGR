@@ -43,18 +43,23 @@ def generate_b4c_sphere_positions(
 
     sphere_region = -ss_cyl & +min_z_local & -max_z_local
 
-    rand_spheres = openmc.model.pack_spheres(radius=r_b4c, region=sphere_region, pf=pf)
+    rand_spheres = openmc.model.pack_spheres(radius=r_b4c, region=sphere_region, pf=pf,
+                                             initial_pf=0.1)
 
     llc, urc = sphere_region.bounding_box
 
+    # pack_spheres clips sphere centers to the container boundary via repel_spheres.
+    # Floating point in that clipping can leave centers with x²+y² = (r_ss-r_b4c)² + ε.
+    # Relax the checks by eps so those boundary spheres are accepted, not discarded.
+    eps = 1e-9
     def valid_sphere(c):
         x, y, z = c
         return (
-            x*x + y*y <= (r_ss - r_b4c)**2 and
-            zmin_local + r_b4c <= z <= zmax_local - r_b4c and
-            llc[0] + r_b4c <= x <= urc[0] - r_b4c and
-            llc[1] + r_b4c <= y <= urc[1] - r_b4c and
-            llc[2] + r_b4c <= z <= urc[2] - r_b4c
+            x*x + y*y <= (r_ss - r_b4c)**2 + eps and
+            zmin_local + r_b4c - eps <= z <= zmax_local - r_b4c + eps and
+            llc[0] + r_b4c - eps <= x <= urc[0] - r_b4c + eps and
+            llc[1] + r_b4c - eps <= y <= urc[1] - r_b4c + eps and
+            llc[2] + r_b4c - eps <= z <= urc[2] - r_b4c + eps
         )
 
     safe_spheres = [c for c in rand_spheres if valid_sphere(c)]
@@ -71,9 +76,12 @@ def generate_b4c_sphere_positions(
 
     n_z           = max(1, int(axial_section_height / (2 * r_b4c)))
     lattice_shape = (4, 4, n_z)
-    pitch         = (urc - llc) / np.array(lattice_shape)
+    # Expand the lattice bounds by eps so sphere faces sitting exactly on the
+    # bounding-box edge don't trigger the "TRISO outside lattice" warning.
+    lattice_llc = llc - eps
+    pitch       = (urc + eps - lattice_llc) / np.array(lattice_shape)
 
-    return safe_spheres, n_spheres, r_b4c, llc, pitch, lattice_shape
+    return safe_spheres, n_spheres, r_b4c, lattice_llc, pitch, lattice_shape
 
 
 def build_b4c_sphere_lattice(

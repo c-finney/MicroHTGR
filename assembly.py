@@ -395,6 +395,8 @@ def build_ss_assemblies(
     inf_graphite_universe: openmc.Universe,
     inf_graphite_refl_universe: openmc.Universe,
     m_colors: dict,
+    b4c_sphere_lattice_refl: openmc.RectLattice = None,
+    b4c_sphere_lattice_fuel: openmc.RectLattice = None,
 ) -> dict[str, openmc.Universe]:
     """
     Build the four secondary shutdown rod assembly types: rss, rssa, fss, fssp.
@@ -427,6 +429,10 @@ def build_ss_assemblies(
         inf_graphite_universe (openmc.Universe): Infinite graphite universe for fuel assembly outer fill
         inf_graphite_refl_universe (openmc.Universe): Infinite graphite universe for reflector assembly outer fill
         m_colors (dict): Material color dictionary updated in-place for plotting
+        b4c_sphere_lattice_refl (openmc.RectLattice, optional): Pre-built B4C sphere lattice for reflector rod radius.
+            If None and explicit sphere model is active, it will be generated here (legacy path).
+        b4c_sphere_lattice_fuel (openmc.RectLattice, optional): Pre-built B4C sphere lattice for fuel rod radius.
+            If None and explicit sphere model is active, it will be generated here (legacy path).
 
     Returns:
         dict[str, openmc.Universe]: Assembly type codes mapped to their Universe objects.
@@ -442,19 +448,19 @@ def build_ss_assemblies(
 
     use_homogenized_ss = params.get("use_homogenized_SS_rods", True)
 
-    # Build B4C sphere lattices (one per unique rod radius) if using explicit sphere model
-    b4c_sphere_lattice_refl = None
-    b4c_sphere_lattice_fuel = None
+    # Build B4C sphere lattices if not pre-supplied (fallback; caller should pre-generate once)
     if not use_homogenized_ss and ss_inserted:
-        b4c_sphere_lattice_refl, _ = b4c_sph.create_b4c_sphere_lattice(
-            params, mats, axial_section_height, r_ss_refl
-        )
-        if r_ss_fuel == r_ss_refl:
-            b4c_sphere_lattice_fuel = b4c_sphere_lattice_refl
-        else:
-            b4c_sphere_lattice_fuel, _ = b4c_sph.create_b4c_sphere_lattice(
-                params, mats, axial_section_height, r_ss_fuel
+        if b4c_sphere_lattice_refl is None:
+            b4c_sphere_lattice_refl, _ = b4c_sph.create_b4c_sphere_lattice(
+                params, mats, axial_section_height, r_ss_refl
             )
+        if b4c_sphere_lattice_fuel is None:
+            if r_ss_fuel == r_ss_refl:
+                b4c_sphere_lattice_fuel = b4c_sphere_lattice_refl
+            else:
+                b4c_sphere_lattice_fuel, _ = b4c_sph.create_b4c_sphere_lattice(
+                    params, mats, axial_section_height, r_ss_fuel
+                )
 
     # ==================================================================
     # REFLECTOR ASSEMBLY WITH SS ROD (rss)
@@ -738,6 +744,27 @@ def create_assembly_univs(
     assemblies = {}
 
     # ==================================================================
+    # PRE-GENERATE B4C SPHERE LATTICES ONCE (ring-independent)
+    # ==================================================================
+
+    _b4c_lattice_refl = None
+    _b4c_lattice_fuel = None
+    _use_homogenized_ss = params.get("use_homogenized_SS_rods", True)
+    _ss_inserted = params.get("secondary_SD_rods_inserted", False)
+    if not _use_homogenized_ss and _ss_inserted:
+        _r_ss_refl = params["control_radius"] + params["guide_tube_thickness"]
+        _r_ss_fuel = params["fuel_assembly_control_radius"] + params["guide_tube_thickness"]
+        _b4c_lattice_refl, _ = b4c_sph.create_b4c_sphere_lattice(
+            params, mats, axial_section_height, _r_ss_refl
+        )
+        if _r_ss_fuel == _r_ss_refl:
+            _b4c_lattice_fuel = _b4c_lattice_refl
+        else:
+            _b4c_lattice_fuel, _ = b4c_sph.create_b4c_sphere_lattice(
+                params, mats, axial_section_height, _r_ss_fuel
+            )
+
+    # ==================================================================
     # PER-RING FUEL LATTICE UNIVERSES AND FUEL ASSEMBLY VARIANTS
     # ==================================================================
 
@@ -895,6 +922,8 @@ def create_assembly_univs(
             inf_graphite_universe=inf_graphite_universe,
             inf_graphite_refl_universe=inf_graphite_refl_universe,
             m_colors=m_colors,
+            b4c_sphere_lattice_refl=_b4c_lattice_refl,
+            b4c_sphere_lattice_fuel=_b4c_lattice_fuel,
         )
 
         for atype, univ in ss_assemblies.items():

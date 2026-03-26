@@ -62,10 +62,10 @@ params = {
     "Incoloy800H_density": 7940,
 
     # ----- Secondary Shutdown System -----
-    "secondary_SD_rods_inserted": False,     # True = all SS rods fully inserted, False = all removed
-    "b4c_ss_pf": 0.55,                       # B4C sphere volume fraction in secondary shutdown system
-    "b4c_ss_sphere_radius": 0.5,             # B4C sphere radius for secondary shutdown system
-    "use_homogenized_SS_rods": True,         # True = homogenized B4C+He mix, False = explicit B4C spheres
+    "secondary_SD_rods_inserted": True,       # True = all SS rods fully inserted, False = all removed
+    "b4c_ss_pf": 0.55,                        # B4C sphere volume fraction in secondary shutdown system
+    "b4c_ss_sphere_radius": 0.5,              # B4C sphere radius for secondary shutdown system
+    "use_homogenized_SS_rods": False,         # True = homogenized B4C+He mix, False = explicit B4C spheres
 
     # ----- Beryllium Reflector -----
     "use_BeO_reflector": True,
@@ -112,8 +112,8 @@ params = {
     "use_BeO_tallies": True,
 
     # ----- OpenMC Monte Carlo Settings -----
-    "total_batches": 100,
-    "inactive_batches": 40,
+    "total_batches": 500,
+    "inactive_batches": 200,
     "particles": 100_000,
 
     # ----- Geometry Plots -----
@@ -248,7 +248,7 @@ params = {
     },
 
     # ----- Study Execution Mode Configuration -----
-    "study_execution_mode": "DepletionStudy",
+    "study_execution_mode": "SingleStudy",
     # Study Execution Mode Options:
     #    "SingleStudy"      — Singular steady state monte carlo simulation of specified core layout
     #    "ParametricStudy"  — Creates multiple steady state monte carlo simulations varying a single core parameter

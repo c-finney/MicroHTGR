@@ -49,22 +49,26 @@ def generate_triso_positions(
 
     llc, urc = triso_region.bounding_box
 
-    # Screening helper function to see if TRISO is within correct bounding box
+    # pack_spheres clips TRISO centers to the container boundary via repel_spheres.
+    # Floating point in that clipping can leave centers with x²+y² = (r_compact-r_opyc)² + ε.
+    # Relax the checks by eps so those boundary TRISOs are accepted, not discarded.
+    r_compact = params["compact_radius"]
+    eps = 1e-9
     def valid_triso(c):
         x, y, z = c
         return (
-            x*x + y*y <= (params["compact_radius"] - r_opyc)**2 and
-            zmin_local + r_opyc <= z <= zmax_local - r_opyc and
-            llc[0] + r_opyc <= x <= urc[0] - r_opyc and
-            llc[1] + r_opyc <= y <= urc[1] - r_opyc and
-            llc[2] + r_opyc <= z <= urc[2] - r_opyc
+            x*x + y*y <= (r_compact - r_opyc)**2 + eps and
+            zmin_local + r_opyc - eps <= z <= zmax_local - r_opyc + eps and
+            llc[0] + r_opyc - eps <= x <= urc[0] - r_opyc + eps and
+            llc[1] + r_opyc - eps <= y <= urc[1] - r_opyc + eps and
+            llc[2] + r_opyc - eps <= z <= urc[2] - r_opyc + eps
         )
 
     safe_trisos = [c for c in rand_spheres if valid_triso(c)]
 
     n_trisos = len(safe_trisos)
     V_triso = (4/3) * np.pi * r_opyc**3
-    V_compact = np.pi * params["compact_radius"]**2 * axial_section_height
+    V_compact = np.pi * r_compact**2 * axial_section_height
     actual_pf = n_trisos * V_triso / V_compact
 
     print(f"\nNumber of TRISOs created per axial zone: {len(rand_spheres)}")
@@ -73,9 +77,12 @@ def generate_triso_positions(
     print(f"Achieved TRISO PF: {actual_pf:.3f}")
 
     triso_lattice_shape = (4, 4, int(axial_section_height / 0.5))
-    pitch = (urc - llc) / np.array(triso_lattice_shape)
+    # Expand the lattice bounds by eps so TRISO faces sitting exactly on the
+    # bounding-box edge don't trigger the "TRISO outside lattice" warning.
+    lattice_llc = llc - eps
+    pitch       = (urc + eps - lattice_llc) / np.array(triso_lattice_shape)
 
-    return safe_trisos, n_trisos, r_opyc, llc, pitch, triso_lattice_shape
+    return safe_trisos, n_trisos, r_opyc, lattice_llc, pitch, triso_lattice_shape
 
 def build_triso_lattice_for_material(
     fuel_material: openmc.Material,
