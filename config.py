@@ -30,7 +30,7 @@ params = {
     "coolant_density": 2.873, 
 
     # ----- Graphite Moderator/Reflector -----
-    "boron_ppm": 0.5,
+    "boron_ppm": 1.1,
     "matrix_density": 1850,
 
     # ----- Fuel Lattice -----
@@ -62,7 +62,7 @@ params = {
     "Incoloy800H_density": 7940,
 
     # ----- Secondary Shutdown System -----
-    "secondary_SD_rods_inserted": True,       # True = all SS rods fully inserted, False = all removed
+    "secondary_SD_rods_inserted": False,       # True = all SS rods fully inserted, False = all removed
     "b4c_ss_pf": 0.55,                        # B4C sphere volume fraction in secondary shutdown system
     "b4c_ss_sphere_radius": 0.5,              # B4C sphere radius for secondary shutdown system
     "use_homogenized_SS_rods": False,         # True = homogenized B4C+He mix, False = explicit B4C spheres
@@ -107,17 +107,17 @@ params = {
     # ----- Tally Configuration -----
     "n_XY_mesh_zones_full_core": 500,
     "use_global_tallies": True,
-    "use_mesh_tallies": True,
-    "use_leakage_tallies": True,
-    "use_BeO_tallies": True,
+    "use_mesh_tallies": False,
+    "use_leakage_tallies": False,
+    "use_BeO_tallies": False,
 
     # ----- OpenMC Monte Carlo Settings -----
-    "total_batches": 500,
-    "inactive_batches": 200,
+    "total_batches": 300,
+    "inactive_batches": 100,
     "particles": 100_000,
 
     # ----- Geometry Plots -----
-    "make_geometry_plots": True,
+    "make_geometry_plots": False,
     "plot_threads": 128,         # OpenMP threads used by openmc --plot
 
     # ----- Spatial Burnup Resolution -----
@@ -248,7 +248,7 @@ params = {
     },
 
     # ----- Study Execution Mode Configuration -----
-    "study_execution_mode": "SingleStudy",
+    "study_execution_mode": "CriticalSearch",
     # Study Execution Mode Options:
     #    "SingleStudy"      — Singular steady state monte carlo simulation of specified core layout
     #    "ParametricStudy"  — Creates multiple steady state monte carlo simulations varying a single core parameter
@@ -260,6 +260,6 @@ params = {
     #                         Runs one explicit-TRISO reference, brackets with r_min/r_max endpoints, then
     #                         iterates with Illinois regula falsi until |Δk| < rpt_calibration_k_tol.
     #                         After running, set rpt_radius in this file to the reported optimal value.
-    "run_post_processing": True, # Note this controls individual study post-processing for ParametricStudy runs as parametric post-processing is always run
+    "run_post_processing": False, # Note this controls individual study post-processing for ParametricStudy runs as parametric post-processing is always run
     "show_titles": True,         # Determines whether titles should be shown on plots generated during study
 }

@@ -724,9 +724,12 @@ def build_model(params, run_dir):
         for pmat in ring_pois:
             if pmat.volume:
                 m_colors[pmat] = 'purple'
-    m_colors[mats.b4c_ss] = 'orange'
-    if params["bank_1_insertion"] > 0 or params["bank_2_insertion"] > 0 or params["bank_3_insertion"] > 0:
+    if params["secondary_SD_rods_inserted"] and params["use_homogenized_SS_rods"]:
+        m_colors[mats.b4c_ss] = 'gold'
+    elif params["bank_1_insertion"] > 0 or params["bank_2_insertion"] > 0 or params["bank_3_insertion"] > 0:
         m_colors[mats.b4c_control] = 'black'
+    elif params["secondary_SD_rods_inserted"]:
+        m_colors[mats.b4c_control] = 'gold'
     m_colors[mats.incoloy800H] = 'gray'
     m_colors[mats.beo] = 'lightblue'
 
