@@ -53,8 +53,8 @@ params = {
     "fuel_assembly_control_radius": 2.54,    # Radius for fuel assembly control rod absorber material
     "sheath_thickness": 0.1, 
     "guide_tube_thickness": 0.2,  
-    "bank_1_insertion": 0.0,                 # Fractional control rod insertion for bank 1 (0-1.0)
-    "bank_2_insertion": 0.0,                 # Fractional control rod insertion for bank 2 (0-1.0)
+    "bank_1_insertion": 1.0,                 # Fractional control rod insertion for bank 1 (0-1.0)
+    "bank_2_insertion": 0.734336,                 # Fractional control rod insertion for bank 2 (0-1.0)
     "bank_3_insertion": 0.0,                 # Fractional control rod insertion for bank 3 (0-1.0)
     "B10_enrichment_control": 0.9,
     "B10_wt_percent_control": 0.687,
@@ -107,17 +107,17 @@ params = {
     # ----- Tally Configuration -----
     "n_XY_mesh_zones_full_core": 500,
     "use_global_tallies": True,
-    "use_mesh_tallies": False,
-    "use_leakage_tallies": False,
-    "use_BeO_tallies": False,
+    "use_mesh_tallies": True,
+    "use_leakage_tallies": True,
+    "use_BeO_tallies": True,
 
     # ----- OpenMC Monte Carlo Settings -----
     "total_batches": 300,
-    "inactive_batches": 100,
+    "inactive_batches": 50,
     "particles": 100_000,
 
     # ----- Geometry Plots -----
-    "make_geometry_plots": False,
+    "make_geometry_plots": True,
     "plot_threads": 128,         # OpenMP threads used by openmc --plot
 
     # ----- Spatial Burnup Resolution -----
@@ -137,9 +137,9 @@ params = {
     #   Lower bound: maximum self-shielding (all TRISO volume in inner cylinder)
     #   Upper bound: flat homogenization (no benefit over simple mixing)
     "use_homogenized_fuel": False,
-    "rpt_radius": None,                   # Calibrated inner cylinder radius (cm). None = not yet calibrated.
+    "rpt_radius": 0.44636,                   # Calibrated inner cylinder radius (cm). None = not yet calibrated.
     "rpt_calibration_max_iter": 20,       # Maximum Illinois interpolation iterations in RPTCalibration study.
-    "rpt_calibration_k_tol": 0.005,       # k_eff convergence tolerance for RPTCalibration study.
+    "rpt_calibration_k_tol": 0.0002,       # k_eff convergence tolerance for RPTCalibration study.
 
     # ----- Parametric Study Configuration -----
     "parametric_param": "BeO_thickness",
@@ -248,7 +248,7 @@ params = {
     },
 
     # ----- Study Execution Mode Configuration -----
-    "study_execution_mode": "CriticalSearch",
+    "study_execution_mode": "SingleStudy",
     # Study Execution Mode Options:
     #    "SingleStudy"      — Singular steady state monte carlo simulation of specified core layout
     #    "ParametricStudy"  — Creates multiple steady state monte carlo simulations varying a single core parameter
@@ -260,6 +260,6 @@ params = {
     #                         Runs one explicit-TRISO reference, brackets with r_min/r_max endpoints, then
     #                         iterates with Illinois regula falsi until |Δk| < rpt_calibration_k_tol.
     #                         After running, set rpt_radius in this file to the reported optimal value.
-    "run_post_processing": False, # Note this controls individual study post-processing for ParametricStudy runs as parametric post-processing is always run
+    "run_post_processing": True, # Note this controls individual study post-processing for ParametricStudy runs as parametric post-processing is always run
     "show_titles": True,         # Determines whether titles should be shown on plots generated during study
 }
