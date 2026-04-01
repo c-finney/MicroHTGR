@@ -976,14 +976,24 @@ def build_model(params, run_dir):
     }
 
     if params["use_1/6_geometry"]:
-        phi_dist = openmc.stats.Uniform(a = 0.0, b = np.pi / 2)
+        phi_dist = openmc.stats.Uniform(a = 0.0, b = np.pi / 3)
     else:
         phi_dist = openmc.stats.Uniform(a = 0.0, b = 2 * np.pi)
     r_dist = openmc.stats.Uniform(a = 0.0, b = lattice_extent_r)
     z_dist = openmc.stats.Uniform(a = reactor_bottom, b = reactor_top)
     # Deduplicate by identity so non-spatial mode (all rings share one material) doesn't repeat
     fissionable_mats = list({id(m): m for ring in fuel_clones for m in ring}.values())
-    source = openmc.IndependentSource(domains=fissionable_mats)
+    if use_homogenized_fuel:
+        # RPT inner cylinders fill ~49% of each compact cross-section — large enough that
+        # domain-based rejection is unnecessary and fragile across depletion steps with
+        # prev_results chaining (remapped material IDs can diverge during the final operator
+        # evaluation).  Sample freely; particles random-walk to the fuel naturally.
+        source = openmc.IndependentSource()
+    else:
+        # Explicit TRISO: fuel kernel volume fraction is tiny (~1%), so domain rejection
+        # is needed to keep the acceptance rate above OpenMC's minimum threshold.
+        source = openmc.IndependentSource(domains=fissionable_mats)
+        settings.source_rejection_fraction = 0.001
     source.space = openmc.stats.CylindricalIndependent(
         r = r_dist,
         phi = phi_dist,
@@ -991,8 +1001,6 @@ def build_model(params, run_dir):
         origin = (0.0, 0.0, 0.0)
     )
     settings.source = source
-    # Lower source rejection fraction to match tiny volume fraction of TRISO particles
-    settings.source_rejection_fraction = 0.001
 
     model.settings = settings
 
@@ -1302,15 +1310,18 @@ def run_simulation(params, run_dir):
     total_poison_volume = poison_volume_simulated * geometry_factor
 
     uco_density_g_cm3  = params["kernel_density"] / 1000.0
-    u_mass_fraction    = 238.0 / 268.0
-    if params.get("use_homogenized_fuel", False):
-        r_opyc       = (params["kernel_radius"] + params["buffer_thickness"] +
-                        params["ipyc_thickness"] + params["sic_thickness"] +
-                        params["opyc_thickness"])
-        vf_kernel    = params["triso_pf"] * (params["kernel_radius"] / r_opyc)**3
-        total_HM_mass_kg = total_fuel_volume * vf_kernel * uco_density_g_cm3 * u_mass_fraction / 1000.0
+    enrich             = params["enrichment"]
+    u_avg_mass         = enrich * 235.0 + (1.0 - enrich) * 238.0
+    u_mass_fraction    = u_avg_mass / (u_avg_mass + 30.0)   # UCO: UC0.5O1.5, non-U mass = 0.5*12 + 1.5*16 = 30
+    if params["use_homogenized_fuel"]:
+        r_opyc           = (params["kernel_radius"] + params["buffer_thickness"] +
+                            params["ipyc_thickness"] + params["sic_thickness"] +
+                            params["opyc_thickness"])
+        vf_kernel        = params["triso_pf"] * (params["kernel_radius"] / r_opyc)**3
+        rpt_to_compact   = (params["compact_radius"] / params["rpt_radius"])**2
+        total_HM_mass_kg = total_fuel_volume * rpt_to_compact * vf_kernel * uco_density_g_cm3 * u_mass_fraction / 1000.0
     else:
-        total_HM_mass_kg   = total_fuel_volume * uco_density_g_cm3 * u_mass_fraction / 1000.0
+        total_HM_mass_kg = total_fuel_volume * uco_density_g_cm3 * u_mass_fraction / 1000.0
 
     b4c_density_g_cm3  = params["B4C_density_poison"] / 1000.0
     b10_enrichment     = params["B10_enrichment_poison"]
@@ -1683,15 +1694,18 @@ def run_depletion_simulation(params, run_dir):
         total_poison_volume = poison_volume_simulated * geometry_factor
 
         uco_density_g_cm3  = params["kernel_density"] / 1000.0
-        u_mass_fraction    = 238.0 / 268.0
+        enrich             = params["enrichment"]
+        u_avg_mass         = enrich * 235.0 + (1.0 - enrich) * 238.0
+        u_mass_fraction    = u_avg_mass / (u_avg_mass + 30.0)   # UCO: UC0.5O1.5, non-U mass = 0.5*12 + 1.5*16 = 30
         if params.get("use_homogenized_fuel", False):
-            r_opyc       = (params["kernel_radius"] + params["buffer_thickness"] +
-                            params["ipyc_thickness"] + params["sic_thickness"] +
-                            params["opyc_thickness"])
-            vf_kernel    = params["triso_pf"] * (params["kernel_radius"] / r_opyc)**3
-            total_HM_mass_kg = total_fuel_volume * vf_kernel * uco_density_g_cm3 * u_mass_fraction / 1000.0
+            r_opyc           = (params["kernel_radius"] + params["buffer_thickness"] +
+                                params["ipyc_thickness"] + params["sic_thickness"] +
+                                params["opyc_thickness"])
+            vf_kernel        = params["triso_pf"] * (params["kernel_radius"] / r_opyc)**3
+            rpt_to_compact   = (params["compact_radius"] / params["rpt_radius"])**2
+            total_HM_mass_kg = total_fuel_volume * rpt_to_compact * vf_kernel * uco_density_g_cm3 * u_mass_fraction / 1000.0
         else:
-            total_HM_mass_kg   = total_fuel_volume * uco_density_g_cm3 * u_mass_fraction / 1000.0
+            total_HM_mass_kg = total_fuel_volume * uco_density_g_cm3 * u_mass_fraction / 1000.0
 
         b4c_density_g_cm3  = params["B4C_density_poison"] / 1000.0
         b10_enrichment     = params["B10_enrichment_poison"]
@@ -2145,15 +2159,18 @@ def run_critical_search_depletion_simulation(params, run_dir):
     total_poison_volume = poison_volume_simulated * geometry_factor
 
     uco_density_g_cm3 = params["kernel_density"] / 1000.0
-    u_mass_fraction   = 238.0 / 268.0
+    enrich            = params["enrichment"]
+    u_avg_mass        = enrich * 235.0 + (1.0 - enrich) * 238.0
+    u_mass_fraction   = u_avg_mass / (u_avg_mass + 30.0)   # UCO: UC0.5O1.5, non-U mass = 0.5*12 + 1.5*16 = 30
     if params.get("use_homogenized_fuel", False):
-        r_opyc      = (params["kernel_radius"] + params["buffer_thickness"] +
-                       params["ipyc_thickness"] + params["sic_thickness"] +
-                       params["opyc_thickness"])
-        vf_kernel   = params["triso_pf"] * (params["kernel_radius"] / r_opyc)**3
-        total_HM_mass_kg = total_fuel_volume * vf_kernel * uco_density_g_cm3 * u_mass_fraction / 1000.0
+        r_opyc           = (params["kernel_radius"] + params["buffer_thickness"] +
+                            params["ipyc_thickness"] + params["sic_thickness"] +
+                            params["opyc_thickness"])
+        vf_kernel        = params["triso_pf"] * (params["kernel_radius"] / r_opyc)**3
+        rpt_to_compact   = (params["compact_radius"] / params["rpt_radius"])**2
+        total_HM_mass_kg = total_fuel_volume * rpt_to_compact * vf_kernel * uco_density_g_cm3 * u_mass_fraction / 1000.0
     else:
-        total_HM_mass_kg  = total_fuel_volume * uco_density_g_cm3 * u_mass_fraction / 1000.0
+        total_HM_mass_kg = total_fuel_volume * uco_density_g_cm3 * u_mass_fraction / 1000.0
 
     b4c_density_g_cm3 = params["B4C_density_poison"] / 1000.0
     b10_enrichment    = params["B10_enrichment_poison"]

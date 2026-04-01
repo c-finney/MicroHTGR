@@ -747,6 +747,80 @@ def calculate_conversion_ratio(fuel_data, time_days):
 
 
 # ====================================================================================================
+# GAMMA SOURCES EOL CSV EXPORT
+# ====================================================================================================
+
+def export_gamma_sources_csv(results, gamma_sources, last_operational_idx,
+                              symmetry_factor, output_dir):
+    """
+    Export EOL atom inventory for gamma-source isotopes summed across ALL materials.
+
+    Searches every material ID present in the depletion results so isotopes
+    confined to graphite, fuel, cladding, coolant, etc. are all captured.
+
+    Parameters
+    ----------
+    results : openmc.deplete.Results
+    gamma_sources : list of str
+        Nuclide names from params["gamma_sources"].
+    last_operational_idx : int
+        Index of the last operational timestep.
+    symmetry_factor : int
+        Full-core multiplier (6 for 1/6 wedge, 1 for full core).
+    output_dir : str
+        Directory to write gamma_sources_EOL.csv into.
+
+    Returns
+    -------
+    dict : {nuclide: float} — atoms at EOL for each found isotope.
+    """
+    print("\n  Exporting gamma sources EOL inventory...")
+
+    try:
+        all_mat_ids = list(results[0].index_mat.keys())
+    except Exception as e:
+        print(f"  WARNING: Could not retrieve material IDs from results: {e}")
+        return {}
+
+    found    = {}   # nuclide -> total atoms at last_operational_idx
+    missing  = []
+
+    for nuc in gamma_sources:
+        total = 0.0
+        found_in_any = False
+        for mid in all_mat_ids:
+            try:
+                _t, atoms = results.get_atoms(str(mid), nuc)
+                atoms = np.array(atoms, dtype=float)
+                if last_operational_idx < len(atoms) and atoms[last_operational_idx] > 0:
+                    total += atoms[last_operational_idx]
+                    found_in_any = True
+            except Exception:
+                continue
+        if found_in_any:
+            found[nuc] = total * symmetry_factor
+        else:
+            missing.append(nuc)
+
+    if missing:
+        print(f"  WARNING: The following gamma_sources were not found in any material "
+              f"and will be omitted from the CSV:\n    {missing}")
+
+    # Write CSV — one row per isotope
+    csv_path = os.path.join(output_dir, "gamma_sources_EOL.csv")
+    with open(csv_path, "w") as f:
+        f.write("isotope,atoms_at_EOL\n")
+        for nuc in gamma_sources:
+            if nuc in found:
+                f.write(f"{nuc},{found[nuc]:.6e}\n")
+
+    print(f"  Gamma sources EOL inventory saved → {csv_path}  "
+          f"({len(found)}/{len(gamma_sources)} isotopes found, "
+          f"step index {last_operational_idx})")
+    return found
+
+
+# ====================================================================================================
 # PERFORM DEPLETION ANALYSIS PLOTTING AND SAVE RESULTS
 # ====================================================================================================
 
@@ -1696,6 +1770,14 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
         )
         print(f"  [Graphite] Nuclide inventory saved → {out_path}  "
               f"({n_steps} steps × {len(nuclides)} nuclides)")
+
+    # ----- Gamma Sources EOL CSV -----
+    gamma_sources = params.get("gamma_sources", [])
+    if gamma_sources:
+        export_gamma_sources_csv(
+            results, gamma_sources, last_operational_idx,
+            symmetry_factor, POSTPROCESSING_RESULTS_DIR
+        )
 
     # ----- Text Report -----
 

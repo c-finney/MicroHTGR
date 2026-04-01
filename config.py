@@ -53,8 +53,10 @@ params = {
     "fuel_assembly_control_radius": 2.54,    # Radius for fuel assembly control rod absorber material
     "sheath_thickness": 0.1, 
     "guide_tube_thickness": 0.2,  
-    "bank_1_insertion": 1.0,                 # Fractional control rod insertion for bank 1 (0-1.0)
-    "bank_2_insertion": 0.734336,                 # Fractional control rod insertion for bank 2 (0-1.0)
+    "bank_1_insertion": 0.0,                 # Fractional control rod insertion for bank 1 (0-1.0)
+    "bank_2_insertion": 0.0,                 # Fractional control rod insertion for bank 2 (0-1.0)
+    # "bank_1_insertion": 1.0,                 # Critical control rod insertion for bank 1 (0-1.0)
+    # "bank_2_insertion": 0.734336,            # Critical control rod insertion for bank 2 (0-1.0)
     "bank_3_insertion": 0.0,                 # Fractional control rod insertion for bank 3 (0-1.0)
     "B10_enrichment_control": 0.9,
     "B10_wt_percent_control": 0.687,
@@ -112,8 +114,8 @@ params = {
     "use_BeO_tallies": True,
 
     # ----- OpenMC Monte Carlo Settings -----
-    "total_batches": 300,
-    "inactive_batches": 50,
+    "total_batches": 50,
+    "inactive_batches": 20,
     "particles": 100_000,
 
     # ----- Geometry Plots -----
@@ -136,7 +138,7 @@ params = {
     # Calibration scan range: [compact_radius*sqrt(triso_pf), compact_radius]
     #   Lower bound: maximum self-shielding (all TRISO volume in inner cylinder)
     #   Upper bound: flat homogenization (no benefit over simple mixing)
-    "use_homogenized_fuel": False,
+    "use_homogenized_fuel": True,
     "rpt_radius": 0.44636,                   # Calibrated inner cylinder radius (cm). None = not yet calibrated.
     "rpt_calibration_max_iter": 20,       # Maximum Illinois interpolation iterations in RPTCalibration study.
     "rpt_calibration_k_tol": 0.0002,       # k_eff convergence tolerance for RPTCalibration study.
@@ -153,11 +155,11 @@ params = {
     "reactivity_coefficients": ["FTC", "MTC", "ITC"],
 
     # ----- Critical Rod Search Configuration -----
-    "critical_search_k_tol": 0.0005,
+    "critical_search_k_tol": 0.005,
     "critical_search_max_iter": 20,
-    "critical_search_batches": 200,
-    "critical_search_inactive": 50,
-    "critical_search_particles": 100_000,
+    "critical_search_batches": 50,
+    "critical_search_inactive": 20,
+    "critical_search_particles": 50_000,
 
     # ----- Graphite Depletion -----
     "deplete_graphite": True,               # Deplete graphite as a single lumped core-averaged material
@@ -165,10 +167,11 @@ params = {
 
     # ----- Depletion Study Configuration -----
     "thermal_power_MW": 10.0,
-    # "depletion_chain_file": "/home/cade/Desktop/OpenMC/CrossSections/chain_endfb81_thermal.xml",
-    "depletion_chain_file": "/home/cade/Desktop/OpenMC/CrossSections/chain_casl_pwr.xml",
+    "depletion_chain_file": "/home/cade/Desktop/OpenMC/CrossSections/chain_endfb81_thermal.xml",
+    # "depletion_chain_file": "/home/cade/Desktop/OpenMC/CrossSections/chain_casl_pwr.xml",
     "use_reduced_chain_file": False,
-    "depletion_timesteps_days": [1, 3, 3, 3, 10, 10, 10, 30, 30, 30, 60, 60, 60, 120, 120, 120, 180, 180, 180],
+    "depletion_timesteps_days": [1, 3, 3, 3, 10, 10, 10, 30, 30, 30, 60, 60, 60, 120, 120, 120, 180, 180, 180], # Normal depletion time steps
+    # "depletion_timesteps_days": [1, 3, 3, 3, 10, 10, 10, 30, 30, 30, 60, 60, 60, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90], # CS depletion time steps
     "depletion_integrator": "PredictorIntegrator",
     # Integrator options:
     #    "PredictorIntegrator" — simplest, one transport solve per step
@@ -247,8 +250,26 @@ params = {
             "Boron Poisons":     ["B10"]
     },
 
+    # ----- Depletion EOL Gamma Sources of Interest -----
+    "gamma_sources": [
+        "H3",
+        "C14",
+        "Na22",
+        "Cl36",
+        "Mn54",
+        "Co57", "Co60",
+        "Ni59", "Ni63",
+        "Sr90",
+        "Cs134", "Cs137",
+        "Ce144",
+        "Eu152", "Eu154", "Eu155", 
+        "U238",
+        "Pu238", "Pu239",
+        "Am241", "Am243"
+    ],
+
     # ----- Study Execution Mode Configuration -----
-    "study_execution_mode": "SingleStudy",
+    "study_execution_mode": "DepletionStudy",
     # Study Execution Mode Options:
     #    "SingleStudy"      — Singular steady state monte carlo simulation of specified core layout
     #    "ParametricStudy"  — Creates multiple steady state monte carlo simulations varying a single core parameter
