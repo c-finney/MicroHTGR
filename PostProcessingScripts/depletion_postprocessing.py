@@ -24,6 +24,8 @@ Usage:
 
 import os
 import sys
+import csv
+import glob
 import json
 import numpy as np
 import matplotlib.pyplot as plt
@@ -661,7 +663,7 @@ def save_nuclide_inventory_csv(output_dir, time_days, time_years, burnup_MWd_per
                  + ["%.6e"] * len(nuclides)),
         )
 
-        print(f"  [{label}] Nuclide inventory saved → {out_path}  "
+        print(f"  [{label}] Nuclide inventory saved → {os.path.basename(out_path)}  "
               f"({n_steps} steps × {len(nuclides)} nuclides)")
         written.append(out_path)
 
@@ -785,6 +787,10 @@ def export_gamma_sources_csv(results, gamma_sources, last_operational_idx,
     found    = {}   # nuclide -> total atoms at last_operational_idx
     missing  = []
 
+    # # >>>>>>>>>> HACK: extract at timestep 15 instead of last_operational_idx <<<<<<<<<<
+    # _HACK_TIMESTEP = 15
+    # # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
     for nuc in gamma_sources:
         total = 0.0
         found_in_any = False
@@ -792,9 +798,12 @@ def export_gamma_sources_csv(results, gamma_sources, last_operational_idx,
             try:
                 _t, atoms = results.get_atoms(str(mid), nuc)
                 atoms = np.array(atoms, dtype=float)
-                if last_operational_idx < len(atoms) and atoms[last_operational_idx] > 0:
-                    total += atoms[last_operational_idx]
+                if last_operational_idx < len(atoms) and atoms[last_operational_idx] > 0:  # HACK: comment out
+                    total += atoms[last_operational_idx]                                    # HACK: comment out
                     found_in_any = True
+                # if _HACK_TIMESTEP < len(atoms) and atoms[_HACK_TIMESTEP] > 0:               # HACK
+                #     total += atoms[_HACK_TIMESTEP]                                           # HACK
+                    # found_in_any = True
             except Exception:
                 continue
         if found_in_any:
@@ -807,17 +816,120 @@ def export_gamma_sources_csv(results, gamma_sources, last_operational_idx,
               f"and will be omitted from the CSV:\n    {missing}")
 
     # Write CSV — one row per isotope
-    csv_path = os.path.join(output_dir, "gamma_sources_EOL.csv")
+    csv_path = os.path.join(output_dir, "gamma_sources_EOL.csv")  # HACK: still writes to same file
     with open(csv_path, "w") as f:
         f.write("isotope,atoms_at_EOL\n")
         for nuc in gamma_sources:
             if nuc in found:
                 f.write(f"{nuc},{found[nuc]:.6e}\n")
 
-    print(f"  Gamma sources EOL inventory saved → {csv_path}  "
+    print(f"  Gamma sources EOL inventory saved → {os.path.basename(csv_path)}  "
           f"({len(found)}/{len(gamma_sources)} isotopes found, "
           f"step index {last_operational_idx})")
     return found
+
+
+# ====================================================================================================
+# CS DEPLETION STUDY HELPER FUNCTIONS
+# ====================================================================================================
+
+def _get_aro_keff_from_cs_csv(csv_path):
+    """
+    Extract the all-rods-out (ARO) k-effective from a critical_search*.csv file.
+
+    The ARO state is the row where both bank_1 and bank_2 equal 0.0 (fully withdrawn).
+    If no exact ARO row is found, returns the row with minimum total bank insertion.
+
+    Parameters
+    ----------
+    csv_path : str
+        Full path to the critical_search*.csv file.
+
+    Returns
+    -------
+    (keff, keff_std) : tuple of float, or (None, None) on failure.
+    """
+    if not csv_path or not os.path.exists(csv_path):
+        return None, None
+    try:
+        rows = []
+        with open(csv_path, newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                try:
+                    rows.append({
+                        "keff":     float(row["keff"]),
+                        "keff_std": float(row["keff_std"]),
+                        "bank_1":   float(row["bank_1"]),
+                        "bank_2":   float(row["bank_2"]),
+                    })
+                except (ValueError, KeyError):
+                    continue
+        if not rows:
+            return None, None
+        # Prefer the explicit ARO row (both banks at minimum insertion = 0.0)
+        aro = [r for r in rows if r["bank_1"] == 0.0 and r["bank_2"] == 0.0]
+        if aro:
+            return aro[0]["keff"], aro[0]["keff_std"]
+        # Fallback: row with lowest total insertion
+        rows.sort(key=lambda r: r["bank_1"] + r["bank_2"])
+        return rows[0]["keff"], rows[0]["keff_std"]
+    except Exception:
+        return None, None
+
+
+def _get_last_th_coupler_files(step_dir):
+    """
+    Find the last-attempt, last-iteration th_coupler temperatures and heating CSVs
+    in a CS depletion step directory.
+
+    Naming convention:
+      Attempt 1 : th_coupler_th_iter_NN_*.csv           (no attempt suffix)
+      Attempt N : th_coupler_attemptN_th_iter_NN_*.csv
+
+    Parameters
+    ----------
+    step_dir : str
+        Full path to a cs_th_step*_t*d directory.
+
+    Returns
+    -------
+    (temp_csv, heat_csv) : tuple of str or (None, None) if not found.
+    """
+    # Gather all temperature files, grouped by attempt number
+    all_temp = glob.glob(os.path.join(step_dir, "th_coupler*_th_iter_*_temperatures.csv"))
+    if not all_temp:
+        return None, None
+
+    def _attempt_iter(path):
+        """Return (attempt_number, iter_number) for sorting."""
+        fname = os.path.basename(path)
+        # attempt number
+        if "attempt" in fname:
+            try:
+                astr = fname.split("attempt")[1].split("_")[0]
+                attempt = int(astr)
+            except (IndexError, ValueError):
+                attempt = 1
+        else:
+            attempt = 1
+        # iter number
+        try:
+            istr = fname.split("th_iter_")[1].split("_")[0]
+            it = int(istr)
+        except (IndexError, ValueError):
+            it = 0
+        return attempt, it
+
+    all_temp.sort(key=_attempt_iter)
+    best_temp = all_temp[-1]  # highest (attempt, iter)
+
+    # Corresponding heating file
+    best_heat = best_temp.replace("_temperatures.csv", "_heating.csv")
+    if not os.path.exists(best_heat):
+        best_heat = None
+
+    return best_temp, best_heat
 
 
 # ====================================================================================================
@@ -940,6 +1052,28 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
                 bos_bank1[_idx]    = _e["bank_1_insertion"]
                 bos_bank2[_idx]    = _e["bank_2_insertion"]
 
+    # CSDepletionStudy: redefine operational using BOS keff >= 1.0 - k_tol.
+    # The log's own operational flag may differ; the BOS keff criterion is authoritative.
+    cs_bos_search_csv = {}   # bos time index → path of last critical_search*.csv
+    if cs_log and bos_keff is not None:
+        _k_tol = params.get("critical_search_k_tol", 0.0064)
+        _k_threshold = 1.0 - _k_tol
+        for i in range(len(operational)):
+            if not np.isnan(bos_keff[i]):
+                operational[i] = 1 if bos_keff[i] >= _k_threshold else 0
+        # Build BOS index → search_csv mapping for ARO keff extraction
+        for _e in cs_log:
+            _bos_idx = _e["step"] - 1
+            if 0 <= _bos_idx < len(time_days):
+                cs_bos_search_csv[_bos_idx] = _e.get("search_csv", "")
+        # Recompute derived indices after override
+        op_indices = np.where(operational == 1)[0]
+        last_operational_idx = int(op_indices[-1]) if len(op_indices) > 0 else 0
+        print(f"   [Operational] Redefined by BOS keff >= {_k_threshold:.4f}: "
+              f"{int(operational.sum())} / {len(operational)} steps operational "
+              f"(last op idx={last_operational_idx}, "
+              f"t={time_days[last_operational_idx]:.0f} d)")
+
     thermal_power_MW  = params.get("thermal_power_MW", 10.0)
     total_HM_mass_kg  = params.get("total_HM_mass_kg", None)
     total_B10_mass_kg = params.get("total_B10_mass_kg", None)
@@ -951,15 +1085,28 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
         burnup_MWd_per_MtU = None
 
     x_data        = burnup_MWd_per_MtU if burnup_MWd_per_MtU is not None else time_days
-    x_label       = "Burnup (MWd/MtU)"  if burnup_MWd_per_MtU is not None else "Time (days)"
+    x_label       = "Core-Average Burnup (MWd/MtU)"  if burnup_MWd_per_MtU is not None else "Time (days)"
     x_label_short = "burnup"            if burnup_MWd_per_MtU is not None else "time"
+
+    # Number of time steps to include in plots.
+    # Include the last operational step AND the first non-operational step (as a boundary
+    # context / to show the discharge crossing), then omit everything further.
+    _first_nonop = None
+    for _i in range(len(operational)):
+        if operational[_i] == 0:
+            _first_nonop = _i
+            break
+    if _first_nonop is not None:
+        n_plot = _first_nonop + 1          # include first non-op as boundary
+    else:
+        n_plot = len(time_days)            # all steps operational
 
     # ================================================================================
     # 2. DISCHARGE BURNUP
     # ================================================================================
-    # CSDepletionStudy : discharge = end of last operational step (operational 1→0
-    #                    transition), read from the operational array sourced from the
-    #                    critical search log.  EOS keff is meaningless here (always < 1).
+    # CSDepletionStudy : linearly interpolate between the ARO keff of the last
+    #                    operational BOS and the first non-operational BOS (from each
+    #                    step's critical_search*.csv) to find when ARO keff = 1.0.
     # DepletionStudy   : discharge = interpolated time where EOS keff crosses 1.0.
 
     discharge_burnup     = None
@@ -967,13 +1114,48 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
     discharge_time_years = None
 
     if cs_log:
+        # Find the 1→0 transition in the operational array
+        _last_op_idx    = None
+        _first_nonop_idx = None
         for i in range(len(operational) - 1):
             if operational[i] == 1 and operational[i + 1] == 0:
-                discharge_time_days  = float(time_days[i + 1])
+                _last_op_idx    = i
+                _first_nonop_idx = i + 1
+                break
+
+        if _last_op_idx is not None and _first_nonop_idx is not None:
+            # Retrieve ARO keff from the last critical_search*.csv for each boundary step.
+            # bos_keff index alignment: bos_keff[i] = BOS keff at time_days[i], which
+            # corresponds to cs_bos_search_csv[i].
+            _aro_k_last, _aro_k_last_std = _get_aro_keff_from_cs_csv(
+                cs_bos_search_csv.get(_last_op_idx, ""))
+            _aro_k_nonop, _aro_k_nonop_std = _get_aro_keff_from_cs_csv(
+                cs_bos_search_csv.get(_first_nonop_idx, ""))
+
+            if (_aro_k_last is not None and _aro_k_nonop is not None
+                    and _aro_k_last > _aro_k_nonop):
+                # Linear interpolation: ARO keff = 1.0 between the two time points
+                _frac = (_aro_k_last - 1.0) / (_aro_k_last - _aro_k_nonop)
+                _frac = float(np.clip(_frac, 0.0, 1.0))
+                discharge_time_days = (time_days[_last_op_idx]
+                                       + _frac * (time_days[_first_nonop_idx]
+                                                  - time_days[_last_op_idx]))
                 discharge_time_years = discharge_time_days / 365.25
                 if burnup_MWd_per_MtU is not None:
-                    discharge_burnup = float(burnup_MWd_per_MtU[i + 1])
-                break
+                    discharge_burnup = (burnup_MWd_per_MtU[_last_op_idx]
+                                        + _frac * (burnup_MWd_per_MtU[_first_nonop_idx]
+                                                   - burnup_MWd_per_MtU[_last_op_idx]))
+                print(f"   [Discharge] ARO keff interpolation: "
+                      f"k({time_days[_last_op_idx]:.0f} d)={_aro_k_last:.5f}, "
+                      f"k({time_days[_first_nonop_idx]:.0f} d)={_aro_k_nonop:.5f}, "
+                      f"frac={_frac:.4f} → {discharge_time_years:.3f} yr")
+            else:
+                # Fallback if ARO keff not extractable
+                discharge_time_days  = float(time_days[_first_nonop_idx])
+                discharge_time_years = discharge_time_days / 365.25
+                if burnup_MWd_per_MtU is not None:
+                    discharge_burnup = float(burnup_MWd_per_MtU[_first_nonop_idx])
+                print("   [Discharge] WARNING: ARO keff not found; using first non-op time.")
     else:
         for i in range(len(keff_mean) - 1):
             if keff_mean[i] >= 1.0 and keff_mean[i + 1] < 1.0:
@@ -1158,15 +1340,16 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
 
     if cs_log:
         # CSDepletionStudy: plot BOS keff (≈ 1.0, meaningful) and EOS keff (always < 1)
-        # as separate traces on the same axes.
-        valid_bos = ~np.isnan(bos_keff)
+        # as separate traces on the same axes. Truncate at last operational step.
+        _bos_plot = bos_keff[:n_plot]
+        valid_bos = ~np.isnan(_bos_plot)
 
         # vs. burnup / x_data
         fig, ax = plt.subplots(figsize=(12, 6), dpi=fig_dpi)
-        ax.errorbar(x_data, keff_mean, yerr=keff_std, fmt="o-", capsize=3,
-                    color="tab:blue", label="EOS k-effective")
-        ax.errorbar(x_data[valid_bos], bos_keff[valid_bos],
-                    yerr=bos_keff_std[valid_bos], fmt="s--", capsize=3,
+        ax.errorbar(x_data[:n_plot], keff_mean[:n_plot], yerr=keff_std[:n_plot],
+                    fmt="o-", capsize=3, color="tab:blue", label="EOS k-effective")
+        ax.errorbar(x_data[:n_plot][valid_bos], _bos_plot[valid_bos],
+                    yerr=bos_keff_std[:n_plot][valid_bos], fmt="s--", capsize=3,
                     color="tab:orange", label="BOS k-effective (critical search)")
         ax.axhline(1.0, color="red", linestyle="--", alpha=0.7, linewidth=1, label="k = 1.0")
         _add_discharge_vline(ax, is_burnup=(burnup_MWd_per_MtU is not None))
@@ -1181,34 +1364,158 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
                     bbox_inches="tight")
         plt.close()
 
-        # vs. time
+        # vs. time (years primary, days secondary)
+        _td_plot = time_days[:n_plot]
+        _ty_plot = time_years[:n_plot]
         fig, ax = plt.subplots(figsize=(12, 6), dpi=fig_dpi)
-        ax.errorbar(time_days, keff_mean, yerr=keff_std, fmt="o-", capsize=3,
-                    color="tab:blue", label="EOS k-effective")
-        ax.errorbar(time_days[valid_bos], bos_keff[valid_bos],
-                    yerr=bos_keff_std[valid_bos], fmt="s--", capsize=3,
+        ax.errorbar(_ty_plot, keff_mean[:n_plot], yerr=keff_std[:n_plot],
+                    fmt="o-", capsize=3, color="tab:blue", label="EOS k-effective")
+        ax.errorbar(_ty_plot[valid_bos], _bos_plot[valid_bos],
+                    yerr=bos_keff_std[:n_plot][valid_bos], fmt="s--", capsize=3,
                     color="tab:orange", label="BOS k-effective (critical search)")
         ax.axhline(1.0, color="red", linestyle="--", alpha=0.7, linewidth=1, label="k = 1.0")
-        _add_discharge_vline(ax, is_burnup=False)
-        ax.set_xlabel("Time (days)")
+        if discharge_time_years is not None:
+            ax.axvline(discharge_time_years, color="green", linestyle=":", alpha=0.7,
+                       label=f"Discharge: {discharge_time_years:.2f} yr")
+        ax.set_xlabel("Time (years)")
         ax.set_ylabel("k-effective")
         if show_titles:
             ax.set_title("k-effective vs. Time (BOS & EOS)")
         ax.legend()
         ax.grid(True, alpha=0.3)
-        ax2 = ax.twiny()
-        ax2.set_xlim(ax.get_xlim()[0] / 365.25, ax.get_xlim()[1] / 365.25)
-        ax2.set_xlabel("Time (years)")
+        if burnup_MWd_per_MtU is not None and total_HM_mass_kg:
+            _bu_per_yr = thermal_power_MW * 365.25 / (total_HM_mass_kg / 1000.0)
+            ax2 = ax.twiny()
+            ax2.set_xlim(_ty_plot[0] * _bu_per_yr, _ty_plot[-1] * _bu_per_yr)
+            ax2.set_xlabel("Core-Average Burnup (MWd/MtU)")
         plt.savefig(os.path.join(POSTPROCESSING_RESULTS_DIR,
                                   f"depletion_keff_vs_time.{fig_fmt}"),
                     bbox_inches="tight")
         plt.close()
         # No reactivity plot for CSDepletionStudy (EOS keff is always < 1 by design)
 
+        # ================================================================================
+        # 5e. CS DEPLETION STUDY — THERMAL-HYDRAULIC PLOTS
+        # ================================================================================
+        # For each depletion step directory, read the last attempt's last iteration of
+        # th_coupler temperatures and heating CSVs.  Step N (1-based) has its BOS at
+        # time_days[N-1].  Collect max values and plot vs time (years) with burnup
+        # (MWd/MtU) as the secondary x-axis.
+
+        print("\n  Collecting TH data from CS depletion step directories...")
+
+        _step_dirs_map = {}   # bos time index → step directory path
+        for _e in cs_log:
+            _bos_idx = _e["step"] - 1
+            if "search_csv" in _e and _e["search_csv"]:
+                _step_dirs_map[_bos_idx] = os.path.dirname(_e["search_csv"])
+
+        _th_time_yr  = []   # BOS time in years for each collected step
+        _th_burnup   = []   # core-average burnup at BOS time
+        _th_T_cool   = []   # max coolant temperature [K]
+        _th_T_comp   = []   # max compact temperature [K]
+        _th_T_mat    = []   # max matrix temperature [K]
+        _th_q_max    = []   # max avg channel heating [W]
+
+        for _bos_idx in sorted(_step_dirs_map.keys()):
+            if _bos_idx >= n_plot:
+                break   # only include operational steps
+            _sdir = _step_dirs_map[_bos_idx]
+            _temp_csv, _heat_csv = _get_last_th_coupler_files(_sdir)
+            if _temp_csv is None:
+                continue
+            try:
+                _td = np.genfromtxt(_temp_csv, delimiter=",", names=True)
+                _T_cool = float(np.nanmax(_td["T_coolant_K"]))
+                _T_comp = float(np.nanmax(_td["T_compact_K"]))
+                _T_mat  = float(np.nanmax(_td["T_matrix_K"]))
+            except Exception as _ex:
+                print(f"    WARNING: could not read {_temp_csv}: {_ex}")
+                continue
+            _q_max = np.nan
+            if _heat_csv:
+                try:
+                    _hd = np.genfromtxt(_heat_csv, delimiter=",", names=True)
+                    _q_max = float(np.nanmax(_hd["avg_channel_q_W"]))
+                except Exception:
+                    pass
+            _th_time_yr.append(time_years[_bos_idx])
+            _th_burnup.append(burnup_MWd_per_MtU[_bos_idx] if burnup_MWd_per_MtU is not None else np.nan)
+            _th_T_cool.append(_T_cool)
+            _th_T_comp.append(_T_comp)
+            _th_T_mat.append(_T_mat)
+            _th_q_max.append(_q_max)
+
+        if _th_time_yr:
+            _th_time_yr = np.array(_th_time_yr)
+            _th_burnup  = np.array(_th_burnup)
+            _th_T_cool  = np.array(_th_T_cool)
+            _th_T_comp  = np.array(_th_T_comp)
+            _th_T_mat   = np.array(_th_T_mat)
+            _th_q_max   = np.array(_th_q_max)
+
+            def _add_burnup_secondary_axis(ax_main, t_yr, bu):
+                """Add burnup (MWd/MtU) as secondary x-axis above the primary time axis.
+                Burnup is linearly proportional to time (constant power), so the secondary
+                axis limits scale directly with the primary axis limits."""
+                if bu is None or np.all(np.isnan(bu)) or total_HM_mass_kg is None:
+                    return
+                _bu_per_yr = thermal_power_MW * 365.25 / (total_HM_mass_kg / 1000.0)
+                ax_top = ax_main.twiny()
+                _lo, _hi = ax_main.get_xlim()
+                ax_top.set_xlim(_lo * _bu_per_yr, _hi * _bu_per_yr)
+                ax_top.set_xlabel("Core-Average Burnup (MWd/MtU)")
+
+            # --- Plot 1: Max Temperature vs Time (years) ---
+            fig, ax = plt.subplots(figsize=(12, 6), dpi=fig_dpi)
+            ax.plot(_th_time_yr, _th_T_cool, "o-", color="tab:blue",   label="Max Coolant Temp")
+            ax.plot(_th_time_yr, _th_T_comp, "s-", color="tab:red",    label="Max Compact Temp")
+            ax.plot(_th_time_yr, _th_T_mat,  "^-", color="tab:orange", label="Max Matrix Temp")
+            if discharge_time_years is not None:
+                ax.axvline(discharge_time_years, color="green", linestyle=":", alpha=0.7,
+                           label=f"Discharge: {discharge_time_years:.2f} yr")
+            ax.set_xlabel("Time (years)")
+            ax.set_ylabel("Max Temperature (K)")
+            if show_titles:
+                ax.set_title("Max Temperature vs. Time (CS Depletion Study)")
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            _add_burnup_secondary_axis(ax, _th_time_yr, _th_burnup)
+            plt.savefig(os.path.join(POSTPROCESSING_RESULTS_DIR,
+                                      f"cs_depletion_max_temp_vs_time.{fig_fmt}"),
+                        bbox_inches="tight")
+            plt.close()
+            print(f"  Saved: cs_depletion_max_temp_vs_time.{fig_fmt}")
+
+            # --- Plot 2: Max Avg Channel Heating vs Time (years) ---
+            _q_valid = ~np.isnan(_th_q_max)
+            if np.any(_q_valid):
+                fig, ax = plt.subplots(figsize=(12, 6), dpi=fig_dpi)
+                ax.plot(_th_time_yr[_q_valid], _th_q_max[_q_valid],
+                        "o-", color="tab:purple", label="Max Avg Channel Heating")
+                if discharge_time_years is not None:
+                    ax.axvline(discharge_time_years, color="green", linestyle=":", alpha=0.7,
+                               label=f"Discharge: {discharge_time_years:.2f} yr")
+                ax.set_xlabel("Time (years)")
+                ax.set_ylabel("Max Avg Channel Heating (W)")
+                if show_titles:
+                    ax.set_title("Max Avg Channel Heating vs. Time (CS Depletion Study)")
+                ax.legend()
+                ax.grid(True, alpha=0.3)
+                _add_burnup_secondary_axis(ax, _th_time_yr, _th_burnup)
+                plt.savefig(os.path.join(POSTPROCESSING_RESULTS_DIR,
+                                          f"cs_depletion_max_heating_vs_time.{fig_fmt}"),
+                            bbox_inches="tight")
+                plt.close()
+                print(f"  Saved: cs_depletion_max_heating_vs_time.{fig_fmt}")
+        else:
+            print("  WARNING: No TH data found in step directories; skipping TH plots.")
+
     else:
-        # DepletionStudy: single EOS keff trace
+        # DepletionStudy: single EOS keff trace — truncate at last operational step.
         fig, ax = plt.subplots(figsize=(12, 6), dpi=fig_dpi)
-        ax.errorbar(x_data, keff_mean, yerr=keff_std, fmt="o-", capsize=3, label="k-effective")
+        ax.errorbar(x_data[:n_plot], keff_mean[:n_plot], yerr=keff_std[:n_plot],
+                    fmt="o-", capsize=3, label="k-effective")
         ax.axhline(1.0, color="red", linestyle="--", alpha=0.7, linewidth=1, label="k = 1.0")
         _add_discharge_vline(ax, is_burnup=(burnup_MWd_per_MtU is not None))
         ax.set_xlabel(x_label)
@@ -1224,8 +1531,8 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
 
         if burnup_MWd_per_MtU is not None:
             fig, ax = plt.subplots(figsize=(12, 6), dpi=fig_dpi)
-            ax.errorbar(time_days, keff_mean, yerr=keff_std, fmt="o-", capsize=3,
-                        label="k-effective")
+            ax.errorbar(time_days[:n_plot], keff_mean[:n_plot], yerr=keff_std[:n_plot],
+                        fmt="o-", capsize=3, label="k-effective")
             ax.axhline(1.0, color="red", linestyle="--", alpha=0.7, linewidth=1, label="k = 1.0")
             _add_discharge_vline(ax, is_burnup=False)
             ax.set_xlabel("Time (days)")
@@ -1242,9 +1549,9 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
                         bbox_inches="tight")
             plt.close()
 
-        reactivity_pcm = (keff_mean - 1.0) / keff_mean * 1e5
+        reactivity_pcm = (keff_mean[:n_plot] - 1.0) / keff_mean[:n_plot] * 1e5
         fig, ax = plt.subplots(figsize=(12, 6), dpi=fig_dpi)
-        ax.plot(x_data, reactivity_pcm, "o-")
+        ax.plot(x_data[:n_plot], reactivity_pcm, "o-")
         ax.axhline(0, color="red", linestyle="--", alpha=0.7, linewidth=1)
         ax.set_xlabel(x_label)
         ax.set_ylabel("Reactivity (pcm)")
@@ -1257,6 +1564,7 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
         plt.close()
 
     # Nuclide group plots — driven entirely by params["depletion_plot_groups"]
+    # Slice x_data to operational range only.
     plot_groups = params.get("depletion_plot_groups", DEFAULT_PLOT_GROUPS)
     plotted_nuclides = set()
 
@@ -1264,10 +1572,11 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
         available = [n for n in group_nuclides if n in all_nuclide_data]
         if available:
             _plot_nuclide_group(
-                x_data, x_label, all_nuclide_data, available,
+                x_data[:n_plot], x_label, all_nuclide_data, available,
                 group_name, POSTPROCESSING_RESULTS_DIR,
                 f"depletion_{group_name.lower().replace('/', '').replace(' ', '_')}",
-                is_wedge=is_wedge, show_titles=show_titles, fig_fmt=fig_fmt, fig_dpi=fig_dpi
+                is_wedge=is_wedge, show_titles=show_titles, fig_fmt=fig_fmt, fig_dpi=fig_dpi,
+                n_plot=n_plot
             )
             plotted_nuclides.update(available)
 
@@ -1278,10 +1587,11 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
     ]
     if ungrouped:
         _plot_nuclide_group(
-            x_data, x_label, all_nuclide_data, ungrouped,
+            x_data[:n_plot], x_label, all_nuclide_data, ungrouped,
             "Other Tracked Nuclides", POSTPROCESSING_RESULTS_DIR,
             "depletion_other_nuclides",
-            is_wedge=is_wedge, show_titles=show_titles, fig_fmt=fig_fmt, fig_dpi=fig_dpi
+            is_wedge=is_wedge, show_titles=show_titles, fig_fmt=fig_fmt, fig_dpi=fig_dpi,
+            n_plot=n_plot
         )
 
     # Fissile inventory ratio
@@ -1290,7 +1600,8 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
         fissile_initial = fuel_data["U235"][0]
         fissile_current = sum(fuel_data[n] for n in fissile_present)
         fig, ax = plt.subplots(figsize=(10, 5), dpi=fig_dpi)
-        ax.plot(x_data, fissile_current / fissile_initial, "o-", color="tab:green")
+        ax.plot(x_data[:n_plot], (fissile_current / fissile_initial)[:n_plot],
+                "o-", color="tab:green")
         ax.axhline(1.0, color="gray", linestyle=":", alpha=0.5)
         ax.set_xlabel(x_label)
         ax.set_ylabel("Fissile Inventory Ratio")
@@ -1313,7 +1624,7 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
 
     def _b10_absolute(b10_array, label, filename, color):
         fig, ax = plt.subplots(figsize=(10, 5), dpi=fig_dpi)
-        ax.plot(x_data, b10_array, "o-", color=color)
+        ax.plot(x_data[:n_plot], b10_array[:n_plot], "o-", color=color)
         ax.set_xlabel(x_label)
         ax.set_ylabel("B-10 Atoms")
         if show_titles:
@@ -1326,7 +1637,7 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
         if b10_initial <= 0:
             return
         fig, ax = plt.subplots(figsize=(10, 5), dpi=fig_dpi)
-        ax.plot(x_data, b10_array / b10_initial * 100, "o-", color=color)
+        ax.plot(x_data[:n_plot], b10_array[:n_plot] / b10_initial * 100, "o-", color=color)
         ax.set_xlabel(x_label)
         ax.set_ylabel("Remaining B-10 (%)")
         if show_titles:
@@ -1359,9 +1670,9 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
 
         # Absolute — all three traces
         fig, ax = plt.subplots(figsize=(10, 5), dpi=fig_dpi)
-        ax.plot(x_data, b10_combined, "o-",  color="black",     label="Total")
-        ax.plot(x_data, b10_p,        "s--", color="purple",    label="Burnable Poison")
-        ax.plot(x_data, b10_g,        "^--", color="steelblue", label="Graphite")
+        ax.plot(x_data[:n_plot], b10_combined[:n_plot], "o-",  color="black",     label="Total")
+        ax.plot(x_data[:n_plot], b10_p[:n_plot],        "s--", color="purple",    label="Burnable Poison")
+        ax.plot(x_data[:n_plot], b10_g[:n_plot],        "^--", color="steelblue", label="Graphite")
         ax.set_xlabel(x_label)
         ax.set_ylabel("B-10 Atoms")
         if show_titles:
@@ -1374,9 +1685,12 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
         # Fractional — all three traces normalised to combined initial
         if b10_comb_init > 0:
             fig, ax = plt.subplots(figsize=(10, 5), dpi=fig_dpi)
-            ax.plot(x_data, b10_combined / b10_comb_init * 100, "o-",  color="black",     label="Total")
-            ax.plot(x_data, b10_p        / b10_comb_init * 100, "s--", color="purple",    label="Burnable Poison")
-            ax.plot(x_data, b10_g        / b10_comb_init * 100, "^--", color="steelblue", label="Graphite")
+            ax.plot(x_data[:n_plot], b10_combined[:n_plot] / b10_comb_init * 100,
+                    "o-",  color="black",     label="Total")
+            ax.plot(x_data[:n_plot], b10_p[:n_plot] / b10_comb_init * 100,
+                    "s--", color="purple",    label="Burnable Poison")
+            ax.plot(x_data[:n_plot], b10_g[:n_plot] / b10_comb_init * 100,
+                    "^--", color="steelblue", label="Graphite")
             ax.set_xlabel(x_label)
             ax.set_ylabel("Remaining B-10 (% of initial total)")
             if show_titles:
@@ -1389,9 +1703,9 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
         # By-source stacked area
         if b10_comb_init > 0:
             fig, ax = plt.subplots(figsize=(10, 5), dpi=fig_dpi)
-            ax.stackplot(x_data,
-                         b10_p / b10_comb_init * 100,
-                         b10_g / b10_comb_init * 100,
+            ax.stackplot(x_data[:n_plot],
+                         b10_p[:n_plot] / b10_comb_init * 100,
+                         b10_g[:n_plot] / b10_comb_init * 100,
                          labels=["Burnable Poison", "Graphite"],
                          colors=["purple", "steelblue"], alpha=0.7)
             ax.set_xlabel(x_label)
@@ -1436,14 +1750,14 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
         min_zone  = mwdmtu_data["min_zone"]
         zone_lbl  = mwdmtu_data["zone_labels"]
 
-        # Plot: peak / avg / min burnup in MWd/MtU
+        # Plot: peak / avg / min burnup in MWd/MtU (truncate at last operational step)
         fig, ax = plt.subplots(figsize=(12, 6), dpi=fig_dpi)
-        ax.plot(x_data, avg_bu,  "o-",  color="black",    label="Core-average burnup")
-        ax.plot(x_data, peak_bu, "s--", color="firebrick", label="Peak zone burnup")
-        ax.plot(x_data, min_bu,  "^--", color="steelblue", label="Minimum zone burnup")
-        ax.fill_between(x_data, avg_bu, peak_bu, alpha=0.10, color="firebrick",
+        ax.plot(x_data[:n_plot], avg_bu[:n_plot],  "o-",  color="black",    label="Core-average burnup")
+        ax.plot(x_data[:n_plot], peak_bu[:n_plot], "s--", color="firebrick", label="Peak zone burnup")
+        ax.plot(x_data[:n_plot], min_bu[:n_plot],  "^--", color="steelblue", label="Minimum zone burnup")
+        ax.fill_between(x_data[:n_plot], avg_bu[:n_plot], peak_bu[:n_plot], alpha=0.10, color="firebrick",
                         label="Peak-to-average margin")
-        ax.fill_between(x_data, min_bu, avg_bu, alpha=0.10, color="steelblue",
+        ax.fill_between(x_data[:n_plot], min_bu[:n_plot], avg_bu[:n_plot], alpha=0.10, color="steelblue",
                         label="Average-to-minimum margin")
         ax.set_xlabel(x_label)
         ax.set_ylabel("Burnup (MWd/MtU)")
@@ -1461,7 +1775,7 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
         with np.errstate(divide='ignore', invalid='ignore'):
             pf_MWd = np.where(avg_bu > 0, peak_bu / avg_bu, np.nan)
         fig, ax = plt.subplots(figsize=(12, 5), dpi=fig_dpi)
-        ax.plot(x_data, pf_MWd, "o-", color="darkorange")
+        ax.plot(x_data[:n_plot], pf_MWd[:n_plot], "o-", color="darkorange")
         ax.axhline(1.0, color="gray", linewidth=0.8, linestyle=":")
         ax.set_xlabel(x_label)
         ax.set_ylabel("Peak-to-Average Burnup Ratio")
@@ -1494,7 +1808,7 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
             f.write(header_mwd + "\n")
             for r in rows_mwd:
                 f.write(r + "\n")
-        print(f"  Saved: {mwdmtu_csv}")
+        print(f"  Saved: {os.path.basename(mwdmtu_csv)}")
 
     # ================================================================================
     # 5c. ZONE BURNUP IN %FIMA  (actinide inventory method)
@@ -1525,12 +1839,13 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
 
         # Plot: peak / avg / min burnup in %FIMA vs. average burnup MWd/MtU
         fig, ax = plt.subplots(figsize=(12, 6), dpi=fig_dpi)
-        ax.plot(x_fima, avg_FIMA,  "o-",  color="black",    label="Core-average burnup")
-        ax.plot(x_fima, peak_FIMA, "s--", color="firebrick", label="Peak zone burnup")
-        ax.plot(x_fima, min_FIMA,  "^--", color="steelblue", label="Minimum zone burnup")
-        ax.fill_between(x_fima, avg_FIMA, peak_FIMA, alpha=0.10, color="firebrick",
+        _nf = min(n_plot, len(x_fima)) if x_fima is not None else n_plot
+        ax.plot(x_fima[:_nf], avg_FIMA[:_nf],  "o-",  color="black",    label="Core-average burnup")
+        ax.plot(x_fima[:_nf], peak_FIMA[:_nf], "s--", color="firebrick", label="Peak zone burnup")
+        ax.plot(x_fima[:_nf], min_FIMA[:_nf],  "^--", color="steelblue", label="Minimum zone burnup")
+        ax.fill_between(x_fima[:_nf], avg_FIMA[:_nf], peak_FIMA[:_nf], alpha=0.10, color="firebrick",
                         label="Peak-to-average margin")
-        ax.fill_between(x_fima, min_FIMA, avg_FIMA, alpha=0.10, color="steelblue",
+        ax.fill_between(x_fima[:_nf], min_FIMA[:_nf], avg_FIMA[:_nf], alpha=0.10, color="steelblue",
                         label="Average-to-minimum margin")
         ax.set_xlabel(x_fima_lbl)
         ax.set_ylabel("Burnup (%FIMA)")
@@ -1549,7 +1864,7 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
         with np.errstate(divide='ignore', invalid='ignore'):
             pf_FIMA = np.where(avg_FIMA > 0, peak_FIMA / avg_FIMA, np.nan)
         fig, ax = plt.subplots(figsize=(12, 5), dpi=fig_dpi)
-        ax.plot(x_fima, pf_FIMA, "o-", color="darkorange")
+        ax.plot(x_fima[:_nf], pf_FIMA[:_nf], "o-", color="darkorange")
         ax.axhline(1.0, color="gray", linewidth=0.8, linestyle=":")
         ax.set_xlabel(x_fima_lbl)
         ax.set_ylabel("Peak-to-Average Burnup Ratio")
@@ -1581,7 +1896,7 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
             f.write(header_fima + "\n")
             for r in rows_fima:
                 f.write(r + "\n")
-        print(f"  Saved: {fima_csv}")
+        print(f"  Saved: {os.path.basename(fima_csv)}")
 
     # ================================================================================
     # 5d. CONVERSION RATIO
@@ -1601,15 +1916,16 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
         else:
             x_cr = 0.5 * (time_days[:n_cr] + time_days[1:n_cr + 1])
 
-        # --- Plot: CR vs burnup/time ---
+        # --- Plot: CR vs burnup/time (truncate at last operational step) ---
+        _n_cr_plot = min(n_cr, n_plot - 1)   # CR has n-1 midpoints for n timesteps
         fig, ax = plt.subplots(figsize=(12, 5), dpi=fig_dpi)
-        valid = ~np.isnan(cr)
-        ax.plot(x_cr[valid], cr[valid], "o-", color="tab:orange")
+        valid = ~np.isnan(cr[:_n_cr_plot])
+        ax.plot(x_cr[:_n_cr_plot][valid], cr[:_n_cr_plot][valid], "o-", color="tab:orange")
         ax.set_xlabel(x_label)
         ax.set_ylabel("Conversion Ratio")
         if show_titles:
             ax.set_title("Conversion Ratio vs. Burnup")
-        cr_max = float(np.nanmax(cr)) if np.any(valid) else 1.0
+        cr_max = float(np.nanmax(cr[:_n_cr_plot])) if np.any(valid) else 1.0
         ax.set_ylim(0, 1.5 * cr_max)
         ax.grid(True, alpha=0.3)
         plt.savefig(os.path.join(POSTPROCESSING_RESULTS_DIR,
@@ -1620,8 +1936,8 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
 
         # --- Plot: Pu-239 generated and fissile burned per step ---
         fig, ax = plt.subplots(figsize=(12, 5), dpi=fig_dpi)
-        ax.plot(x_cr, fis_burned, "o-", color="tab:red",  label="Total fissile burned")
-        ax.plot(x_cr, pu239_gen,  "s-", color="tab:blue", label="Pu-239 generated (gross)")
+        ax.plot(x_cr[:_n_cr_plot], fis_burned[:_n_cr_plot], "o-", color="tab:red",  label="Total fissile burned")
+        ax.plot(x_cr[:_n_cr_plot], pu239_gen[:_n_cr_plot],  "s-", color="tab:blue", label="Pu-239 generated (gross)")
         ax.set_xlabel(x_label)
         ax.set_ylabel("Atoms per step")
         if show_titles:
@@ -1655,10 +1971,10 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
                     f"{fis_burned[i]:.6e},"
                     f"{cr_val:.6f}\n"
                 )
-        print(f"  Saved: {cr_csv}")
+        print(f"  Saved: {os.path.basename(cr_csv)}")
 
         # Print summary
-        valid_cr = cr[valid]
+        valid_cr = cr[:_n_cr_plot][valid]
         if len(valid_cr) > 0:
             print(f"\n  Conversion Ratio Summary:")
             print(f"    Initial CR (step 1): {valid_cr[0]:.4f}")
@@ -1768,7 +2084,7 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
             comments="",
             fmt=fmt_cols + ["%.6e"] * len(nuclides),
         )
-        print(f"  [Graphite] Nuclide inventory saved → {out_path}  "
+        print(f"  [Graphite] Nuclide inventory saved → {os.path.basename(out_path)}  "
               f"({n_steps} steps × {len(nuclides)} nuclides)")
 
     # ----- Gamma Sources EOL CSV -----
@@ -1794,23 +2110,41 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
             f.write(f"Initial B-10:     {total_B10_mass_kg:.4f} kg \n")
         f.write(f"Depletion steps:  {len(keff_mean)}\n")
         f.write(f"Total time:       {time_days[-1]:.1f} days ({time_years[-1]:.2f} years)\n\n")
-        f.write(f"Initial k_eff:    {keff_mean[0]:.5f} ± {keff_std[0]:.5f}\n")
-        f.write(f"Final k_eff:      {keff_mean[-1]:.5f} ± {keff_std[-1]:.5f}\n\n")
+        # For CSDepletionStudy use BOS keff; otherwise use EOS keff from results.h5
+        _rpt_keff = bos_keff if (cs_log and bos_keff is not None) else keff_mean
+        _rpt_kstd = bos_keff_std if (cs_log and bos_keff_std is not None) else keff_std
+        _keff_label = "BOS k_eff (crit. search)" if cs_log else "k_eff"
+
+        # Header summary lines
+        _k0 = _rpt_keff[0] if not np.isnan(_rpt_keff[0]) else keff_mean[0]
+        _s0 = _rpt_kstd[0] if not np.isnan(_rpt_kstd[0]) else keff_std[0]
+        _kl = _rpt_keff[last_operational_idx]
+        _sl = _rpt_kstd[last_operational_idx]
+        if np.isnan(_kl):
+            _kl, _sl = keff_mean[last_operational_idx], keff_std[last_operational_idx]
+        f.write(f"Initial {_keff_label}:  {_k0:.5f} ± {_s0:.5f}\n")
+        f.write(f"Final   {_keff_label}:  {_kl:.5f} ± {_sl:.5f}  "
+                f"(step {last_operational_idx}, t={time_days[last_operational_idx]:.0f} d)\n\n")
         if burnup_MWd_per_MtU is not None:
-            f.write(f"Final burnup:     {burnup_MWd_per_MtU[-1]:.0f} MWd/MtU\n\n")
+            f.write(f"Final burnup:     {burnup_MWd_per_MtU[last_operational_idx]:.0f} MWd/MtU\n\n")
         if discharge_time_days is not None:
             f.write(f"Discharge (k=1.0): {discharge_time_days:.1f} days "
                     f"({discharge_time_years:.2f} years)\n")
             if discharge_burnup is not None:
                 f.write(f"Discharge burnup:  {discharge_burnup:.0f} MWd/MtU\n")
 
-        f.write("\n" + "-" * 70 + "\n")
-        f.write(f"{'Step':>5}  {'Time (d)':>10}  {'k_eff':>10}  {'± σ':>8}")
+        _col_keff = "BOS k_eff" if cs_log else "k_eff"
+        f.write("\n" + "-" * 75 + "\n")
+        f.write(f"{'Step':>5}  {'Time (d)':>10}  {_col_keff:>10}  {'± σ':>8}")
         if burnup_MWd_per_MtU is not None:
             f.write(f"  {'Burnup (MWd/MtU)':>18}")
-        f.write("\n" + "-" * 70 + "\n")
-        for i in range(len(keff_mean)):
-            f.write(f"{i:>5}  {time_days[i]:>10.1f}  {keff_mean[i]:>10.5f}  {keff_std[i]:>8.5f}")
+        f.write("\n" + "-" * 75 + "\n")
+        for i in range(n_plot):
+            _k = _rpt_keff[i]
+            _s = _rpt_kstd[i]
+            if np.isnan(_k):
+                _k, _s = keff_mean[i], keff_std[i]
+            f.write(f"{i:>5}  {time_days[i]:>10.1f}  {_k:>10.5f}  {_s:>8.5f}")
             if burnup_MWd_per_MtU is not None:
                 f.write(f"  {burnup_MWd_per_MtU[i]:>18.0f}")
             f.write("\n")
@@ -1865,7 +2199,7 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
 
         f.write("=" * 80 + "\n")
 
-    print(f"  Report saved to: {txt_path}")
+    print(f"  Report saved to: {os.path.basename(txt_path)}")
     print(f"\n{'=' * 80}")
     print("DEPLETION POST-PROCESSING COMPLETE")
     print(f"{'=' * 80}\n")
@@ -1876,7 +2210,7 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
 # NUCLIDE GROUP PLOTTING
 # ====================================================================================================
 
-def _plot_nuclide_group(x_data, x_label, nuclide_data, nuclide_list, title, output_dir, filename_base, is_wedge=False, show_titles=True, fig_fmt="png", fig_dpi=300):
+def _plot_nuclide_group(x_data, x_label, nuclide_data, nuclide_list, title, output_dir, filename_base, is_wedge=False, show_titles=True, fig_fmt="png", fig_dpi=300, n_plot=None):
     available = [
         n for n in nuclide_list
         if n in nuclide_data and np.any(nuclide_data[n] > 0)
@@ -1888,6 +2222,8 @@ def _plot_nuclide_group(x_data, x_label, nuclide_data, nuclide_list, title, outp
     for nuc in available:
         atoms = nuclide_data[nuc]
         n     = min(len(x_data), len(atoms))
+        if n_plot is not None:
+            n = min(n, n_plot)
         ax.plot(x_data[:n], atoms[:n], "o-", label=nuc)
 
     ax.set_xlabel(x_label)
@@ -1901,7 +2237,7 @@ def _plot_nuclide_group(x_data, x_label, nuclide_data, nuclide_list, title, outp
     save_path = os.path.join(output_dir, f"{filename_base}.{fig_fmt}")
     plt.savefig(save_path, bbox_inches="tight")
     plt.close()
-    print(f"  Saved: {save_path}")
+    print(f"  Saved: {os.path.basename(save_path)}")
 
 # ====================================================================================================
 # STANDALONE ENTRY POINT

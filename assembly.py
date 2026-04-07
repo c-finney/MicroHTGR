@@ -205,7 +205,7 @@ def build_bank_assemblies(
     # ==================================================================
 
     graphite_center_cell = openmc.Cell(fill=mats.graphite)
-    graphite_center_cell.temperature = params["reflector_min"]
+    graphite_center_cell.temperature = float(np.mean(T_matrix_z))
     graphite_center_univ = openmc.Universe(cells=[graphite_center_cell])
 
     reflector_alt_lattice_univs = []
@@ -502,7 +502,7 @@ def build_ss_assemblies(
     # ==================================================================
 
     graphite_center_cell = openmc.Cell(fill=mats.graphite)
-    graphite_center_cell.temperature = params["reflector_min"]
+    graphite_center_cell.temperature = float(np.mean(T_matrix_z))
     graphite_center_univ = openmc.Universe(cells=[graphite_center_cell])
 
     rssa_lattice_univs = []
@@ -732,7 +732,7 @@ def create_assembly_univs(
     inf_graphite_universe = openmc.Universe(cells=[graphite_outer_cell])
 
     graphite_outer_refl = openmc.Cell(fill=mats.graphite)
-    graphite_outer_refl.temperature = params["reflector_min"]
+    graphite_outer_refl.temperature = float(np.mean(T_reflector_z))
     inf_graphite_refl_universe = openmc.Universe(cells=[graphite_outer_refl])
 
     bank_keys = [

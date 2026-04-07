@@ -144,7 +144,8 @@ def extract_beo_peak_fluence(run_dir, time_steps_s, keff_mean, params):
                 print(f"    [{step_label}] Could not determine normalization — skipping")
                 continue
 
-            # Raw flux: sum(track_length)/n_source [cm/source] per mesh cell
+            # Raw fast flux (E > 100 keV): sum(track_length)/n_source [cm/source] per mesh cell
+            # Tally has [MeshFilter, EnergyFilter(1 bin)]; squeeze out the energy dimension.
             flux_raw = beo_tally.get_values(scores=['flux']).flatten()
 
             # Recover mesh geometry for cell volumes
@@ -165,10 +166,11 @@ def extract_beo_peak_fluence(run_dir, time_steps_s, keff_mean, params):
                     * dphi[np.newaxis, :, np.newaxis]
                     * dz[np.newaxis, np.newaxis, :])   # (n_r, n_phi, n_z)
 
-            # Flux density per source particle [1/(cm²·source)]
+            # flux_raw is ordered (r, phi, z, energy); with 1 energy bin this is
+            # equivalent to (r, phi, z) after reshape.
             flux_density = flux_raw.reshape(n_r, n_phi, n_z) / vols
 
-            # Peak physical flux [n/cm²/s] — peak is geometry-invariant (same in all sectors)
+            # Peak fast flux density [n/cm²/s] — peak is geometry-invariant (same in all sectors)
             peak_flux[i] = float(np.nanmax(flux_density)) * norm
 
             # Step duration: interval from time_steps_s[i] to time_steps_s[i+1]
@@ -177,15 +179,16 @@ def extract_beo_peak_fluence(run_dir, time_steps_s, keff_mean, params):
                 step_flu[i] = peak_flux[i] * dt_s
 
             print(f"    [{step_label}] k={keff_mean[i]:.4f}  "
-                  f"peak_flux={peak_flux[i]:.3e} n/cm²/s  "
-                  f"Δfluence={step_flu[i]:.3e} n/cm²")
+                  f"peak_fast_flux={peak_flux[i]:.3e} n/cm²/s  "
+                  f"Δfast_fluence={step_flu[i]:.3e} n/cm²")
 
         except Exception as e:
             print(f"    [{step_label}] ERROR: {e}")
 
     # ---- Load operational array from depletion_summary.json if available -----
     # Prefer the summary's operational array (consistent with depletion_postprocessing.py).
-    # Falls back to keff < 1.0 if the summary is not yet written.
+    # For CSDepletionStudy, falls back to BOS keff >= 1.0 - k_tol from the log.
+    # Final fallback: keff < 1.0.
     operational_arr = None
     summary_path = os.path.join(run_dir, "depletion_results", "depletion_summary.json")
     if os.path.exists(summary_path):
@@ -197,6 +200,31 @@ def extract_beo_peak_fluence(run_dir, time_steps_s, keff_mean, params):
                 print(f"  BeO: loaded operational array from depletion_summary.json")
         except Exception as _e:
             print(f"  BeO: WARNING: could not read depletion_summary.json: {_e}")
+
+    if operational_arr is None and params.get("study_execution_mode") == "CSDepletionStudy":
+        # Build operational array from critical_search_depletion_log.json using
+        # BOS keff >= 1.0 - k_tol criterion (mirrors depletion_postprocessing.py logic).
+        _cs_log_path = os.path.join(run_dir, "critical_search_depletion_log.json")
+        if os.path.exists(_cs_log_path):
+            try:
+                with open(_cs_log_path) as _f:
+                    _cs_log = json.load(_f)
+                _k_tol = params.get("critical_search_k_tol", 0.0064)
+                _k_thresh = 1.0 - _k_tol
+                _n = n_results
+                _bos_keff = np.full(_n, np.nan)
+                for _e in _cs_log:
+                    _bi = _e["step"] - 1
+                    if 0 <= _bi < _n:
+                        _bos_keff[_bi] = _e["critical_keff"]
+                operational_arr = np.ones(_n, dtype=int)
+                for _i in range(_n):
+                    if not np.isnan(_bos_keff[_i]):
+                        operational_arr[_i] = 1 if _bos_keff[_i] >= _k_thresh else 0
+                print(f"  BeO: built operational array from critical_search_depletion_log.json "
+                      f"(k_thresh={_k_thresh:.4f})")
+            except Exception as _e:
+                print(f"  BeO: WARNING: could not read critical_search_depletion_log.json: {_e}")
 
     # ---- Find shutdown step ---------------------------------------------------
     shutdown_idx = n_results   # default: never shuts down
@@ -232,8 +260,8 @@ def extract_beo_peak_fluence(run_dir, time_steps_s, keff_mean, params):
 
     total_fluence = running_total
 
-    print(f"\n  BeO peak fluence summary:")
-    print(f"    Total peak fluence:  {total_fluence:.4e} n/cm²")
+    print(f"\n  BeO peak fast fluence summary (E > 100 keV):")
+    print(f"    Total peak fast fluence:  {total_fluence:.4e} n/cm²")
     if shutdown_idx < n_results:
         print(f"    Shutdown at step {shutdown_idx}")
     else:
@@ -277,18 +305,19 @@ def plot_and_save_beo_results(beo_fluence_data, x_data, x_label, x_label_short,
     beo_sd_idx    = beo_fluence_data["shutdown_step_idx"]
     n_sp          = beo_fluence_data["n_statepoints_found"]
 
-    # --- Plot: cumulative peak fluence vs. time/burnup ---
+    # Truncate to operational range — non-operational steps are non-physical.
+    n_plot_beo = min(beo_sd_idx, len(x_data), len(beo_cum_flu))
+    if n_plot_beo == 0:
+        n_plot_beo = len(x_data)   # fallback: plot everything if always operational
+
+    # --- Plot: cumulative peak fluence vs. time/burnup (truncated at shutdown) ---
     fig, ax = plt.subplots(figsize=(12, 6), dpi=150)
-    ax.plot(x_data, beo_cum_flu, "o-", markersize=5, linewidth=1.5,
-            color="darkcyan", label="Cumulative peak fluence")
-    if beo_sd_idx < len(keff_mean):
-        sd_x = x_data[beo_sd_idx]
-        ax.axvline(sd_x, color="red", linestyle="--", alpha=0.7,
-                   label=f"Shutdown (non-operational)")
+    ax.plot(x_data[:n_plot_beo], beo_cum_flu[:n_plot_beo], "o-", markersize=5,
+            linewidth=1.5, color="darkcyan", label="Cumulative peak fluence")
     ax.set_xlabel(x_label, fontsize=12)
-    ax.set_ylabel("Cumulative Peak Fluence (n/cm²)", fontsize=12)
+    ax.set_ylabel("Cumulative Peak Fast Fluence (n/cm²) [E > 100 keV]", fontsize=12)
     if show_titles:
-        ax.set_title("BeO Reflector Peak Fluence vs. Burnup", fontsize=14)
+        ax.set_title("BeO Reflector Peak Fast Fluence vs. Burnup", fontsize=14)
     ax.legend(fontsize=10)
     ax.grid(True, alpha=0.3)
     ax.ticklabel_format(style='sci', axis='y', scilimits=(0, 0))
@@ -298,15 +327,17 @@ def plot_and_save_beo_results(beo_fluence_data, x_data, x_label, x_label_short,
     plt.close()
     print(f"  Saved: depletion_beo_fluence_vs_{x_label_short}.png")
 
-    # --- Plot: peak flux per step ---
-    step_indices = np.arange(n_sp)
+    # --- Plot: peak flux per step (truncated at shutdown) ---
+    _n_flux_plot = min(beo_sd_idx, n_sp)
+    step_indices = np.arange(_n_flux_plot)
     fig, ax = plt.subplots(figsize=(12, 5), dpi=150)
-    ax.bar(step_indices, np.where(np.isnan(beo_peak_flux), 0, beo_peak_flux),
+    ax.bar(step_indices,
+           np.where(np.isnan(beo_peak_flux[:_n_flux_plot]), 0, beo_peak_flux[:_n_flux_plot]),
            color="teal", alpha=0.8, edgecolor="black", linewidth=0.5)
     ax.set_xlabel("Depletion Step Index", fontsize=12)
-    ax.set_ylabel("Peak Flux (n/cm²/s)", fontsize=12)
+    ax.set_ylabel("Peak Fast Flux (n/cm²/s) [E > 100 keV]", fontsize=12)
     if show_titles:
-        ax.set_title("BeO Reflector Peak Flux per Depletion Step", fontsize=14)
+        ax.set_title("BeO Reflector Peak Fast Flux per Depletion Step", fontsize=14)
     ax.grid(True, alpha=0.3, axis='y')
     ax.ticklabel_format(style='sci', axis='y', scilimits=(0, 0))
     plt.savefig(os.path.join(output_dir,
@@ -321,7 +352,7 @@ def plot_and_save_beo_results(beo_fluence_data, x_data, x_label, x_label_short,
         header = "step_idx,time_days,keff"
         if burnup_MWd_per_MtU is not None:
             header += ",burnup_MWd_per_MtU"
-        header += ",peak_flux_n_cm2_s,step_fluence_n_cm2,cumulative_fluence_n_cm2,operational"
+        header += ",peak_fast_flux_n_cm2_s,step_fast_fluence_n_cm2,cumulative_fast_fluence_n_cm2,operational"
         f.write(header + "\n")
         for i in range(n_sp):
             t_d = float(time_days[i])

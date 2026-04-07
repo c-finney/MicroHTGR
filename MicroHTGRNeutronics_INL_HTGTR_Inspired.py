@@ -176,11 +176,28 @@ def build_model(params, run_dir):
         temps = T_min + (T_max - T_min) * cos_profile
         return temps
     
-    T_coolant_z = np.linspace(params["coolant_inlet"], params["coolant_outlet"], params["n_ax_zones"])
-    T_compact_z = cosine_temp_profile(params["compact_min"], params["compact_max"], params["n_ax_zones"])
-    T_matrix_z = cosine_temp_profile(params["matrix_min"], params["matrix_max"], params["n_ax_zones"])
-    T_reflector_z = cosine_temp_profile(params["reflector_min"], params["reflector_max"], params["n_ax_zones"])
-    T_reflector_axial = params["reflector_min"]
+    # If th_coupler has already converged a temperature profile, use it directly.
+    # Otherwise fall back to the config.py min/max cosine/linear profiles.
+    if "_th_coolant_z" in params:
+        T_coolant_z = np.asarray(params["_th_coolant_z"], dtype=float)
+    else:
+        T_coolant_z = np.linspace(params["coolant_inlet"], params["coolant_outlet"], params["n_ax_zones"])
+
+    if "_th_compact_z" in params:
+        T_compact_z = np.asarray(params["_th_compact_z"], dtype=float)
+    else:
+        T_compact_z = cosine_temp_profile(params["compact_min"], params["compact_max"], params["n_ax_zones"])
+
+    if "_th_matrix_z" in params:
+        T_matrix_z = np.asarray(params["_th_matrix_z"], dtype=float)
+    else:
+        T_matrix_z = cosine_temp_profile(params["matrix_min"], params["matrix_max"], params["n_ax_zones"])
+
+    # Radial reflector cells use the matrix axial profile.
+    # Top/bottom axial reflectors use the matrix temp at the respective ends.
+    T_reflector_z  = T_matrix_z
+    T_top_refl     = float(T_matrix_z[-1])   # matrix temp at top axial zone
+    T_bottom_refl  = float(T_matrix_z[0])    # matrix temp at bottom axial zone
     
     # ==================================================================
     # DEFINE AXIAL COORDINATES 
@@ -558,7 +575,7 @@ def build_model(params, run_dir):
     # FULL CORE AND RADIAL REFLECTOR CREATION
     # ==================================================================
 
-    T_refl_avg = 0.5 * (params["reflector_min"] + params["reflector_max"])
+    T_refl_avg = float(np.mean(T_matrix_z))
     m_colors[mats.graphite] = 'darkblue'
     outer_graphite_cell = openmc.Cell(fill=mats.graphite)
     outer_graphite_cell.temperature = T_refl_avg
@@ -693,11 +710,11 @@ def build_model(params, run_dir):
     top_refl_cell = openmc.Cell(
         fill=mats.graphite,
         region=_apply_wedge(-core_cyl & +max_z & -top_refl))
-    top_refl_cell.temperature = T_reflector_axial
+    top_refl_cell.temperature = T_top_refl
     bottom_refl_cell = openmc.Cell(
         fill=mats.graphite,
         region=_apply_wedge(-core_cyl & +bottom_refl & -min_z))
-    bottom_refl_cell.temperature = T_reflector_axial
+    bottom_refl_cell.temperature = T_bottom_refl
 
     all_geometry_cells = ([core_cell]
                           + inner_graphite_cells
@@ -820,6 +837,8 @@ def build_model(params, run_dir):
     energy_filter = openmc.EnergyFilter(energy_bins)
 
     # ----- Global Tallies -----
+    # use_global_tallies : full set (flux spectrum, heating, global rates)
+    # use_heating_tally  : only the 'heating' normalization tally (TH coupler)
 
     if params["use_global_tallies"]:
         flux_spectrum_tally = openmc.Tally(name="flux_energy_spectrum")
@@ -828,21 +847,31 @@ def build_model(params, run_dir):
 
         heating_tally = openmc.Tally(name="heating")
         heating_tally.scores = ["heating-local"]
-        
+
         global_tally = openmc.Tally(name='global_rates')
         global_tally.scores = ['flux', 'fission', 'nu-fission']
 
         tallies += [flux_spectrum_tally, heating_tally, global_tally]
 
-    # ----- Mesh Tallies -----
+    elif params.get("use_heating_tally", False):
+        # Minimal: only the un-filtered heating-local tally needed for
+        # get_normalization_factor() — no flux spectrum, no global rates.
+        heating_tally = openmc.Tally(name="heating")
+        heating_tally.scores = ["heating-local"]
+        tallies += [heating_tally]
 
-    if params["use_mesh_tallies"]:
+    # ----- Mesh Tallies -----
+    # use_mesh_tallies      : full set (flux+fission active, heating active,
+    #                         flux+fission full, heating full)
+    # use_mesh_heating_tally: only the active-core 'mesh_heating' tally (TH coupler)
+
+    if params["use_mesh_tallies"] or params.get("use_mesh_heating_tally", False):
         if params["use_1/6_geometry"]:
             mesh_x_min = 0.0
             mesh_x_max = params["core_radius"]
             mesh_nx = 250
             mesh_y_min = 0.0
-            mesh_y_max = params["core_radius"] * sin60 
+            mesh_y_max = params["core_radius"] * sin60
             mesh_ny = 217
         else:
             mesh_x_min = -params["core_radius"]
@@ -852,26 +881,29 @@ def build_model(params, run_dir):
             mesh_y_max = params["core_radius"]
             mesh_ny = params["n_XY_mesh_zones_full_core"]
 
-        # --- Flux/Fission Mesh Tally (active core only) ---
+        # Active-core mesh (needed by both full and minimal paths)
         mesh = openmc.RegularMesh()
         mesh.dimension = [mesh_nx, mesh_ny, params["n_ax_zones"]]
         mesh.lower_left = [mesh_x_min, mesh_y_min, reactor_bottom]
         mesh.upper_right = [mesh_x_max, mesh_y_max, reactor_top]
         mesh_filter = openmc.MeshFilter(mesh)
 
+        # --- Heating Mesh Tally (active core) — always included ---
+        mesh_heating_tally = openmc.Tally(name='mesh_heating')
+        mesh_heating_tally.filters = [mesh_filter]
+        mesh_heating_tally.scores = ['heating-local']
+        tallies += [mesh_heating_tally]
+
+    if params["use_mesh_tallies"]:
+        # --- Flux/Fission Mesh Tally (active core only) ---
         mesh_tally_active = openmc.Tally(name='mesh_rates')
         mesh_tally_active.filters = [mesh_filter]
         mesh_tally_active.scores = ['flux', 'fission']
 
-        # --- Heating Mesh Tally (active core only) ---
-        mesh_heating_tally = openmc.Tally(name='mesh_heating')
-        mesh_heating_tally.filters = [mesh_filter]
-        mesh_heating_tally.scores = ['heating-local']
-
         n_reflector_zones = 33
         n_total_zones = n_reflector_zones + params["n_ax_zones"] + n_reflector_zones
 
-        # --- Flux/Fission Mesh Tally (full core) ---
+        # --- Full-core mesh ---
         mesh_full = openmc.RegularMesh()
         mesh_full.dimension = [mesh_nx, mesh_ny, n_total_zones]
         mesh_bottom = reactor_bottom - params["reflector_thickness"]
@@ -889,7 +921,7 @@ def build_model(params, run_dir):
         mesh_heating_tally_full.filters = [mesh_full_filter]
         mesh_heating_tally_full.scores = ['heating-local']
 
-        tallies += [mesh_tally_active, mesh_heating_tally, mesh_tally_full, mesh_heating_tally_full]
+        tallies += [mesh_tally_active, mesh_tally_full, mesh_heating_tally_full]
 
     # ----- Neutron Leakage Tallies -----
 
@@ -933,13 +965,14 @@ def build_model(params, run_dir):
             )
 
             beo_mesh_filter = openmc.MeshFilter(beo_cyl_mesh)
+            beo_fast_energy_filter = openmc.EnergyFilter([100e3, 20e6])  # fast flux: E > 100 keV
 
             beo_flux_tally = openmc.Tally(name='beo_flux_radial')
-            beo_flux_tally.filters = [beo_mesh_filter]
+            beo_flux_tally.filters = [beo_mesh_filter, beo_fast_energy_filter]
             beo_flux_tally.scores = ['flux']
 
             tallies += [beo_flux_tally]
-            print(f"\nBeO flux tally enabled:")
+            print(f"\nBeO fast flux tally enabled (E > 100 keV):")
             print(f"  Radial bins:    {num_bins} from r = {beo_inner_r:.2f} to {beo_outer_r:.2f} cm")
             print(f"  Axial bins:     {len(axial_coords) - 1} (reusing core axial zones)")
             print(f"  Azimuthal bins: {'6 over 60-degree wedge (1/6 geometry)' if params['use_1/6_geometry'] else '12 over full core'}")
@@ -2097,6 +2130,17 @@ def run_critical_search_depletion_simulation(params, run_dir):
     print(f"  Batches      : {cs_batches} ({cs_inactive} inactive)")
 
     # ------------------------------------------------------------------
+    # Import th_coupler for per-step TH coupling
+    # ------------------------------------------------------------------
+    try:
+        from mol_eol_analysis import th_coupler as _th_coupler
+        _has_th_coupler = True
+    except ImportError as _exc:
+        print(f"\nWARNING: could not import th_coupler: {_exc}")
+        print("CSDepletionStudy will proceed without TH coupling.")
+        _has_th_coupler = False
+
+    # ------------------------------------------------------------------
     # Per-step log — accumulated and saved after every step
     # ------------------------------------------------------------------
     step_log_path = os.path.join(run_dir, "critical_search_depletion_log.json")
@@ -2113,6 +2157,10 @@ def run_critical_search_depletion_simulation(params, run_dir):
 
     # Critical search result from the previous timestep (used for warm-start)
     prev_crit_result = None
+
+    # Temperature-converged params carried across timesteps.
+    # Starts as the user-specified config; th_coupler updates _th_*_z each step.
+    current_th_params = copy.deepcopy(params)
 
     # ================================================================
     # STEP 0: Build the initial model at fresh (BOL) conditions and
@@ -2339,87 +2387,171 @@ def run_critical_search_depletion_simulation(params, run_dir):
             prev_results = openmc.deplete.Results(depletion_h5)
 
         # ------------------------------------------------------------
-        # 2. Critical rod search at the current burnup state
+        # 2. find_critical_rod_insertion → th_coupler loop.
+        #    Repeat until th_coupler converges (or retry limit reached).
         # ------------------------------------------------------------
-        print(f"\n{'─' * 70}")
-        print(f"  CRITICAL ROD SEARCH — step {step_idx + 1} / {n_steps}  "
-              f"({step_start_day:.1f} d)")
-        print(f"{'─' * 70}")
+        depleted_arg = {} if depleted_for_search is None else depleted_for_search
 
-        # Build a lightweight params dict for the search iterations
-        search_params = copy.deepcopy(params)
-        search_params["total_batches"]       = cs_batches
-        search_params["inactive_batches"]    = cs_inactive
-        search_params["particles"]           = cs_particles
-        search_params["make_geometry_plots"] = False
-        search_params["use_mesh_tallies"]    = False
-        search_params["use_BeO_tallies"]     = False
-        search_params["use_leakage_tallies"] = False
-        search_params["use_global_tallies"]  = False
+        # One persistent folder per step holds all critical-search and
+        # th-coupler CSVs for every attempt.  Subdirs for the actual runs
+        # are created inside it and deleted after their CSVs are extracted.
+        step_sfx   = f"step{step_idx + 1:03d}_t{step_start_day:.0f}d"
+        cs_th_dir  = os.path.join(run_dir, f"cs_th_{step_sfx}")
+        os.makedirs(cs_th_dir, exist_ok=True)
 
-        search_dir = os.path.join(
-            run_dir, f"critical_search_step{step_idx + 1:03d}_t{step_start_day:.0f}d"
-        )
-        os.makedirs(search_dir, exist_ok=True)
+        _max_cs_th_retries = 3
+        _cs_th_attempt     = 0
+        critical_b1 = critical_b2 = None
+        critical_k  = critical_std = None
+        crit_converged  = False
+        th_converged    = False
+        # Tracks the crit_result from the previous retry within this timestep
+        # so we can warm-start the rod search on each subsequent attempt.
+        _attempt_prev_crit = None
 
-        if depleted_for_search is None:
-            # BOL (step 0): fresh fuel compositions — no injection needed.
-            # An empty dict is passed so _inject_depleted_materials inside
-            # find_critical_rod_insertion is a no-op.
-            depleted_arg = {}
-        else:
-            # Steps > 0: depleted_for_search contains atom densities from the
-            # end of the previous timestep.  find_critical_rod_insertion passes
-            # this dict to _run_eigenvalue_with_depleted → _inject_depleted_materials
-            # BEFORE each trial eigenvalue solve, so every search iteration
-            # sees the correct burnup-state compositions.  The critical insertion
-            # found therefore reflects the actual reduced reactivity of the fuel
-            # at this point in the cycle, not BOL reactivity.
-            depleted_arg = depleted_for_search
+        while _cs_th_attempt < _max_cs_th_retries:
+            _cs_th_attempt += 1
+            attempt_sfx = (f"_attempt{_cs_th_attempt}" if _cs_th_attempt > 1 else "")
 
-        crit_result = find_critical_rod_insertion(
-            params        = search_params,
-            depleted      = depleted_arg,
-            output_dir    = search_dir,
-            k_target      = 1.0,
-            k_tol         = k_tol,
-            max_iter      = max_iter,
-            prev_result   = prev_crit_result if step_idx > 0 else None,
-        )
+            # ---- 2a: Critical rod search ----------------------------
+            print(f"\n{'─' * 70}")
+            print(f"  CRITICAL ROD SEARCH — step {step_idx + 1} / {n_steps}  "
+                  f"({step_start_day:.1f} d)  [attempt {_cs_th_attempt}]")
+            print(f"{'─' * 70}")
+
+            search_params = copy.deepcopy(current_th_params)
+            search_params["total_batches"]       = cs_batches
+            search_params["inactive_batches"]    = cs_inactive
+            search_params["particles"]           = cs_particles
+            search_params["make_geometry_plots"] = False
+            search_params["use_mesh_tallies"]    = False
+            search_params["use_BeO_tallies"]     = False
+            search_params["use_leakage_tallies"] = False
+            search_params["use_global_tallies"]  = False
+
+            search_dir = os.path.join(cs_th_dir, f"critical_search{attempt_sfx}")
+            os.makedirs(search_dir, exist_ok=True)
+
+            # Warm-start priority: within a retry loop use the last attempt's
+            # result; on the first attempt of a new timestep use the previous
+            # timestep's result.
+            _cs_warm_start = (
+                _attempt_prev_crit if _attempt_prev_crit is not None
+                else (prev_crit_result if step_idx > 0 else None)
+            )
+            crit_result = find_critical_rod_insertion(
+                params      = search_params,
+                depleted    = depleted_arg,
+                output_dir  = search_dir,
+                k_target    = 1.0,
+                k_tol       = k_tol,
+                max_iter    = max_iter,
+                prev_result = _cs_warm_start,
+            )
+
+            critical_b1    = crit_result["critical_bank_1"]
+            critical_b2    = crit_result["critical_bank_2"]
+            critical_k     = crit_result["critical_keff"]
+            critical_std   = crit_result["critical_keff_std"]
+            crit_converged = crit_result["converged"]
+            search_csv     = crit_result["csv_path"]
+
+            print(f"\n  Critical insertion found:")
+            print(f"    Bank 1 = {critical_b1:.4f}, Bank 2 = {critical_b2:.4f}")
+            print(f"    k_eff  = {critical_k:.5f} ± {critical_std:.5f}  "
+                  f"({'converged' if crit_converged else 'NOT CONVERGED'})")
+
+            # Extract search CSV to cs_th_dir, then delete search subdir
+            csv_dest = os.path.join(cs_th_dir, f"critical_search{attempt_sfx}.csv")
+            try:
+                shutil.copy2(search_csv, csv_dest)
+                print(f"    Search CSV saved -> {csv_dest}")
+            except Exception as e:
+                print(f"    WARNING: Could not copy search CSV: {e}")
+            try:
+                shutil.rmtree(search_dir)
+            except Exception as e:
+                print(f"    WARNING: Could not delete search dir: {e}")
+
+            # ---- 2b: TH coupler with critical rod position ----------
+            if not _has_th_coupler:
+                # No th_coupler available — skip and proceed with depletion
+                th_converged = True   # treat as converged so we don't loop
+                break
+
+            th_dir = os.path.join(cs_th_dir, f"th_coupler{attempt_sfx}")
+
+            th_result = _th_coupler(
+                params            = current_th_params,
+                depleted          = depleted_arg,
+                output_dir        = th_dir,
+                depletion_run_dir = run_dir,
+                bank_1            = critical_b1,
+                bank_2            = critical_b2,
+            )
+
+            # Extract all CSVs from th_dir to cs_th_dir, then delete th subdir.
+            # This preserves per-iteration heating and temperature profile CSVs.
+            try:
+                for _src in glob.glob(os.path.join(th_dir, "*.csv")):
+                    _fname = os.path.basename(_src)
+                    _dest  = os.path.join(cs_th_dir, f"th_coupler{attempt_sfx}_{_fname}")
+                    shutil.copy2(_src, _dest)
+            except Exception as e:
+                print(f"    WARNING: Could not copy th_coupler CSVs: {e}")
+            try:
+                shutil.rmtree(th_dir, ignore_errors=True)
+            except Exception as e:
+                print(f"    WARNING: Could not delete th_coupler dir: {e}")
+
+            # Carry the final temperature profile from this th_coupler run into
+            # current_th_params.  On a retry, both find_critical_rod_insertion
+            # (via search_params = copy.deepcopy(current_th_params)) and the
+            # next th_coupler call (params=current_th_params) will start from
+            # these temperatures — NOT from the original cosine/linear profile.
+            current_th_params = th_result["converged_params"]
+            current_th_params["bank_1_insertion"] = critical_b1
+            current_th_params["bank_2_insertion"] = critical_b2
+
+            th_converged    = th_result["converged"]
+            th_keff_valid   = th_result.get("final_keff_valid", True)
+
+            # Report the temperature range being carried forward so it is
+            # visible in the log whether propagation is working.
+            _mat_z = current_th_params.get("_th_matrix_z")
+            _cool_z = current_th_params.get("_th_coolant_z")
+            if _mat_z is not None and _cool_z is not None:
+                print(f"\n  Temp profile propagated: "
+                      f"T_matrix=[{min(_mat_z):.1f}, {max(_mat_z):.1f}] K  "
+                      f"T_coolant=[{min(_cool_z):.1f}, {max(_cool_z):.1f}] K")
+
+            print(f"\n  TH Coupler: converged={th_converged}  "
+                  f"keff_valid={th_keff_valid}  "
+                  f"k_eff={th_result['final_keff']:.5f}  "
+                  f"iters={th_result['n_iterations']}")
+
+            if th_converged:
+                break
+            else:
+                # Save this attempt's crit_result so the next retry warm-starts
+                # the rod bracket from the last attempt's critical insertion.
+                _attempt_prev_crit = crit_result
+                if not th_keff_valid:
+                    print(f"  TH Coupler keff={th_result['final_keff']:.5f} outside "
+                          f"valid range [1.0, {1.0 + cfg.params.get('th_coupler_k_tol', 0.0064):.4f}] — "
+                          f"re-running critical rod search with updated temperatures "
+                          f"(attempt {_cs_th_attempt + 1}/{_max_cs_th_retries})")
+                else:
+                    print(f"  TH Coupler did not converge — retrying "
+                          f"find_critical_rod_insertion with updated temperatures "
+                          f"(attempt {_cs_th_attempt + 1}/{_max_cs_th_retries})")
+
+        if not th_converged:
+            print(f"\n  WARNING: TH Coupler did not converge after "
+                  f"{_max_cs_th_retries} attempts for step {step_idx + 1}. "
+                  f"Proceeding with best available temperatures.")
+
         prev_crit_result = crit_result
-
-        critical_b1  = crit_result["critical_bank_1"]
-        critical_b2  = crit_result["critical_bank_2"]
-        critical_k   = crit_result["critical_keff"]
-        critical_std = crit_result["critical_keff_std"]
-        converged    = crit_result["converged"]
-        search_csv   = crit_result["csv_path"]   # inside search_dir
-
-        print(f"\n  Critical insertion found:")
-        print(f"    Bank 1 = {critical_b1:.4f}, Bank 2 = {critical_b2:.4f}")
-        print(f"    k_eff  = {critical_k:.5f} ± {critical_std:.5f}  "
-              f"({'converged' if converged else 'NOT CONVERGED'})")
-
-        # ------------------------------------------------------------
-        # Copy the search CSV to run_dir, then delete the entire
-        # search directory (all trial subdirs + their OpenMC output).
-        # The CSV is the only artifact we keep from the critical search.
-        # ------------------------------------------------------------
-        csv_dest = os.path.join(
-            run_dir,
-            f"critical_search_step{step_idx + 1:03d}_t{step_start_day:.0f}d.csv"
-        )
-        try:
-            shutil.copy2(search_csv, csv_dest)
-            print(f"    Search CSV saved -> {csv_dest}")
-        except Exception as e:
-            print(f"    WARNING: Could not copy search CSV: {e}")
-
-        try:
-            shutil.rmtree(search_dir)
-            print(f"    Search dir deleted: {search_dir}")
-        except Exception as e:
-            print(f"    WARNING: Could not delete search dir: {e}")
 
         # ------------------------------------------------------------
         # 3. Build the depletion model at the critical rod position.
@@ -2437,13 +2569,15 @@ def run_critical_search_depletion_simulation(params, run_dir):
             _prev_poison_ids  = []
             _prev_graphite_id = None
 
-        depletion_params = copy.deepcopy(params)
+        # Build depletion model using TH-converged temperatures.
+        # current_th_params already has bank_1/2 set and _th_*_z populated.
+        depletion_params = copy.deepcopy(current_th_params)
         depletion_params["bank_1_insertion"] = critical_b1
         depletion_params["bank_2_insertion"] = critical_b2
         depletion_params["bank_3_insertion"] = 0.0
         depletion_params["make_geometry_plots"] = False
 
-        print(f"\n  Building depletion model at critical rod position...")
+        print(f"\n  Building depletion model at critical rod position with TH-converged temps...")
         model_step, _, _, fuel_clones_step, poison_clones_step = build_model(depletion_params, run_dir)
 
         # Remap material IDs to match the previous step's IDs so that
@@ -2471,7 +2605,7 @@ def run_critical_search_depletion_simulation(params, run_dir):
                             poison_clones_step[_ri][_ai]._id = _tpid
                             _remapped_p.add(_tpid)
 
-            if _prev_graphite_id is not None and params.get("deplete_graphite", False):
+            if _prev_graphite_id is not None and depletion_params.get("deplete_graphite", False):
                 _tgid = int(_prev_graphite_id)
                 for _mat in model_step.materials:
                     if _mat.name == "Graphite":
@@ -2482,7 +2616,7 @@ def run_critical_search_depletion_simulation(params, run_dir):
         # MaterialFilter stores IDs as integers at construction time (not live
         # object references), so changing _mat._id above does NOT update the
         # stored bins.  We must reconstruct the filter with the now-remapped IDs.
-        if step_idx > 0 and params.get("use_spatial_burnup", True):
+        if step_idx > 0 and depletion_params.get("use_spatial_burnup", True):
             try:
                 _zheat_tally = next(
                     t for t in model_step.tallies if t.name == "zone_heating_local"
@@ -2579,8 +2713,8 @@ def run_critical_search_depletion_simulation(params, run_dir):
                     _step_poison_vol += (_pm.volume or 0.0)
         saved_params.update({
             "n_trisos":                    n_trisos_global,
-            "use_homogenized_fuel":        params.get("use_homogenized_fuel", False),
-            "use_spatial_burnup":          params.get("use_spatial_burnup", True),
+            "use_homogenized_fuel":        depletion_params.get("use_homogenized_fuel", False),
+            "use_spatial_burnup":          depletion_params.get("use_spatial_burnup", True),
             "fuel_volume_simulated_cm3":   fuel_volume_simulated,
             "fuel_volume_full_core_cm3":   total_fuel_volume,
             "total_HM_mass_kg":            total_HM_mass_kg,
@@ -2606,7 +2740,7 @@ def run_critical_search_depletion_simulation(params, run_dir):
                 for ri in range(len(poison_clones_step))
             ],
         })
-        if params.get("deplete_graphite", False):
+        if depletion_params.get("deplete_graphite", False):
             saved_params["graphite_material_id"] = _step_graphite.id
         os.chdir(run_dir)   # restore cwd after trial runs may have changed it
         with open(params_path, "w") as f:
@@ -2631,7 +2765,7 @@ def run_critical_search_depletion_simulation(params, run_dir):
             "bank_2_insertion":  critical_b2,
             "critical_keff":     critical_k,
             "critical_keff_std": critical_std,
-            "converged":         converged,
+            "converged":         crit_converged,
             "operational":       step_operational,
             "search_csv":        csv_dest,   # search_dir has been deleted
         }
@@ -2810,7 +2944,52 @@ def run_parametric_post_processing(parametric_dir):
         print(f"Warning: Parametric post-processing failed: {e}")
 
 # ====================================================================================================
-# STUDY EXECUTION 
+# TH COUPLER HELPER
+# ====================================================================================================
+
+def _run_th_coupler_initial(params, base_dir):
+    """
+    Run th_coupler() once at the start of a study to set accurate temperatures.
+
+    The converged temperature arrays are stored as '_th_*_z' keys in the
+    returned params dict, which is then used for all subsequent simulations
+    in the study.  The th_coupler output directory is <base_dir>/th_coupler_initial.
+
+    Returns the converged params dict (a deep-copy of params with _th_*_z
+    populated).  If th_coupler cannot be imported or fails, returns a plain
+    deep-copy of params (no _th_*_z, so build_model falls back to config defaults).
+    """
+    try:
+        from mol_eol_analysis import th_coupler
+    except ImportError as exc:
+        print(f"\nWARNING: Could not import th_coupler from mol_eol_analysis: {exc}")
+        print("Skipping initial TH coupling — using config.py temperature profiles.")
+        return copy.deepcopy(params)
+
+    th_dir = os.path.join(base_dir, "th_coupler_initial")
+    os.makedirs(th_dir, exist_ok=True)
+
+    print(f"\n{'=' * 80}")
+    print("INITIAL THERMAL-HYDRAULIC COUPLING")
+    print(f"  Output: {th_dir}")
+    print(f"{'=' * 80}")
+
+    th_result = th_coupler(
+        params           = params,
+        depleted         = {},
+        output_dir       = th_dir,
+    )
+
+    print(f"\n  TH Coupler complete  "
+          f"(converged={th_result['converged']}, "
+          f"k_eff={th_result['final_keff']:.5f}, "
+          f"iters={th_result['n_iterations']})")
+
+    return th_result["converged_params"]
+
+
+# ====================================================================================================
+# STUDY EXECUTION
 # ====================================================================================================
 
 if __name__ == "__main__":
@@ -2834,7 +3013,7 @@ if __name__ == "__main__":
         print(f"Values: {cfg.params['parametric_values']}")
         print(f"Base Directory: {BASE_DIR}")
         print(f"{'='*80}")
-        
+
         for i, val in enumerate(cfg.params["parametric_values"]):
             caseNum = i + 1
             caseNumFormatted = f"{caseNum:0{len(str(len(cfg.params['parametric_values'])))+1}d}"
@@ -2846,8 +3025,10 @@ if __name__ == "__main__":
             print(f"Run Directory: {run_dir}")
             print(f"{'='*80}")
 
+            # Set the parametric value, then converge temperatures for this case
             params_copy = cfg.params.copy()
             params_copy[cfg.params["parametric_param"]] = val
+            params_copy = _run_th_coupler_initial(params_copy, run_dir)
 
             n_trisos = run_simulation(params_copy, run_dir)
 
@@ -2867,9 +3048,13 @@ if __name__ == "__main__":
         BASE_DIR_RPT = os.path.join(OUTPUT_BASE, run_name + "_RPTCalibration")
         os.makedirs(BASE_DIR_RPT, exist_ok=True)
 
+        # Converge temperatures once; both the explicit-TRISO reference and all
+        # RPT homogenized cases will use the same converged _th_*_z arrays.
+        th_rpt_params = _run_th_coupler_initial(cfg.params, BASE_DIR_RPT)
+
         run_rpt_calibration(
-            params           = cfg.params,
-            output_base_dir  = BASE_DIR_RPT,
+            params            = th_rpt_params,
+            output_base_dir   = BASE_DIR_RPT,
             run_simulation_fn = run_simulation,
         )
 
@@ -2886,8 +3071,11 @@ if __name__ == "__main__":
         BASE_DIR_RC = os.path.join(OUTPUT_BASE, run_name + "_ReactivityCoeffs")
         os.makedirs(BASE_DIR_RC, exist_ok=True)
 
+        # Converge temperatures before running reactivity coefficient study
+        th_rc_params = _run_th_coupler_initial(cfg.params, BASE_DIR_RC)
+
         run_reactivity_coefficients(
-            params = cfg.params,
+            params = th_rc_params,
             base_run_dir = BASE_DIR,
             output_base_dir = BASE_DIR_RC,
             delta_T_values = cfg.params["reactivity_delta_T_values"],
@@ -2895,7 +3083,7 @@ if __name__ == "__main__":
             run_simulation_fn = run_simulation,
             run_post_processing_fn = run_post_processing if cfg.params["run_post_processing"] else None,
         )
-    
+
     # ----- Run Depletion Study -----
 
     elif cfg.params["study_execution_mode"] == "DepletionStudy":
@@ -2906,17 +3094,23 @@ if __name__ == "__main__":
             print("DEPLETION RESTART MODE")
             print(f"Restarting in original run directory: {BASE_DIR}")
             print(f"{'='*80}")
+            # Skip th_coupler for restarts (temps were already converged in the original run)
+            th_dep_params = cfg.params
         else:
             BASE_DIR = os.path.join(OUTPUT_BASE, run_name + "_Depletion")
+            os.makedirs(BASE_DIR, exist_ok=True)
             print(f"\n{'='*80}")
             print("DEPLETION RUN MODE")
             print(f"Run directory: {BASE_DIR}")
             print(f"{'='*80}")
 
-        n_trisos = run_depletion_simulation(cfg.params, BASE_DIR)
+            # Converge temperatures before depletion
+            th_dep_params = _run_th_coupler_initial(cfg.params, BASE_DIR)
+
+        n_trisos = run_depletion_simulation(th_dep_params, BASE_DIR)
 
         # Run depletion-specific post-processing
-        run_depletion_post_processing(BASE_DIR, cfg.params)
+        run_depletion_post_processing(BASE_DIR, th_dep_params)
 
         print(f"\n{'='*80}")
         print("DEPLETION RUN COMPLETE")
@@ -2927,12 +3121,14 @@ if __name__ == "__main__":
 
     elif cfg.params["study_execution_mode"] == "CSDepletionStudy":
         BASE_DIR = os.path.join(OUTPUT_BASE, run_name + "_CSDepletion")
-        
+
         print(f"\n{'='*80}")
         print("CRITICAL SEARCH DEPLETION RUN MODE")
         print(f"Run directory: {BASE_DIR}")
         print(f"{'='*80}")
 
+        # CSDepletionStudy uses per-timestep th_coupler + find_critical_rod_insertion
+        # inside run_critical_search_depletion_simulation() — no pre-coupler here.
         n_trisos = run_critical_search_depletion_simulation(cfg.params, BASE_DIR)
 
         # Run depletion-specific post-processing
@@ -2943,31 +3139,35 @@ if __name__ == "__main__":
         print(f"Results Directory: {BASE_DIR}")
         print(f"{'='*80}")
 
-    # ----- Run Single Study -----   
+    # ----- Run Single Study -----
 
     elif cfg.params["study_execution_mode"] == "SingleStudy":
         BASE_DIR = os.path.join(OUTPUT_BASE, run_name + "_SingleStudy")
-        
+        os.makedirs(BASE_DIR, exist_ok=True)
+
         print(f"\n{'='*80}")
         print("SINGLE RUN MODE")
         print(f"Run directory: {BASE_DIR}")
         print(f"{'='*80}")
-        
-        n_trisos = run_simulation(cfg.params, BASE_DIR)
+
+        # Converge temperatures before the single simulation
+        th_single_params = _run_th_coupler_initial(cfg.params, BASE_DIR)
+
+        n_trisos = run_simulation(th_single_params, BASE_DIR)
 
         if cfg.params["run_post_processing"]:
-            run_post_processing(BASE_DIR, cfg.params, n_trisos)
-        
+            run_post_processing(BASE_DIR, th_single_params, n_trisos)
+
         print(f"\n{'='*80}")
         print("SIMULATION COMPLETE")
         print(f"Results Directory: {BASE_DIR}")
         print(f"{'='*80}\n")
-    
+
     # ----- Run Critical Rod Search -----
 
     elif cfg.params["study_execution_mode"] == "CriticalSearch":
         try:
-            from mol_eol_analysis import find_critical_rod_insertion
+            from mol_eol_analysis import find_critical_rod_insertion, th_coupler as _th_coupler_cs
         except ImportError as exc:
             raise ImportError(
                 "CriticalSearch mode requires mol_eol_analysis.py to be "
@@ -2977,23 +3177,91 @@ if __name__ == "__main__":
         BASE_DIR_CS = os.path.join(OUTPUT_BASE, run_name + "_CriticalSearch")
         os.makedirs(BASE_DIR_CS, exist_ok=True)
 
-        k_tol    = cfg.params.get("critical_search_k_tol",     0.003)
-        max_iter = cfg.params.get("critical_search_max_iter",   20)
+        k_tol    = cfg.params.get("critical_search_k_tol",   0.003)
+        max_iter = cfg.params.get("critical_search_max_iter", 20)
+        _max_cs_th_retries = cfg.params.get("th_coupler_max_iter", 10)
 
         print(f"\n{'='*80}")
-        print(f"CRITICAL SEARCH — BOL")
+        print(f"CRITICAL SEARCH — BOL  (find_critical_rod_insertion → th_coupler loop)")
         print(f"  Target: k_eff = 1.0  ±  {k_tol}")
         print(f"  Output: {BASE_DIR_CS}")
         print(f"{'='*80}")
 
-        cs_result = find_critical_rod_insertion(
-            params     = cfg.params,
-            depleted   = {},
-            output_dir = BASE_DIR_CS,
-            k_target   = 1.0,
-            k_tol      = k_tol,
-            max_iter   = max_iter,
-        )
+        cs_current_params = copy.deepcopy(cfg.params)
+        cs_result         = None
+        cs_th_converged   = False
+        cs_attempt        = 0
+
+        while cs_attempt < _max_cs_th_retries:
+            cs_attempt += 1
+            attempt_sfx = f"_attempt{cs_attempt}" if cs_attempt > 1 else ""
+
+            # Step A: find critical rod positions with current temps
+            search_dir = os.path.join(BASE_DIR_CS,
+                                      f"critical_search{attempt_sfx}")
+            print(f"\n  Attempt {cs_attempt}: find_critical_rod_insertion ...")
+            cs_result = find_critical_rod_insertion(
+                params     = cs_current_params,
+                depleted   = {},
+                output_dir = search_dir,
+                k_target   = 1.0,
+                k_tol      = k_tol,
+                max_iter   = max_iter,
+            )
+            critical_b1 = cs_result["critical_bank_1"]
+            critical_b2 = cs_result["critical_bank_2"]
+
+            # Copy search CSV to BASE_DIR_CS and clean up
+            search_csv = os.path.join(search_dir, "critical_search_iterations.csv")
+            if os.path.isfile(search_csv):
+                shutil.copy2(search_csv,
+                             os.path.join(BASE_DIR_CS,
+                                          f"critical_search_iterations{attempt_sfx}.csv"))
+            shutil.rmtree(search_dir, ignore_errors=True)
+
+            # Step B: run th_coupler with the critical rod positions
+            th_dir = os.path.join(BASE_DIR_CS, f"th_coupler{attempt_sfx}")
+            print(f"  Attempt {cs_attempt}: th_coupler "
+                  f"(b1={critical_b1:.4f}, b2={critical_b2:.4f}) ...")
+            th_result = _th_coupler_cs(
+                params            = cs_current_params,
+                depleted          = {},
+                output_dir        = th_dir,
+                bank_1            = critical_b1,
+                bank_2            = critical_b2,
+            )
+
+            # Copy summary CSV to BASE_DIR_CS and clean up th_dir tree
+            if os.path.isfile(th_result["csv_path"]):
+                shutil.copy2(th_result["csv_path"],
+                             os.path.join(BASE_DIR_CS,
+                                          f"th_coupler_summary{attempt_sfx}.csv"))
+            shutil.rmtree(th_dir, ignore_errors=True)
+
+            cs_current_params = th_result["converged_params"]
+            cs_current_params["bank_1_insertion"] = critical_b1
+            cs_current_params["bank_2_insertion"] = critical_b2
+            cs_th_converged  = th_result["converged"]
+            cs_keff_valid    = th_result.get("final_keff_valid", True)
+
+            if cs_th_converged:
+                print(f"\n  TH coupling converged on attempt {cs_attempt}.")
+                break
+            else:
+                _max_keff_cfg = 1.0 + cfg.params.get("th_coupler_k_tol", 0.0064)
+                if not cs_keff_valid:
+                    print(f"\n  WARNING: th_coupler keff={th_result['final_keff']:.5f} "
+                          f"outside valid range [1.0, {_max_keff_cfg:.4f}] on attempt "
+                          f"{cs_attempt}/{_max_cs_th_retries}. "
+                          f"Re-running find_critical_rod_insertion with updated temps.")
+                else:
+                    print(f"\n  WARNING: th_coupler did not converge on attempt "
+                          f"{cs_attempt}/{_max_cs_th_retries}. "
+                          f"Re-running find_critical_rod_insertion with updated temps.")
+
+        if not cs_th_converged:
+            print(f"\n  WARNING: CriticalSearch TH coupling did not converge after "
+                  f"{_max_cs_th_retries} attempts. Using best available result.")
 
         print(f"\n{'='*80}")
         print(f"  CRITICAL SEARCH RESULT — BOL")
@@ -3002,13 +3270,17 @@ if __name__ == "__main__":
         print(f"  Search stage     : {cs_result['search_stage']}")
         print(f"  k_eff            : {cs_result['critical_keff']:.5f} "
               f"± {cs_result['critical_keff_std']:.5f}")
-        print(f"  Converged        : {cs_result['converged']}  "
+        print(f"  CS Converged     : {cs_result['converged']}  "
               f"({cs_result['n_iterations']} iterations)")
+        print(f"  TH Converged     : {cs_th_converged}  "
+              f"({cs_attempt} attempt(s))")
         print(f"{'='*80}\n")
 
         result_path = os.path.join(BASE_DIR_CS, "critical_search_result.json")
         with open(result_path, "w") as f:
-            json.dump(cs_result, f, indent=2)
+            json.dump({**cs_result,
+                       "th_converged":  cs_th_converged,
+                       "th_attempts":   cs_attempt}, f, indent=2)
         print(f"  Result saved to: {result_path}")
 
     else:

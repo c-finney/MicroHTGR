@@ -37,8 +37,10 @@ Workflow
 
 import os
 import sys
+import glob
 import json
 import copy
+import shutil
 import subprocess
 import csv
 import numpy as np
@@ -48,9 +50,19 @@ from datetime import datetime
 # Path setup — script can be called from anywhere
 # ---------------------------------------------------------------------------
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PARENT_DIR  = os.path.dirname(SCRIPT_DIR)   # MicroHTGR/
+PARENT_DIR  = os.path.dirname(SCRIPT_DIR)   # SeniorDesign/
 sys.path.insert(0, PARENT_DIR)
 sys.path.insert(0, SCRIPT_DIR)
+
+# nc_htgr thermal-hydraulics solver
+_NC_HTGR_DIR = os.path.join(PARENT_DIR, "HTGR-SCAPC")
+if os.path.isdir(_NC_HTGR_DIR):
+    sys.path.insert(0, _NC_HTGR_DIR)
+
+# Heating-profile post-processing helpers
+_POST_PROC_DIR = os.path.join(SCRIPT_DIR, "PostProcessingScripts")
+if os.path.isdir(_POST_PROC_DIR):
+    sys.path.insert(0, _POST_PROC_DIR)
 
 import openmc
 import openmc.deplete
@@ -348,14 +360,17 @@ def _assert_new_dir(run_dir, depletion_run_dir=None):
                 f"  depletion_run_dir = {depletion_run_dir}\n"
                 "Refusing to overwrite original run files."
             )
-        # Also block writing *inside* the depletion run dir unless it's the
-        # dedicated mol_eol_analysis_* subdirectory pattern.
+        # Also block writing *inside* the depletion run dir unless it's a
+        # recognised analysis subfolder (mol_eol_analysis_* or th_coupler*
+        # or critical_search*).
+        _ALLOWED_PREFIXES = ("mol_eol_analysis", "th_coupler", "critical_search", "cs_th")
         if run_real.startswith(dep_real + os.sep):
             tail = os.path.relpath(run_real, dep_real)
-            if not tail.startswith("mol_eol_analysis"):
+            if not any(tail.startswith(pfx) for pfx in _ALLOWED_PREFIXES):
                 raise RuntimeError(
-                    f"MOL/EOL run_dir is inside the depletion_run_dir "
-                    f"but not in a 'mol_eol_analysis_*' subfolder.\n"
+                    f"run_dir is inside the depletion_run_dir but not in a "
+                    f"recognised analysis subfolder "
+                    f"({', '.join(_ALLOWED_PREFIXES)}).\n"
                     f"  run_dir = {run_dir}\n"
                     "Please use a separate output_base_dir."
                 )
@@ -383,7 +398,6 @@ def _run_eigenvalue_with_depleted(params, depleted, run_dir, depletion_run_dir=N
 
     model.export_to_xml()
 
-    import shutil
     shutil.copy2(cross_sections_path, os.path.join(run_dir, 'cross_sections.xml'))
 
     openmc_output_file = os.path.join(run_dir, 'openmc_output.txt')
@@ -837,7 +851,9 @@ def find_critical_rod_insertion(
                     }
 
                 if k_at_hint > k_target:
-                    # Hint didn't bracket — fall back to full bank_2 insertion
+                    # Hint didn't bracket — extend to full bank_2 insertion.
+                    # Use the hint point as the lo (supercritical) bracket end
+                    # so the search stays in [prev_b2, 1.0] rather than [0, 1.0].
                     print(f"\n  Warm hint gave k > k_target; "
                           f"extending bracket to bank_2 = 1.0")
                     ext_dir = os.path.join(output_dir, "stage1_iter01_b2_1.0000")
@@ -865,7 +881,8 @@ def find_critical_rod_insertion(
                             "csv_path":           csv_path,
                         }
 
-                    lo, k_lo   = 0.0, k0
+                    # Tight bracket: [prev_b2_hint, 1.0] — avoids re-exploring [0, prev_b2]
+                    lo, k_lo   = _prev_b2_hint, k_at_hint
                     hi, k_hi   = 1.0, k_at_1
                     iter_offset = 2
                 else:
@@ -987,6 +1004,484 @@ def find_critical_rod_insertion(
         "n_iterations":       i + 1 + iter_offset,
         "csv_path":           csv_path,
     }
+
+# ============================================================================
+# STEP 3b — T/H COUPLER
+# ============================================================================
+
+def _extract_heating_csv_from_statepoint(run_dir, params):
+    """
+    Extract axial heating profile from the statepoint in run_dir and write a
+    neutronics CSV compatible with nc_htgr's NeutronicsTable.
+
+    Returns
+    -------
+    csv_path : str  — path to the written neutronics CSV, or None on failure
+    q_avg    : np.ndarray  — average_channel_q_W values (n_zones,), or None
+    z_centers_cm : np.ndarray  — axial zone centres in cm, or None
+    """
+    try:
+        import gc
+        from heating_profile_extraction import (
+            get_normalization_factor,
+            extract_mesh_heating,
+        )
+    except ImportError as exc:
+        print(f"  WARNING: cannot import heating_profile_extraction: {exc}")
+        return None, None, None
+
+    sp_files = sorted(glob.glob(os.path.join(run_dir, "statepoint.*.h5")))
+    if not sp_files:
+        print(f"  WARNING: no statepoint in {run_dir}")
+        return None, None, None
+    sp_path = sp_files[-1]
+
+    thermal_power_MW = params.get("thermal_power_MW", 10.0)
+    symmetry_factor  = 6 if params.get("use_1/6_geometry", True) else 1
+
+    try:
+        source_per_sec = get_normalization_factor(sp_path, thermal_power_MW)
+    except Exception as exc:
+        print(f"  WARNING: normalization factor failed: {exc}")
+        return None, None, None
+
+    try:
+        data = extract_mesh_heating(sp_path, source_per_sec, params, symmetry_factor)
+    except Exception as exc:
+        print(f"  WARNING: mesh heating extraction failed: {exc}")
+        return None, None, None
+
+    z_centers_cm   = data["z_centers"]              # (nz,) in cm
+    heating_2d     = data["heating_2d"]             # (n_channels, nz)
+    n_channels     = data["n_channels"]
+
+    nonzero_mask = heating_2d.sum(axis=1) > 0
+    if nonzero_mask.sum() == 0:
+        print("  WARNING: all heating channels are zero")
+        return None, None, None
+
+    hottest_idx     = int(np.argmax(heating_2d.sum(axis=1)))
+    hottest_profile = heating_2d[hottest_idx, :]
+    avg_profile     = heating_2d[nonzero_mask, :].mean(axis=0)
+    nz_idx          = np.where(nonzero_mask)[0]
+    coldest_idx     = int(nz_idx[np.argmin(heating_2d.sum(axis=1)[nz_idx])])
+    coldest_profile = heating_2d[coldest_idx, :]
+
+    csv_path = os.path.join(run_dir, "neutronics_th.csv")
+    header   = "z_center_cm,hottest_channel_q_W,average_channel_q_W,coldest_channel_q_W"
+    np.savetxt(
+        csv_path,
+        np.column_stack([z_centers_cm, hottest_profile, avg_profile, coldest_profile]),
+        delimiter=",", header=header, comments="", fmt="%.6e",
+    )
+    return csv_path, avg_profile, z_centers_cm
+
+
+def _nc_htgr_temps(params, neutronics_csv_path):
+    """
+    Run the nc_htgr average-channel solver for the given neutronics heating
+    profile and return interpolated temperature arrays aligned to OpenMC's
+    n_ax_zones axial zones.
+
+    Returns (T_coolant_z_K, T_compact_z_K, T_matrix_z_K) as numpy arrays,
+    or (None, None, None) on failure.
+    """
+    try:
+        from nc_htgr import (
+            ChannelInputs, NeutronicsTable,
+            solve_htgr_single_channel,
+        )
+    except ImportError as exc:
+        print(f"  WARNING: cannot import nc_htgr: {exc}")
+        return None, None, None
+
+    n_ax       = int(params["n_ax_zones"])
+    core_h_cm  = float(params["core_height"])
+    refl_t_cm  = float(params["reflector_thickness"])
+    L_heated_m = core_h_cm  * 0.01
+    L_m        = (core_h_cm + 2.0 * refl_t_cm) * 0.01
+    L_unheated = 0.5 * (L_m - L_heated_m)      # unheated entry/exit length [m]
+
+    try:
+        ntable = NeutronicsTable(neutronics_csv_path,
+                                 N_fuel_channels=int(params["th_N_fuel_channels"]))
+    except Exception as exc:
+        print(f"  WARNING: NeutronicsTable load failed: {exc}")
+        return None, None, None
+
+    ch = ChannelInputs(
+        L                          = L_m,
+        L_heated                   = L_heated_m,
+        N                          = int(params.get("th_N_nodes", 200)),
+        D_cool                     = 2.0 * float(params["coolant_radius"]) * 0.01,
+        D_fuel_hole                = float(params["th_D_fuel_hole_m"]),
+        D_compact                  = 2.0 * float(params["compact_radius"]) * 0.01,
+        pitch                      = float(params["fuel_to_coolant_distance"]) * 0.01,
+        roughness                  = float(params.get("th_roughness_m", 1.0e-5)),
+        m_dot                      = float(params["th_m_dot_kg_s"]),
+        P_in                       = float(params["th_P_in_Pa"]),
+        T_in_C                     = float(params["coolant_inlet"]) - 273.15,
+        flow_upward                = bool(params.get("th_flow_upward", False)),
+        qprime_max                 = 0.0,          # unused — neutronics_table mode
+        axial_shape                = "neutronics_table",
+        peaking_factor             = 1.0,
+        n_fuel_adjacent_to_coolant = int(params.get("th_n_fuel_adj_to_cool", 6)),
+        n_coolant_adjacent_to_fuel = int(params.get("th_n_cool_adj_to_fuel", 3)),
+        emiss_compact              = float(params.get("th_emiss_compact", 0.85)),
+        emiss_fuel_hole            = float(params.get("th_emiss_fuel_hole", 0.85)),
+        graphite_k_model           = str(params.get("th_graphite_k_model", "pcea_table")),
+        k_compact_eff              = float(params.get("th_k_compact_eff_W_mK", 6.0)),
+        packing_fraction           = float(params["triso_pf"]),
+        N_fuel_channels            = int(params["th_N_fuel_channels"]),
+        N_cool_channels            = int(params["th_N_cool_channels"]),
+        Q_total_MWth               = None,
+        neutronics_file            = neutronics_csv_path,
+        channel_case               = "average",
+        _neutronics_table          = ntable,
+        _Q_per_channel_W           = ntable.Q_per_channel["average"],
+    )
+    ch.L_heated = ntable.L_heated
+
+    try:
+        channel_df = solve_htgr_single_channel(ch)
+    except Exception as exc:
+        print(f"  WARNING: nc_htgr channel solve failed: {exc}")
+        return None, None, None
+
+    # Map nc_htgr z-nodes to OpenMC axial zone centres.
+    axial_section_h_cm = core_h_cm / n_ax
+    # Zone centres from bottom (index 0) to top (index n_ax-1)
+    z_centers_cm = np.linspace(0.5 * axial_section_h_cm,
+                               core_h_cm - 0.5 * axial_section_h_cm, n_ax)
+
+    flow_upward = bool(params.get("th_flow_upward", False))
+    if flow_upward:
+        # Inlet at bottom; z_nc increases from bottom to top
+        frac_from_inlet = z_centers_cm / core_h_cm
+    else:
+        # Inlet at top; z_nc increases from top to bottom
+        frac_from_inlet = (core_h_cm - z_centers_cm) / core_h_cm
+
+    z_nc_m = L_unheated + frac_from_inlet * L_heated_m     # nc_htgr positions [m]
+    z_nc_m = np.clip(z_nc_m, 0.0, L_m)
+
+    ch_z   = channel_df["z_m"].values
+    T_bulk_K    = np.interp(z_nc_m, ch_z, channel_df["T_bulk_C"].values       + 273.15)
+    T_fhw_K     = np.interp(z_nc_m, ch_z, channel_df["T_fuel_hole_wall_C"].values + 273.15)
+    T_compact_K = np.interp(z_nc_m, ch_z, channel_df["T_compact_center_C"].values + 273.15)
+
+    return T_bulk_K, T_compact_K, T_fhw_K
+
+
+def th_coupler(
+    params,
+    depleted,
+    output_dir,
+    depletion_run_dir=None,
+    bank_1=None,
+    bank_2=None,
+):
+    """
+    Iterative thermal-hydraulic coupler.
+
+    Runs eigenvalue simulations with the current temperature profile, extracts
+    the axial heating profile via the mesh_heating tally, feeds it into the
+    nc_htgr single-channel solver to obtain updated temperature arrays, and
+    repeats until both k_eff and the heating profile are converged.
+
+    Convergence criteria (all must be satisfied):
+      1. |k_new - k_prev| < th_coupler_k_tol  (default 0.0064, 1 beta U-235)
+      2. max(|q_new - q_prev|) / max(q_new) < th_coupler_q_tol_frac  (default 0.05)
+      3. At least th_coupler_min_iter iterations have been completed  (default 4)
+
+    After th_coupler_max_iter iterations the loop breaks regardless (default 10).
+
+    Only global tallies and the mesh_heating tally are enabled — all other
+    tallies (leakage, BeO, zone_heating_local) are suppressed.
+
+    Parameters
+    ----------
+    params : dict
+        Simulation parameters (deep-copied; original unchanged).
+        Rod positions are taken from params unless overridden by bank_1/bank_2.
+    depleted : dict
+        Depleted material compositions from reconstruct_depleted_materials().
+        Pass {} for BOL (no injection).
+    output_dir : str
+        Root directory.  Iteration subdirectories are created here and deleted
+        on completion; only the summary CSV survives.
+    depletion_run_dir : str or None
+        Passed to _assert_new_dir to prevent overwriting the depletion directory.
+    bank_1 : float or None
+        Override for bank_1_insertion.  None → use params value.
+    bank_2 : float or None
+        Override for bank_2_insertion.  None → use params value.
+
+    Returns
+    -------
+    dict with keys:
+        converged          : bool
+        n_iterations       : int
+        final_keff         : float
+        final_keff_std     : float
+        converged_params   : dict  — params deep-copy with _th_*_z arrays set
+        csv_path           : str   — summary CSV path
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    k_tol        = float(params.get("th_coupler_k_tol",      0.0064))
+    q_tol        = float(params.get("th_coupler_q_tol_frac", 0.05))
+    min_iter     = int(params.get("th_coupler_min_iter",      4))
+    max_iter     = int(params.get("th_coupler_max_iter",      10))
+    min_keff     = 1.0 - k_tol   # valid keff range: [1.0 - k_tol, 1.0 + k_tol]
+    max_keff     = 1.0 + k_tol
+    th_batches   = int(params.get("th_coupler_batches",       50))
+    th_inactive  = int(params.get("th_coupler_inactive",      20))
+    th_particles = int(params.get("th_coupler_particles",     50_000))
+
+    print(f"\n{'─' * 70}")
+    print(f"  TH COUPLER  (mesh heating + nc_htgr single-channel)")
+    print(f"  k_tol={k_tol}  q_tol_frac={q_tol}  "
+          f"keff_valid=[{min_keff:.4f}, {max_keff:.4f}]  "
+          f"min_iter={min_iter}  max_iter={max_iter}")
+    print(f"  Output: {output_dir}")
+    print(f"{'─' * 70}")
+
+    # Build base params for all iterations — absolute minimum tally set:
+    #   use_heating_tally      → single un-filtered heating-local tally (normalization)
+    #   use_mesh_heating_tally → active-core mesh heating-local tally (axial profile)
+    # All other tally groups (flux spectrum, global rates, mesh flux/fission,
+    # full-core mesh, leakage, BeO) are disabled to reduce statepoint I/O overhead.
+    base_params = copy.deepcopy(params)
+    base_params["total_batches"]          = th_batches
+    base_params["inactive_batches"]       = th_inactive
+    base_params["particles"]              = th_particles
+    base_params["make_geometry_plots"]    = False
+    base_params["use_global_tallies"]     = False
+    base_params["use_heating_tally"]      = True   # heating-local (normalization)
+    base_params["use_mesh_tallies"]       = False
+    base_params["use_mesh_heating_tally"] = True   # mesh heating-local (axial profile)
+    base_params["use_BeO_tallies"]        = False
+    base_params["use_leakage_tallies"]    = False
+
+    if bank_1 is not None:
+        base_params["bank_1_insertion"] = bank_1
+    if bank_2 is not None:
+        base_params["bank_2_insertion"] = bank_2
+
+    csv_path  = os.path.join(output_dir, "th_coupler_summary.csv")
+    csv_rows  = []
+    iter_dirs = []
+
+    prev_k      = None
+    prev_q      = None
+    best_params = copy.deepcopy(base_params)  # carries _th_*_z
+    final_keff  = float("nan")
+    final_std       = float("nan")
+    converged       = False
+    keff_true_iters = []   # keff values from iterations with valid deltas (it >= 1)
+
+    def _write_summary_csv():
+        # dk_ok   = |Δkeff| < k_tol  (rate of change has stabilised, not absolute value)
+        # dq_ok   = Δq/q_max < q_tol (heating profile has stabilised)
+        # keff_valid = keff ∈ [1.0 - k_tol, 1.0 + k_tol]  (absolute criticality check)
+        # q_max_diff  = max(|q_new - q_prev|)  — numerator of q_max_change_frac
+        # q_curr_max  = max(q_new)              — denominator of q_max_change_frac
+        fieldnames = ["iteration", "keff", "keff_std", "delta_k",
+                      "q_max_diff", "q_curr_max", "q_max_change_frac",
+                      "dk_ok", "dq_ok", "keff_valid"]
+        with open(csv_path, "w", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(csv_rows)
+
+    def _is_monotonic(vals):
+        """Return True if vals (len >= 2) is strictly monotone increasing or decreasing."""
+        if len(vals) < 2:
+            return False
+        diffs = [vals[i + 1] - vals[i] for i in range(len(vals) - 1)]
+        return all(d > 0 for d in diffs) or all(d < 0 for d in diffs)
+
+    def _write_iter_profiles(it, z_cm, q_avg_W, T_cool_K, T_comp_K, T_mat_K):
+        """Write per-iteration heating and temperature profile CSVs."""
+        if z_cm is None:
+            return
+        # Heating profile
+        heat_path = os.path.join(output_dir, f"th_iter_{it:02d}_heating.csv")
+        with open(heat_path, "w", newline="") as fh:
+            w = csv.writer(fh)
+            w.writerow(["z_center_cm", "avg_channel_q_W"])
+            for z, q in zip(z_cm, q_avg_W):
+                w.writerow([round(float(z), 4), round(float(q), 6)])
+        # Temperature profile
+        if T_cool_K is not None:
+            temp_path = os.path.join(output_dir, f"th_iter_{it:02d}_temperatures.csv")
+            with open(temp_path, "w", newline="") as fh:
+                w = csv.writer(fh)
+                w.writerow(["z_center_cm", "T_coolant_K", "T_compact_K", "T_matrix_K"])
+                for z, tc, tp, tm in zip(z_cm, T_cool_K, T_comp_K, T_mat_K):
+                    w.writerow([round(float(z), 4),
+                                round(float(tc), 4),
+                                round(float(tp), 4),
+                                round(float(tm), 4)])
+
+    for it in range(max_iter):
+        iter_dir = os.path.join(output_dir, f"th_iter_{it:02d}")
+        iter_dirs.append(iter_dir)
+
+        it_params = copy.deepcopy(best_params)
+
+        print(f"\n  Iter {it:2d}: running eigenvalue  "
+              f"(b1={it_params['bank_1_insertion']:.4f}, "
+              f"b2={it_params['bank_2_insertion']:.4f})")
+
+        _run_eigenvalue_with_depleted(it_params, depleted, iter_dir,
+                                      depletion_run_dir=depletion_run_dir)
+        k, k_std = _read_keff(iter_dir)
+        final_keff = k
+        final_std  = k_std
+
+        # Extract heating profile → nc_htgr temperatures
+        neutronics_csv, q_avg, z_centers_cm = \
+            _extract_heating_csv_from_statepoint(iter_dir, it_params)
+
+        if neutronics_csv is not None:
+            T_cool_z, T_comp_z, T_mat_z = _nc_htgr_temps(it_params, neutronics_csv)
+        else:
+            T_cool_z = T_comp_z = T_mat_z = None
+
+        # Save per-iteration heating and temperature profiles
+        _write_iter_profiles(it, z_centers_cm, q_avg, T_cool_z, T_comp_z, T_mat_z)
+
+        # Compute convergence metrics
+        delta_k = abs(k - prev_k) if prev_k is not None else float("nan")
+        if prev_q is not None and q_avg is not None and q_avg.max() > 0:
+            q_max_diff    = float(np.max(np.abs(q_avg - prev_q)))
+            q_curr_max    = float(q_avg.max())
+            q_change_frac = q_max_diff / q_curr_max
+        else:
+            q_max_diff    = float("nan")
+            q_curr_max    = float("nan")
+            q_change_frac = float("nan")
+
+        # Track keff for iterations that have valid deltas (all except it == 0)
+        if not np.isnan(delta_k):
+            keff_true_iters.append(k)
+
+        conv_k     = (not np.isnan(delta_k)       and delta_k       < k_tol)
+        conv_q     = (not np.isnan(q_change_frac) and q_change_frac < q_tol)
+        keff_valid = (min_keff <= k <= max_keff)
+
+        print(f"         k_eff = {k:.5f} ± {k_std:.5f}   "
+              f"Δk = {delta_k:.5f}   Δq/q_max = "
+              f"{q_change_frac:.4f}   keff_valid={keff_valid}"
+              if not np.isnan(q_change_frac)
+              else f"         k_eff = {k:.5f} ± {k_std:.5f}   "
+                   f"Δk = {delta_k:.5f}   keff_valid={keff_valid}")
+
+        _fmt = lambda v: round(v, 6) if not np.isnan(v) else "nan"
+        csv_rows.append({
+            "iteration":         it,
+            "keff":              round(k,     6),
+            "keff_std":          round(k_std, 6),
+            "delta_k":           _fmt(delta_k),
+            "q_max_diff":        _fmt(q_max_diff),
+            "q_curr_max":        _fmt(q_curr_max),
+            "q_max_change_frac": _fmt(q_change_frac),
+            "dk_ok":             conv_k,
+            "dq_ok":             conv_q,
+            "keff_valid":        keff_valid,
+        })
+        _write_summary_csv()
+
+        # Update temperatures for next iteration
+        if T_cool_z is not None:
+            best_params["_th_coolant_z"] = T_cool_z.tolist()
+            best_params["_th_compact_z"] = T_comp_z.tolist()
+            best_params["_th_matrix_z"]  = T_mat_z.tolist()
+
+        prev_k = k
+        if q_avg is not None:
+            prev_q = q_avg.copy()
+
+        # Iteration 0 has no deltas (nan), so don't count it toward min_iter.
+        # past_min is True once we have completed at least min_iter iterations
+        # that each have a valid Δk and Δq to evaluate.
+        past_min = (it >= min_iter)
+
+        if past_min and conv_k and conv_q and keff_valid:
+            # Full convergence: Δk, Δq, and keff all within bounds.
+            converged = True
+            print(f"\n  TH Coupler converged at iteration {it}  "
+                  f"(Δk={delta_k:.5f}, Δq/q_max={q_change_frac:.4f}, "
+                  f"keff={k:.5f} ∈ [{min_keff:.4f}, {max_keff:.4f}])")
+            break
+
+        if past_min and conv_q and not keff_valid:
+            # Early exit only when keff has been monotonically drifting (all
+            # increasing or all decreasing) over the last 4 true iterations.
+            # If keff is oscillating it may still self-correct — don't bail.
+            recent4 = keff_true_iters[-4:]
+            if _is_monotonic(recent4):
+                print(f"\n  WARNING: TH Coupler early exit at iteration {it}: "
+                      f"q converged (Δq/q_max={q_change_frac:.4f}) but "
+                      f"keff={k:.5f} outside [{min_keff:.4f}, {max_keff:.4f}] "
+                      f"and monotonically {'increasing' if recent4[-1] > recent4[0] else 'decreasing'} "
+                      f"over last {len(recent4)} true iterations. "
+                      f"Caller should re-run critical rod search with updated temps.")
+                break
+            else:
+                print(f"         (q converged but keff={k:.5f} out of range; "
+                      f"keff not monotonic over last {len(recent4)} true iters — continuing)")
+
+    if not converged:
+        print(f"\n  WARNING: TH Coupler did not converge in {max_iter} iterations.")
+        print(f"  Best k_eff = {final_keff:.5f}")
+
+    print(f"\n  Summary CSV -> {csv_path}")
+
+    # Clean up iteration subdirectories
+    for d in iter_dirs:
+        try:
+            shutil.rmtree(d)
+        except Exception as e:
+            print(f"  WARNING: could not delete {d}: {e}")
+
+    # Restore the original simulation-level settings in best_params before
+    # returning.  The TH coupler overrides these keys in base_params for
+    # efficiency (fewer tallies, fixed batch counts), but converged_params is
+    # meant to carry only the temperature profile (_th_*_z) forward into the
+    # next critical-search / depletion build — not the reduced tally flags.
+    # Without this restore, current_th_params becomes permanently poisoned
+    # (use_BeO_tallies=False, etc.) from the first TH coupler call onward,
+    # so no BeO / mesh / leakage tallies are ever written to tallies.xml or
+    # run_params.json for any subsequent depletion step.
+    _tally_and_sim_keys = (
+        "use_global_tallies",
+        "use_mesh_tallies",
+        "use_BeO_tallies",
+        "use_leakage_tallies",
+        "use_heating_tally",
+        "use_mesh_heating_tally",
+        "total_batches",
+        "inactive_batches",
+        "particles",
+        "make_geometry_plots",
+    )
+    for _key in _tally_and_sim_keys:
+        if _key in params:
+            best_params[_key] = params[_key]
+
+    return {
+        "converged":        converged,
+        "final_keff_valid": (min_keff <= final_keff <= max_keff) if not np.isnan(final_keff) else False,
+        "n_iterations":     len(csv_rows),
+        "final_keff":       final_keff,
+        "final_keff_std":   final_std,
+        "converged_params": best_params,
+        "csv_path":         csv_path,
+    }
+
 
 # ============================================================================
 # STEP 4 — FULL-TALLY EIGENVALUE RUN WITH DEPLETED MATERIALS

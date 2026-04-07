@@ -103,11 +103,12 @@ params = {
     "compact_max": 1173.15,
     "matrix_min": 903.15,
     "matrix_max": 1083.15,
-    "reflector_min": 903.15,
-    "reflector_max": 968.15,
+    # NOTE: reflector temps are no longer separate parameters.
+    # Top/bottom axial reflectors use matrix_max/matrix_min respectively.
+    # Radial reflector cells use the matrix axial profile (T_matrix_z).
 
     # ----- Tally Configuration -----
-    "n_XY_mesh_zones_full_core": 500,
+    "n_XY_mesh_zones_full_core": 200,
     "use_global_tallies": True,
     "use_mesh_tallies": True,
     "use_leakage_tallies": True,
@@ -116,7 +117,7 @@ params = {
     # ----- OpenMC Monte Carlo Settings -----
     "total_batches": 50,
     "inactive_batches": 20,
-    "particles": 100_000,
+    "particles": 50_000,
 
     # ----- Geometry Plots -----
     "make_geometry_plots": True,
@@ -124,7 +125,7 @@ params = {
 
     # ----- Spatial Burnup Resolution -----
     "ax_zones_per_burnup_region": 10, # Number of axial zones per burnup region (must be an integer and factor of n_ax_zones), note there are as many radial zones as there are rings in core_rings
-    "use_spatial_burnup": False,       # Adds axial and radial burnup zones and heating-local tallies for each zone to calculate min/max burnup
+    "use_spatial_burnup": True,       # Adds axial and radial burnup zones and heating-local tallies for each zone to calculate min/max burnup
 
     # ----- RPT Homogenization (Reactivity Equivalent Physical Transform) -----
     # Set use_homogenized_fuel=True to activate the two-region RPT model.
@@ -154,9 +155,38 @@ params = {
     "reactivity_delta_T_values": [50.0, 100.0, 150.0],
     "reactivity_coefficients": ["FTC", "MTC", "ITC"],
 
+    # ----- Thermal-Hydraulics Coupler Convergence Settings -----
+    "th_coupler_k_tol": 0.002,        # k convergence tolerance (1 beta for U-235)
+    "th_coupler_q_tol_frac": 0.05,     # max |Δq|/max(q) tolerance for heating profile
+    "th_coupler_min_iter": 4,          # minimum iterations before checking convergence
+    "th_coupler_max_iter": 10,         # maximum iterations before breaking
+    "th_coupler_batches": 50,          # active batches per th_coupler eigenvalue run
+    "th_coupler_inactive": 20,         # inactive batches per th_coupler eigenvalue run
+    "th_coupler_particles": 50_000,    # particles per th_coupler eigenvalue run
+
+    # ----- nc_htgr Channel Parameters (used by th_coupler) -----
+    # Computed from geometry: L_m = (core_height + 2*reflector_thickness)*0.01
+    # L_heated_m = core_height*0.01, D_cool_m = 2*coolant_radius*0.01,
+    # D_compact_m = 2*compact_radius*0.01, pitch_m = fuel_to_coolant_distance*0.01,
+    # packing_fraction = triso_pf  — all derived automatically from params above.
+    "th_m_dot_kg_s": 0.0097,           # per-channel helium mass flow rate [kg/s]
+    "th_P_in_Pa": 4.6e6,               # core inlet helium pressure [Pa]
+    "th_N_fuel_channels": 1218,        # total fuel channels in full core
+    "th_N_cool_channels": 558,         # total coolant channels in full core
+    "th_D_fuel_hole_m": 0.0127,        # fuel hole bore diameter [m]
+    "th_roughness_m": 1.0e-5,          # coolant channel wall roughness [m]
+    "th_emiss_compact": 0.85,          # compact outer surface emissivity
+    "th_emiss_fuel_hole": 0.85,        # fuel hole wall emissivity
+    "th_k_compact_eff_W_mK": 6.0,      # effective compact thermal conductivity [W/m·K]
+    "th_flow_upward": False,           # False = downward flow (inlet at top)
+    "th_N_nodes": 200,                 # nc_htgr axial node count per channel solve
+    "th_n_fuel_adj_to_cool": 6,        # fuel compacts sharing heat with each coolant channel
+    "th_n_cool_adj_to_fuel": 3,        # coolant channels shared by each fuel compact
+    "th_graphite_k_model": "pcea_table",  # graphite conductivity model for nc_htgr
+
     # ----- Critical Rod Search Configuration -----
-    "critical_search_k_tol": 0.005,
-    "critical_search_max_iter": 20,
+    "critical_search_k_tol": 0.002,
+    "critical_search_max_iter": 10,
     "critical_search_batches": 50,
     "critical_search_inactive": 20,
     "critical_search_particles": 50_000,
@@ -167,11 +197,12 @@ params = {
 
     # ----- Depletion Study Configuration -----
     "thermal_power_MW": 10.0,
-    "depletion_chain_file": "/home/cade/Desktop/OpenMC/CrossSections/chain_endfb81_thermal.xml",
-    # "depletion_chain_file": "/home/cade/Desktop/OpenMC/CrossSections/chain_casl_pwr.xml",
+    # "depletion_chain_file": "/home/cade/Desktop/OpenMC/CrossSections/chain_endfb81_thermal.xml",
+    "depletion_chain_file": "/home/cade/Desktop/OpenMC/CrossSections/chain_casl_pwr.xml",
     "use_reduced_chain_file": False,
-    "depletion_timesteps_days": [1, 3, 3, 3, 10, 10, 10, 30, 30, 30, 60, 60, 60, 120, 120, 120, 180, 180, 180], # Normal depletion time steps
-    # "depletion_timesteps_days": [1, 3, 3, 3, 10, 10, 10, 30, 30, 30, 60, 60, 60, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90], # CS depletion time steps
+    # "depletion_timesteps_days": [1, 3, 3, 3, 10, 10, 10, 30, 30, 30, 60, 60, 60, 120, 120, 120, 180, 180, 180], # Normal depletion time steps
+    "depletion_timesteps_days": [1, 3, 3, 3, 10, 10, 10, 30, 30, 30, 60, 60, 60, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90], # CS depletion time steps
+    # "depletion_timesteps_days": [1, 3, 3, 3],  # Testing timme steps
     "depletion_integrator": "PredictorIntegrator",
     # Integrator options:
     #    "PredictorIntegrator" — simplest, one transport solve per step
@@ -217,9 +248,10 @@ params = {
         "Mo95",
         "Tc99",
         "Rho103",
-        "Cs133", "Cs137",
+        "Cs134", "Cs137",
+        "Ce144",
         "Nd143", "Nd145",
-        "Eu153",
+        "Eu152", "Eu154", "Eu155",
 
         # --- Burnable Poison ---
         "B10"
@@ -244,9 +276,10 @@ params = {
                                   "Mo95",
                                   "Tc99",
                                   "Rh103",
-                                  "Cs133", "Cs137",
+                                  "Cs134", "Cs137",
+                                  "Ce144",
                                   "Nd143", "Nd145",
-                                  "Eu153"],
+                                  "Eu152", "Eu154", "Eu155"],
             "Boron Poisons":     ["B10"]
     },
 
@@ -269,7 +302,7 @@ params = {
     ],
 
     # ----- Study Execution Mode Configuration -----
-    "study_execution_mode": "DepletionStudy",
+    "study_execution_mode": "CSDepletionStudy",
     # Study Execution Mode Options:
     #    "SingleStudy"      — Singular steady state monte carlo simulation of specified core layout
     #    "ParametricStudy"  — Creates multiple steady state monte carlo simulations varying a single core parameter
