@@ -109,10 +109,12 @@ params = {
 
     # ----- Tally Configuration -----
     "n_XY_mesh_zones_full_core": 200,
-    "use_global_tallies": True,
+    "use_global_tallies": True,          # Full tally set: flux spectrum, heating-local, global rates
     "use_mesh_tallies": True,
-    "use_leakage_tallies": False,
-    "use_BeO_tallies": False,
+    "use_mesh_heating_tally": False,     # Active-core-only mesh heating tally used by TH coupler iterations (cheaper than full mesh)
+    "use_mesh_heating_full_tally": False, # Full-core mesh heating tally without flux/fission scores (placeholder, currently unused)
+    "use_leakage_tallies": True,
+    "use_BeO_tallies": True,
 
     # ----- OpenMC Monte Carlo Settings -----
     "total_batches": 50,
@@ -158,6 +160,7 @@ params = {
     # ----- Thermal-Hydraulics Coupler Convergence Settings -----
     "th_coupler_k_tol": 0.002,        # k convergence tolerance (1 beta for U-235)
     "th_coupler_q_tol_frac": 0.05,     # max |Δq|/max(q) tolerance for heating profile
+    "th_coupler_ignore_keff": False,   # if True, skip k_eff convergence check and converge on heating profile only
     "th_coupler_min_iter": 4,          # minimum iterations before checking convergence
     "th_coupler_max_iter": 10,         # maximum iterations before breaking
     "th_coupler_batches": 50,          # active batches per th_coupler eigenvalue run
@@ -302,13 +305,13 @@ params = {
     ],
 
     # ----- Study Execution Mode Configuration -----
-    "study_execution_mode": "SingleStudy",
+    "study_execution_mode": "CSDepletionStudy",
     # Study Execution Mode Options:
     #    "SingleStudy"      — Singular steady state monte carlo simulation of specified core layout
     #    "ParametricStudy"  — Creates multiple steady state monte carlo simulations varying a single core parameter
     #    "ReactivityStudy"  — Calculates reactivity coefficients via multiple steady state monte carlo simulations and specified temperature perturbations
     #    "CriticalSearch"   — Performs critical rod position search, first inserting bank 1 all the way and then inserting bank 2 until critical
-    #    "DepletionStudy"   — Performs depletion run on specified core layout using specified depletion timesteps
+    #    "DepletionStudy"   — Performs all rods out depletion run on specified core layout using specified depletion timesteps
     #    "CSDepletionStudy" — Performs depletion run on specified core layout moving control rods to obtain criticality at each depletion timestep
     #    "RPTCalibration"   — Finds the RPT inner radius (rpt_radius) that matches explicit-TRISO k_eff.
     #                         Runs one explicit-TRISO reference, brackets with r_min/r_max endpoints, then

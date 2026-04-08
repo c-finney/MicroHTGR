@@ -1112,6 +1112,7 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
     discharge_burnup     = None
     discharge_time_days  = None
     discharge_time_years = None
+    _cs_aro_keff_pts     = None   # ARO keff points for discharge interpolation plot
 
     if cs_log:
         # Find the 1→0 transition in the operational array
@@ -1149,6 +1150,17 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
                       f"k({time_days[_last_op_idx]:.0f} d)={_aro_k_last:.5f}, "
                       f"k({time_days[_first_nonop_idx]:.0f} d)={_aro_k_nonop:.5f}, "
                       f"frac={_frac:.4f} → {discharge_time_years:.3f} yr")
+                # Store ARO keff points for plotting (x in both burnup/time and time-years)
+                _cs_aro_keff_pts = {
+                    'last_op_x':     x_data[_last_op_idx],
+                    'nonop_x':       x_data[_first_nonop_idx],
+                    'last_op_ty':    time_days[_last_op_idx] / 365.25,
+                    'nonop_ty':      time_days[_first_nonop_idx] / 365.25,
+                    'last_op_k':     _aro_k_last,
+                    'last_op_k_std': _aro_k_last_std if _aro_k_last_std is not None else 0.0,
+                    'nonop_k':       _aro_k_nonop,
+                    'nonop_k_std':   _aro_k_nonop_std if _aro_k_nonop_std is not None else 0.0,
+                }
             else:
                 # Fallback if ARO keff not extractable
                 discharge_time_days  = float(time_days[_first_nonop_idx])
@@ -1353,6 +1365,14 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
                     color="tab:orange", label="BOS k-effective (critical search)")
         ax.axhline(1.0, color="red", linestyle="--", alpha=0.7, linewidth=1, label="k = 1.0")
         _add_discharge_vline(ax, is_burnup=(burnup_MWd_per_MtU is not None))
+        if _cs_aro_keff_pts is not None:
+            ax.errorbar(
+                [_cs_aro_keff_pts['last_op_x'], _cs_aro_keff_pts['nonop_x']],
+                [_cs_aro_keff_pts['last_op_k'], _cs_aro_keff_pts['nonop_k']],
+                yerr=[[_cs_aro_keff_pts['last_op_k_std'], _cs_aro_keff_pts['nonop_k_std']],
+                      [_cs_aro_keff_pts['last_op_k_std'], _cs_aro_keff_pts['nonop_k_std']]],
+                fmt='*--', capsize=3, color='purple', markersize=14,
+                label='ARO k-eff (discharge interp.)', zorder=5)
         ax.set_xlabel(x_label)
         ax.set_ylabel("k-effective")
         if show_titles:
@@ -1377,6 +1397,14 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
         if discharge_time_years is not None:
             ax.axvline(discharge_time_years, color="green", linestyle=":", alpha=0.7,
                        label=f"Discharge: {discharge_time_years:.2f} yr")
+        if _cs_aro_keff_pts is not None:
+            ax.errorbar(
+                [_cs_aro_keff_pts['last_op_ty'], _cs_aro_keff_pts['nonop_ty']],
+                [_cs_aro_keff_pts['last_op_k'], _cs_aro_keff_pts['nonop_k']],
+                yerr=[[_cs_aro_keff_pts['last_op_k_std'], _cs_aro_keff_pts['nonop_k_std']],
+                      [_cs_aro_keff_pts['last_op_k_std'], _cs_aro_keff_pts['nonop_k_std']]],
+                fmt='*--', capsize=3, color='purple', markersize=14,
+                label='ARO k-eff (discharge interp.)', zorder=5)
         ax.set_xlabel("Time (years)")
         ax.set_ylabel("k-effective")
         if show_titles:
@@ -1395,6 +1423,43 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
         # No reactivity plot for CSDepletionStudy (EOS keff is always < 1 by design)
 
         # ================================================================================
+        # 5d-ii. CS DEPLETION STUDY — CONTROL ROD BANK POSITION vs. TIME
+        # ================================================================================
+        # Only include operational steps; append a forced 0.0 point at discharge.
+        _n_bank = (_last_op_idx + 1) if _last_op_idx is not None else n_plot
+        _valid_bank = ~np.isnan(bos_bank1[:_n_bank])
+        if np.any(_valid_bank):
+            _ty_bank = time_years[:_n_bank][_valid_bank]
+            _b1_vals = bos_bank1[:_n_bank][_valid_bank].copy()
+            _b2_vals = bos_bank2[:_n_bank][_valid_bank].copy()
+            # Append fully-withdrawn point at discharge (rods out at EOL)
+            if discharge_time_years is not None:
+                _ty_bank = np.append(_ty_bank, discharge_time_years)
+                _b1_vals = np.append(_b1_vals, 0.0)
+                _b2_vals = np.append(_b2_vals, 0.0)
+            fig, ax = plt.subplots(figsize=(12, 6), dpi=fig_dpi)
+            ax.plot(_ty_bank, _b1_vals, "o-", color="tab:blue", label="Bank 1 insertion")
+            ax.plot(_ty_bank, _b2_vals, "s-", color="tab:red",  label="Bank 2 insertion")
+            if discharge_time_years is not None:
+                ax.axvline(discharge_time_years, color="green", linestyle=":", alpha=0.7,
+                           label=f"Discharge: {discharge_time_years:.2f} yr")
+            ax.set_xlabel("Time (years)")
+            ax.set_ylabel("Rod Insertion")
+            if show_titles:
+                ax.set_title("Control Rod Bank Insertion vs. Time")
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            if burnup_MWd_per_MtU is not None and total_HM_mass_kg:
+                _bu_per_yr = thermal_power_MW * 365.25 / (total_HM_mass_kg / 1000.0)
+                ax2 = ax.twiny()
+                ax2.set_xlim(_ty_bank[0] * _bu_per_yr, _ty_bank[-1] * _bu_per_yr)
+                ax2.set_xlabel("Core-Average Burnup (MWd/MtU)")
+            plt.savefig(os.path.join(POSTPROCESSING_RESULTS_DIR,
+                                      f"depletion_rod_position_vs_time.{fig_fmt}"),
+                        bbox_inches="tight")
+            plt.close()
+
+        # ================================================================================
         # 5e. CS DEPLETION STUDY — THERMAL-HYDRAULIC PLOTS
         # ================================================================================
         # For each depletion step directory, read the last attempt's last iteration of
@@ -1403,6 +1468,40 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
         # (MWd/MtU) as the secondary x-axis.
 
         print("\n  Collecting TH data from CS depletion step directories...")
+
+        # --- nc_htgr import for per-step MWe calculation ---
+        _nc_htgr_avail = False
+        _br = {}
+        try:
+            _nc_htgr_dir = os.path.normpath(
+                os.path.join(os.path.dirname(__file__), "..", "..", "HTGR-SCAPC"))
+            if _nc_htgr_dir not in sys.path:
+                sys.path.insert(0, _nc_htgr_dir)
+            from nc_htgr import (compressor_T2 as _nc_comp_T2,
+                                  turbine_T5    as _nc_turb_T5,
+                                  helium_cp_gamma_R as _nc_he_cp)
+            # Read Brayton parameters from nc_input.csv (same directory as nc_htgr.py)
+            _nc_input_csv = os.path.join(_nc_htgr_dir, "nc_input.csv")
+            _br_raw = {'P1_Pa': 2e6, 'T1_C': 30.0, 'pressure_ratio': 2.3,
+                       'eta_c': 0.90, 'eta_t': 0.90, 'eps_recup': 0.90}
+            if os.path.exists(_nc_input_csv):
+                with open(_nc_input_csv, newline="") as _fh:
+                    for _row in csv.reader(_fh):
+                        if len(_row) >= 2 and not str(_row[0]).strip().startswith("#"):
+                            _br_raw[_row[0].strip()] = _row[1].strip()
+            _br = {
+                'P1':        float(_br_raw.get('P1_Pa',         2e6)),
+                'T1_C':      float(_br_raw.get('T1_C',          30.0)),
+                'PR':        float(_br_raw.get('pressure_ratio', 2.3)),
+                'eta_c':     float(_br_raw.get('eta_c',         0.90)),
+                'eta_t':     float(_br_raw.get('eta_t',         0.90)),
+                'eps_recup': float(_br_raw.get('eps_recup',     0.90)),
+            }
+            _nc_htgr_avail = True
+            print(f"  [MWe] nc_htgr loaded. Brayton: PR={_br['PR']}, "
+                  f"η_c={_br['eta_c']}, η_t={_br['eta_t']}, ε_recup={_br['eps_recup']}")
+        except Exception as _nc_ex:
+            print(f"  WARNING: could not import nc_htgr ({_nc_ex}); MWe calculation skipped.")
 
         _step_dirs_map = {}   # bos time index → step directory path
         for _e in cs_log:
@@ -1416,6 +1515,10 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
         _th_T_comp   = []   # max compact temperature [K]
         _th_T_mat    = []   # max matrix temperature [K]
         _th_q_max    = []   # max avg channel heating [W]
+        _th_mwe      = []   # net electrical output [MWe]
+
+        _mwe_m_dot = float(params.get('th_m_dot_kg_s', 0.0097))
+        _mwe_N_cool = int(params.get('th_N_cool_channels', 558))
 
         for _bos_idx in sorted(_step_dirs_map.keys()):
             if _bos_idx >= n_plot:
@@ -1439,12 +1542,46 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
                     _q_max = float(np.nanmax(_hd["avg_channel_q_W"]))
                 except Exception:
                     pass
+            # Net electrical output via Brayton cycle math using dT_core from CSV.
+            # The TH CSV was produced with a fixed cold inlet (T_in from nc_input.csv),
+            # but in the actual cycle the recuperator pre-heats the core inlet to T3 > T_in.
+            # Since helium cp is nearly constant, the core temperature rise
+            # dT_core = T4_csv − T_in_csv is independent of the actual inlet temperature.
+            # We therefore iterate the recuperator (T3 = T2 + eps*(T5−T2)) with
+            # T4 = T3 + dT_core until T3 converges, then compute Wnet.
+            _mwe = np.nan
+            if _nc_htgr_avail:
+                try:
+                    # Temperature rise through heated core (K) — from bottom (outlet) to top (inlet)
+                    _T4_csv   = float(_td["T_coolant_K"][0])   # first row: bottom of core = coolant outlet
+                    _T_in_csv = float(_td["T_coolant_K"][-1])  # last row:  top of core   = coolant inlet
+                    _dT_core  = _T4_csv - _T_in_csv            # K, independent of absolute T_in
+                    _cp, _gamma, _ = _nc_he_cp()
+                    _T1 = _br['T1_C'] + 273.15   # compressor inlet [K]
+                    _T2 = _nc_comp_T2(_T1, _br['PR'], _gamma, _br['eta_c'])
+                    # Iterate recuperator to find self-consistent T3 and T4
+                    _T3 = _T2   # initial guess (no recuperation)
+                    for _it in range(200):
+                        _T4 = _T3 + _dT_core
+                        _T5 = _nc_turb_T5(_T4, _br['PR'], _gamma, _br['eta_t'])
+                        _T3_new = _T2 + _br['eps_recup'] * (_T5 - _T2)
+                        if abs(_T3_new - _T3) < 1e-4:
+                            _T3 = _T3_new
+                            break
+                        _T3 = 0.7 * _T3 + 0.3 * _T3_new
+                    _T4   = _T3 + _dT_core
+                    _T5   = _nc_turb_T5(_T4, _br['PR'], _gamma, _br['eta_t'])
+                    _Wnet = _cp * (_T4 - _T5) - _cp * (_T2 - _T1)
+                    _mwe  = _mwe_m_dot * _Wnet * _mwe_N_cool / 1e6
+                except Exception as _me:
+                    print(f"    WARNING: MWe calc failed for step {_bos_idx}: {_me}")
             _th_time_yr.append(time_years[_bos_idx])
             _th_burnup.append(burnup_MWd_per_MtU[_bos_idx] if burnup_MWd_per_MtU is not None else np.nan)
             _th_T_cool.append(_T_cool)
             _th_T_comp.append(_T_comp)
             _th_T_mat.append(_T_mat)
             _th_q_max.append(_q_max)
+            _th_mwe.append(_mwe)
 
         if _th_time_yr:
             _th_time_yr = np.array(_th_time_yr)
@@ -1453,6 +1590,7 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
             _th_T_comp  = np.array(_th_T_comp)
             _th_T_mat   = np.array(_th_T_mat)
             _th_q_max   = np.array(_th_q_max)
+            _th_mwe     = np.array(_th_mwe)
 
             def _add_burnup_secondary_axis(ax_main, t_yr, bu):
                 """Add burnup (MWd/MtU) as secondary x-axis above the primary time axis.
@@ -1508,6 +1646,42 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
                             bbox_inches="tight")
                 plt.close()
                 print(f"  Saved: cs_depletion_max_heating_vs_time.{fig_fmt}")
+
+            # --- Plot 3: Net Electrical Output (MWe) vs Time ---
+            _mwe_valid = ~np.isnan(_th_mwe)
+            if _nc_htgr_avail and np.any(_mwe_valid):
+                fig, ax = plt.subplots(figsize=(12, 6), dpi=fig_dpi)
+                ax.plot(_th_time_yr[_mwe_valid], _th_mwe[_mwe_valid],
+                        "o-", color="tab:green", label="Net Electrical Output")
+                if discharge_time_years is not None:
+                    ax.axvline(discharge_time_years, color="green", linestyle=":", alpha=0.7,
+                               label=f"Discharge: {discharge_time_years:.2f} yr")
+                ax.set_xlabel("Time (years)")
+                ax.set_ylabel("Net Electrical Output (MWe)")
+                if show_titles:
+                    ax.set_title("Net Electrical Output vs. Time (CS Depletion Study)")
+                ax.legend()
+                ax.grid(True, alpha=0.3)
+                _add_burnup_secondary_axis(ax, _th_time_yr, _th_burnup)
+                plt.savefig(os.path.join(POSTPROCESSING_RESULTS_DIR,
+                                          f"cs_depletion_mwe_vs_time.{fig_fmt}"),
+                            bbox_inches="tight")
+                plt.close()
+                print(f"  Saved: cs_depletion_mwe_vs_time.{fig_fmt}")
+
+                # Save CSV
+                _mwe_csv_path = os.path.join(POSTPROCESSING_RESULTS_DIR,
+                                              "cs_depletion_mwe_vs_time.csv")
+                with open(_mwe_csv_path, "w", newline="") as _fcsv:
+                    _cw = csv.writer(_fcsv)
+                    _cw.writerow(["time_years", "burnup_MWd_per_MtU", "net_electrical_MWe"])
+                    for _ri in range(len(_th_time_yr)):
+                        _cw.writerow([
+                            f"{_th_time_yr[_ri]:.6f}",
+                            f"{_th_burnup[_ri]:.2f}" if not np.isnan(_th_burnup[_ri]) else "",
+                            f"{_th_mwe[_ri]:.5f}"    if not np.isnan(_th_mwe[_ri])    else "",
+                        ])
+                print(f"  Saved: cs_depletion_mwe_vs_time.csv")
         else:
             print("  WARNING: No TH data found in step directories; skipping TH plots.")
 
