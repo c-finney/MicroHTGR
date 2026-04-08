@@ -164,6 +164,43 @@ def _load_heating_mesh_tally(sp_path, tally_name, source_per_sec, symmetry_facto
         'mesh_ur': mesh_ur,
     }
 
+
+def _active_core_slice(info, n_ax_zones):
+    """
+    Slice a full-core mesh info dict down to just the active-core z-bins.
+
+    The full-core mesh has reflector zones below and above the active core.
+    The number of reflector bins on each side is (nz_full - n_ax_zones) // 2.
+    Returns a new info dict with 'data', 'mesh_dim', 'mesh_ll', 'mesh_ur'
+    adjusted to cover only the active fuel region.
+
+    Works for both _load_mesh_tally output (data is dict of score->3d arrays)
+    and _load_heating_mesh_tally output (data is a single 3d array).
+    """
+    nx, ny, nz_full = info['mesh_dim']
+    n_refl = (nz_full - n_ax_zones) // 2
+    z0 = n_refl
+    z1 = n_refl + n_ax_zones
+
+    ll = info['mesh_ll'].copy()
+    ur = info['mesh_ur'].copy()
+    dz = (ur[2] - ll[2]) / nz_full
+    ll[2] = ll[2] + n_refl * dz
+    ur[2] = ll[2] + n_ax_zones * dz
+
+    data = info['data']
+    if isinstance(data, dict):
+        sliced = {k: v[:, :, z0:z1] for k, v in data.items()}
+    else:
+        sliced = data[:, :, z0:z1]
+
+    return {
+        'data':     sliced,
+        'mesh_dim': (nx, ny, n_ax_zones),
+        'mesh_ll':  ll,
+        'mesh_ur':  ur,
+    }
+
 # ====================================================================================================
 # PLOTTING FUNCTION FOR CORE XY CROSS-SECTIONS
 # ====================================================================================================
@@ -180,9 +217,10 @@ def plot_xy_slice(run_dir, batch, z_index, is_wedge, reconstruct, target_power_M
     source_per_sec = get_normalization_factor(sp_path, target_power_MW)
     symmetry_factor = 6 if is_wedge else 1
 
-    # --- Load flux + fission from mesh_rates ---
-    info = _load_mesh_tally(sp_path, 'mesh_rates', ['flux', 'fission'],
+    # --- Load flux + fission from full-core mesh, then slice to active core ---
+    info = _load_mesh_tally(sp_path, 'mesh_rates_full', ['flux', 'fission'],
                             source_per_sec, symmetry_factor)
+    info = _active_core_slice(info, n_ax_zones)
     nx, ny, nz = info['mesh_dim']
 
     for score, cmap, label, unit in [
@@ -236,7 +274,8 @@ def plot_xy_slice(run_dir, batch, z_index, is_wedge, reconstruct, target_power_M
 
     # --- Heating XY slice (separate load to avoid holding both tallies) ---
     try:
-        h_info = _load_heating_mesh_tally(sp_path, 'mesh_heating', source_per_sec, symmetry_factor)
+        h_info = _load_heating_mesh_tally(sp_path, 'mesh_heating_full', source_per_sec, symmetry_factor)
+        h_info = _active_core_slice(h_info, n_ax_zones)
         h_nx, h_ny, h_nz = h_info['mesh_dim']
         heating_3d = h_info['data']
 
@@ -285,7 +324,7 @@ def plot_xy_slice(run_dir, batch, z_index, is_wedge, reconstruct, target_power_M
 # PLOTTING FUNCTION FOR AXIAL FLUX, FISSION, AND HEATING PROFILES
 # ====================================================================================================
 
-def plot_axial_profile(run_dir, batch, is_wedge, target_power_MW, save_dir=None, show_titles=True):
+def plot_axial_profile(run_dir, batch, is_wedge, target_power_MW, n_ax_zones, save_dir=None, show_titles=True):
     """Plot axial profiles of flux, fission rate, and heating."""
 
     save_dir = save_dir or run_dir
@@ -298,9 +337,10 @@ def plot_axial_profile(run_dir, batch, is_wedge, target_power_MW, save_dir=None,
     symmetry_factor = 6 if is_wedge else 1
     geometry_label = "1/6 Wedge" if is_wedge else "Full Core"
 
-    # --- Flux + Fission axial profiles ---
-    info = _load_mesh_tally(sp_path, 'mesh_rates', ['flux', 'fission'],
+    # --- Flux + Fission axial profiles — load full-core, slice to active core ---
+    info = _load_mesh_tally(sp_path, 'mesh_rates_full', ['flux', 'fission'],
                             source_per_sec, symmetry_factor)
+    info = _active_core_slice(info, n_ax_zones)
     nx, ny, nz = info['mesh_dim']
 
     flux_axial = info['data']['flux'].mean(axis=(0, 1))
@@ -332,7 +372,8 @@ def plot_axial_profile(run_dir, batch, is_wedge, target_power_MW, save_dir=None,
 
     # --- Heating axial profile ---
     try:
-        h_info = _load_heating_mesh_tally(sp_path, 'mesh_heating', source_per_sec, symmetry_factor)
+        h_info = _load_heating_mesh_tally(sp_path, 'mesh_heating_full', source_per_sec, symmetry_factor)
+        h_info = _active_core_slice(h_info, n_ax_zones)
         h_nz = h_info['mesh_dim'][2]
         heating_axial = h_info['data'].sum(axis=(0, 1))
         hz_coords = np.linspace(h_info['mesh_ll'][2], h_info['mesh_ur'][2], h_nz + 1)
@@ -359,7 +400,7 @@ def plot_axial_profile(run_dir, batch, is_wedge, target_power_MW, save_dir=None,
 # PLOTTING FUNCTION FOR CORE RZ CROSS-SECTIONS
 # ====================================================================================================
 
-def plot_rz_crosssection(run_dir, batch, angle_deg, is_wedge, target_power_MW, include_reflector, save_dir=None, show_titles=True):
+def plot_rz_crosssection(run_dir, batch, angle_deg, is_wedge, target_power_MW, include_reflector, n_ax_zones, save_dir=None, show_titles=True):
     """Plot RZ cross-section at specified angle."""
 
     save_dir = save_dir or run_dir
@@ -374,13 +415,11 @@ def plot_rz_crosssection(run_dir, batch, angle_deg, is_wedge, target_power_MW, i
     angle_rad = np.radians(angle_deg)
 
     # --- Flux + Fission RZ ---
-    tally_name = 'mesh_rates_full' if include_reflector else 'mesh_rates'
-    try:
-        info = _load_mesh_tally(sp_path, tally_name, ['flux', 'fission'],
-                                source_per_sec, symmetry_factor)
-    except KeyError:
-        info = _load_mesh_tally(sp_path, 'mesh_rates', ['flux', 'fission'],
-                                source_per_sec, symmetry_factor)
+    # Always load from full-core mesh; active-core-only view uses a z-slice below.
+    info = _load_mesh_tally(sp_path, 'mesh_rates_full', ['flux', 'fission'],
+                            source_per_sec, symmetry_factor)
+    if not include_reflector:
+        info = _active_core_slice(info, n_ax_zones)
 
     nx, ny, nz = info['mesh_dim']
     x_centers = np.linspace(info['mesh_ll'][0], info['mesh_ur'][0], nx)
@@ -425,11 +464,9 @@ def plot_rz_crosssection(run_dir, batch, angle_deg, is_wedge, target_power_MW, i
 
     # --- Heating RZ ---
     try:
-        h_tally_name = 'mesh_heating_full' if include_reflector else 'mesh_heating'
-        try:
-            h_info = _load_heating_mesh_tally(sp_path, h_tally_name, source_per_sec, symmetry_factor)
-        except KeyError:
-            h_info = _load_heating_mesh_tally(sp_path, 'mesh_heating', source_per_sec, symmetry_factor)
+        h_info = _load_heating_mesh_tally(sp_path, 'mesh_heating_full', source_per_sec, symmetry_factor)
+        if not include_reflector:
+            h_info = _active_core_slice(h_info, n_ax_zones)
 
         h_nx, h_ny, h_nz = h_info['mesh_dim']
         hx_c = np.linspace(h_info['mesh_ll'][0], h_info['mesh_ur'][0], h_nx)
@@ -579,13 +616,13 @@ def run_tally_plots(run_dir, params, batch=None):
 
     # Axial profiles
     print("\nGenerating axial profiles...")
-    plot_axial_profile(run_dir, batch, is_wedge, target_power, save_dir=results_dir,
+    plot_axial_profile(run_dir, batch, is_wedge, target_power, n_ax_zones, save_dir=results_dir,
                        show_titles=show_titles)
     gc.collect()
 
     # RZ cross-sections
     print("\nGenerating RZ cross-sections...")
-    plot_rz_crosssection(run_dir, batch, 0, is_wedge, target_power, True, save_dir=results_dir,
+    plot_rz_crosssection(run_dir, batch, 0, is_wedge, target_power, True, n_ax_zones, save_dir=results_dir,
                           show_titles=show_titles)
     gc.collect()
 
@@ -634,11 +671,15 @@ def detect_geometry_from_statepoint(run_dir, batch=None):
 
     sp_path = os.path.join(run_dir, f'statepoint.{batch}.h5')
     with openmc.StatePoint(sp_path) as sp:
-        tally = sp.get_tally(name='mesh_rates')
+        tally = sp.get_tally(name='mesh_rates_full')
         mesh = tally.find_filter(openmc.MeshFilter).mesh
         is_wedge = mesh.lower_left[0] >= -0.1 and mesh.lower_left[1] >= -0.1
         core_radius = max(mesh.upper_right[0], mesh.upper_right[1])
-        n_ax_zones = mesh.dimension[2]
+        # Full-core mesh includes reflector zones above and below; n_ax_zones is
+        # the active-core bin count, which is stored in run_params.json. For
+        # auto-detection fall back to reading it from the mesh dimension directly
+        # by assuming symmetric reflector zones matching the stored reflector_thickness.
+        n_ax_zones = mesh.dimension[2]  # overestimate; run_params.json preferred
 
     return {
         "use_1/6_geometry": is_wedge,

@@ -2,7 +2,7 @@
 Heating Profile Extraction Post-Processing Script
 
 Extracts axial heating profiles for the hottest fuel channel and the
-core-average fuel channel from the mesh_heating tally in an OpenMC
+core-average fuel channel from the mesh_heating_full tally in an OpenMC
 statepoint file.
 
 APPROACH:
@@ -10,17 +10,17 @@ APPROACH:
     because OpenMC enumerates every geometry path to each fuel cell),
     this script uses the existing RegularMesh heating tally.
 
-    The 250x217x50 mesh has 0.36 cm cells — much finer than the 2.5 cm
-    fuel channel pitch.  Each fuel compact (1.27 cm diameter) covers
-    ~3.5 mesh cells across, so individual channels are clearly resolved.
+    Fuel compact centroids are determined analytically from the reactor
+    geometry (core_rings, fuel_to_coolant_distance, bundle_pitch) rather
+    than by image-based peak detection.  This is mesh-resolution-
+    independent and requires no threshold tuning.
 
     The script:
-      1. Reads the mesh_heating tally via openmc.StatePoint
-      2. Reshapes to 3-D  (nx, ny, nz)
-      3. Sums over z to form a 2-D radial heating map
-      4. Detects local maxima -> one peak per fuel channel centre
-      5. Extracts the axial z-profile at each peak
-      6. Identifies the hottest and average profiles, computes peaking
+      1. Reads the mesh_heating_full tally via openmc.StatePoint
+      2. Reshapes to 3-D (nx, ny, nz_full), slices to active core
+      3. Analytically computes fuel compact centroid positions
+      4. For each centroid, sums mesh voxels within compact_radius
+      5. Identifies the hottest and average profiles, computes peaking
          factors, and generates plots + CSV outputs.
 
 Usage:
@@ -65,124 +65,191 @@ def get_normalization_factor(sp_path, target_power_MW):
 
 
 # ====================================================================================================
-# MESH-BASED FUEL CHANNEL EXTRACTION
+# ANALYTICAL FUEL COMPACT CENTROID GENERATION
 # ====================================================================================================
 
-def _find_local_maxima_2d(arr, threshold_frac=0.05, min_separation=3):
+def _hex_ring_positions(r, pitch):
     """
-    Find local maxima in a 2-D array.
+    Cartesian (x, y) positions of all elements in ring r of a flat-top
+    hex lattice (OpenMC orientation='x') centred at the origin.
 
-    A pixel is a local maximum if it exceeds all 8 neighbours and
-    is above threshold_frac * global_max.  Peaks closer than
-    min_separation pixels are merged (keep the brighter one).
-
-    Returns array of (iy, ix) peak positions, shape (n_peaks, 2).
+    Ring 0 → [(0, 0)].  Ring r > 0 → 6r positions starting from
+    (r*pitch, 0) and traversing counter-clockwise, matching OpenMC's
+    HexLattice element ordering for orientation='x'.
     """
-    threshold = threshold_frac * np.max(arr)
-    ny, nx = arr.shape
+    if r == 0:
+        return np.array([[0.0, 0.0]])
 
-    # Pad array to simplify boundary handling
-    padded = np.pad(arr, 1, mode='constant', constant_values=0)
+    p    = pitch
+    s32  = np.sqrt(3.0) / 2.0
+    # Six CCW step-directions for a flat-top hex ring traversal
+    step_dirs = [
+        (-0.5 * p,   s32 * p),   # upper-left
+        (-p,         0.0),        # left
+        (-0.5 * p,  -s32 * p),   # lower-left
+        ( 0.5 * p,  -s32 * p),   # lower-right
+        ( p,         0.0),        # right
+        ( 0.5 * p,   s32 * p),   # upper-right
+    ]
 
-    # Check each pixel against its 8 neighbours
-    is_max = np.ones((ny, nx), dtype=bool)
-    for di in [-1, 0, 1]:
-        for dj in [-1, 0, 1]:
-            if di == 0 and dj == 0:
-                continue
-            neighbour = padded[1+di:ny+1+di, 1+dj:nx+1+dj]
-            is_max &= (arr >= neighbour)
+    positions = []
+    x, y = r * pitch, 0.0
+    for dx, dy in step_dirs:
+        for _ in range(r):
+            positions.append([x, y])
+            x += dx
+            y += dy
 
-    is_max &= (arr > threshold)
+    return np.array(positions)   # shape (6r, 2)
 
-    # Get peak positions sorted by brightness (descending)
-    peak_ys, peak_xs = np.where(is_max)
-    peak_vals = arr[peak_ys, peak_xs]
-    order = np.argsort(-peak_vals)
-    peak_ys = peak_ys[order]
-    peak_xs = peak_xs[order]
-    peak_vals = peak_vals[order]
 
-    # Suppress peaks too close to a brighter peak
-    keep_idx = []
-    keep_pos = []
-    for k in range(len(peak_ys)):
-        y, x = peak_ys[k], peak_xs[k]
-        too_close = False
-        for (ky, kx) in keep_pos:
-            if abs(y - ky) < min_separation and abs(x - kx) < min_separation:
-                too_close = True
-                break
-        if not too_close:
-            keep_idx.append(k)
-            keep_pos.append((y, x))
+def compute_fuel_compact_centroids(params):
+    """
+    Analytically compute (x, y) centroids of every fuel compact channel
+    in the simulated geometry (1/6 wedge or full core).
 
-    if not keep_pos:
-        return np.empty((0, 2), dtype=int)
+    Uses the hex lattice geometry from params (core_rings,
+    fuel_to_coolant_distance, bundle_pitch) to reconstruct exact positions
+    of every fuel compact.  No mesh resolution dependence, no thresholding.
 
-    # ---- Median-based filter to reject non-fuel peaks ----
-    # Fuel channels (TRISO fission heating) are far brighter than
-    # control rods / poison rods (gamma absorption only).  Reject any
-    # peak whose value is below 30% of the median of the kept peaks.
-    kept_vals = peak_vals[keep_idx]
-    median_val = np.median(kept_vals)
-    fuel_cutoff = 0.30 * median_val
+    Assembly type → fuel pattern (from assembly.py):
+      "f", "fpa"   — ring1+ring2+ring3+ring4          (42 channels)
+      "fp"         — ring1+ring2+ring3+ring4p          (36 channels)
+                     (ring4p: i%4==0 positions are poison, not fuel)
+      "fc*", "fss" — ring2+ring3+ring4                 (36 channels)
+      "fcp*"       — ring2+ring3+ring4p                (30 channels)
+      "fssp"       — ring2+ring3+ring4p                (30 channels)
+      "r*"         — reflector, no fuel compacts
 
-    filtered = []
-    n_rejected = 0
-    for i, (y, x) in enumerate(keep_pos):
-        if kept_vals[i] >= fuel_cutoff:
-            filtered.append((y, x))
+    For 1/6 geometry, only positions in the first sextant (0° ≤ θ ≤ 60°,
+    inclusive of both symmetry planes) are returned.  Assemblies that
+    straddle a symmetry plane contribute only the channels that fall
+    inside the wedge.
+
+    Returns
+    -------
+    channel_xy     : (N, 2) float — (x, y) of every fuel compact centroid
+    asm_centers    : (M, 2) float — (x, y) of every fuel assembly centre
+                     (only assemblies with ≥1 channel in the domain)
+    channel_asm_idx: (N,)   int  — maps each channel to its assembly index
+    asm_nchannels  : (M,)   int  — number of fuel channels per assembly
+    """
+    p_ch   = float(params["fuel_to_coolant_distance"])   # channel lattice pitch
+    bundle = 5.0 * p_ch * np.sqrt(3.0)                  # assembly c-t-c distance
+    core_rings = params["core_rings"]
+    is_16  = params.get("use_1/6_geometry", True)
+    n_rings = len(core_rings)
+
+    # ------------------------------------------------------------------
+    # Inner-assembly ring fuel masks (True = fuel compact)
+    # ring2 = ([f]+[c])*6       → even indices fuel, odd coolant
+    # ring3 = ([c]+[f,f])*6     → positions 1,2 in each triplet are fuel
+    # ring4 = ([f,f]+[c]+[f])*6 → i%4 ∈ {0,1,3} are fuel
+    # ring4p (poison variant)   → i%4==0 replaced by poison (not fuel)
+    # ------------------------------------------------------------------
+    ring1_mask  = [True]  * 6
+    ring2_mask  = [True,  False] * 6
+    ring3_mask  = [False, True, True] * 6
+    ring4_mask  = [True,  True,  False, True] * 6   # standard
+    ring4p_mask = [False, True,  False, True] * 6   # outer-poison variant
+
+    def _assembly_rings(asm_type):
+        """
+        Return list of (inner_ring_r, fuel_mask) for a given assembly type.
+        Empty list for non-fuel (reflector) assemblies.
+        """
+        t = asm_type.lower()
+        if t.startswith('r'):
+            return []     # rr, r1-r3, ra*, rss, rssa — no fuel
+
+        uses_poison_r4 = t.startswith('fp') or t.startswith('fcp') or t.startswith('fssp')
+        has_ring1      = t in ('f', 'fp', 'fpa')   # ring1 intact (no central rod)
+
+        r4 = ring4p_mask if uses_poison_r4 else ring4_mask
+        masks = [(4, r4), (3, ring3_mask), (2, ring2_mask)]
+        if has_ring1:
+            masks.append((1, ring1_mask))
+        # ring0 centre is always graphite or poison — never a fuel compact
+        return masks
+
+    # ------------------------------------------------------------------
+    # Iterate every assembly slot in the core
+    # ------------------------------------------------------------------
+    all_channel_xy  = []
+    all_asm_centers = []   # centres of fuel-type assemblies (global, pre-filter)
+    raw_asm_idx     = []   # global asm index for each channel
+
+    global_asm = 0
+
+    for core_ring_idx, ring_types in enumerate(core_rings):
+        # core_rings[0] = outermost ring → hex lattice ring (n_rings-1)
+        lat_ring      = n_rings - 1 - core_ring_idx
+        asm_pos_raw   = _hex_ring_positions(lat_ring, bundle)
+
+        # OpenMC's core HexLattice (default orientation='y', pointy-top) places
+        # ring-r element 0 at 30° from east (+x), i.e. the upper-right vertex.
+        # _hex_ring_positions starts at 0° (east), so rotate +30° to match.
+        if lat_ring > 0:
+            _th = np.radians(30.0)
+            _c, _s = np.cos(_th), np.sin(_th)
+            asm_positions = np.column_stack([
+                asm_pos_raw[:, 0] * _c - asm_pos_raw[:, 1] * _s,
+                asm_pos_raw[:, 0] * _s + asm_pos_raw[:, 1] * _c,
+            ])
         else:
-            n_rejected += 1
-    if n_rejected > 0:
-        print(f"  Peak filter: kept {len(filtered)}, "
-              f"rejected {n_rejected} sub-threshold peaks "
-              f"(cutoff = 30% of median = {fuel_cutoff:.2e})")
+            asm_positions = asm_pos_raw  # ring 0 is just [(0, 0)]
 
-    return np.array(filtered, dtype=int) if filtered else np.empty((0, 2), dtype=int)
+        if len(ring_types) != len(asm_positions):
+            raise ValueError(
+                f"core_rings[{core_ring_idx}] has {len(ring_types)} entries "
+                f"but hex lattice ring {lat_ring} has {len(asm_positions)} positions"
+            )
 
+        for asm_pos, asm_type in zip(asm_positions, ring_types):
+            rings = _assembly_rings(asm_type)
+            if not rings:
+                continue     # reflector — skip
 
-def _cluster_into_assemblies(peak_coords, bundle_pitch):
-    """
-    Cluster fuel channel peaks into assemblies using spatial proximity.
+            ax, ay = asm_pos
+            all_asm_centers.append([ax, ay])
 
-    Two channels belong to the same assembly if they are within
-    bundle_pitch * 0.55 of each other (transitive closure).
-    Returns list of arrays, each containing indices of channels in
-    that assembly.
-    """
-    n = len(peak_coords)
-    link_dist = bundle_pitch * 0.55  # well above max intra-assembly (~10 cm)
+            for inner_r, mask in rings:
+                for pos, is_fuel in zip(_hex_ring_positions(inner_r, p_ch), mask):
+                    if is_fuel:
+                        all_channel_xy.append([ax + pos[0], ay + pos[1]])
+                        raw_asm_idx.append(global_asm)
 
-    # Union-find
-    parent = list(range(n))
+            global_asm += 1
 
-    def find(i):
-        while parent[i] != i:
-            parent[i] = parent[parent[i]]
-            i = parent[i]
-        return i
+    channel_xy  = np.array(all_channel_xy,  dtype=float)
+    asm_centers = np.array(all_asm_centers, dtype=float)
+    raw_asm_idx = np.array(raw_asm_idx,     dtype=int)
 
-    def union(i, j):
-        ri, rj = find(i), find(j)
-        if ri != rj:
-            parent[ri] = rj
+    if is_16:
+        # Keep only channels inside the first sextant (0° ≤ θ ≤ 60°).
+        # eps ensures positions exactly on the symmetry planes are included.
+        eps = 1e-6
+        in_wedge = (
+            (channel_xy[:, 0] >= -eps) &
+            (channel_xy[:, 1] >= -eps) &
+            (channel_xy[:, 1] <= channel_xy[:, 0] * np.sqrt(3.0) + eps)
+        )
+        channel_xy  = channel_xy[in_wedge]
+        raw_asm_idx = raw_asm_idx[in_wedge]
 
-    for i in range(n):
-        for j in range(i + 1, n):
-            dist = np.sqrt((peak_coords[i, 0] - peak_coords[j, 0])**2 +
-                           (peak_coords[i, 1] - peak_coords[j, 1])**2)
-            if dist < link_dist:
-                union(i, j)
+        # Retain only assemblies that still have ≥1 channel in the wedge
+        unique_global = np.unique(raw_asm_idx)
+        global_to_local = {g: l for l, g in enumerate(unique_global)}
+        asm_centers = asm_centers[unique_global]
+        channel_asm_idx = np.array([global_to_local[i] for i in raw_asm_idx],
+                                   dtype=int)
+    else:
+        channel_asm_idx = raw_asm_idx
 
-    # Group by root
-    groups = {}
-    for i in range(n):
-        r = find(i)
-        groups.setdefault(r, []).append(i)
+    n_asm = len(asm_centers)
+    asm_nchannels = np.bincount(channel_asm_idx, minlength=n_asm).astype(int)
 
-    return list(groups.values())
+    return channel_xy, asm_centers, channel_asm_idx, asm_nchannels
 
 
 def _point_in_hex(px, py, cx, cy, apothem):
@@ -195,24 +262,21 @@ def _point_in_hex(px, py, cx, cy, apothem):
     return apothem * 2 / np.sqrt(3) - dy >= dx / np.sqrt(3)
 
 
-def extract_assembly_heating(heating_3d, mesh_ll, mesh_ur, peak_coords,
-                             assembly_groups, bundle_pitch):
+def extract_assembly_heating(heating_3d, mesh_ll, mesh_ur, asm_centers, bundle_pitch):
     """
     Compute q(z) for each assembly by summing all mesh voxels within
     its hex footprint at each axial level.
 
     Parameters
     ----------
-    heating_3d : (nx, ny, nz) array in watts per voxel
+    heating_3d   : (nx, ny, nz) array in watts per voxel
     mesh_ll, mesh_ur : mesh bounding box
-    peak_coords : (n_channels, 2) fuel channel positions
-    assembly_groups : list of index-lists from clustering
-    bundle_pitch : assembly flat-to-flat distance
+    asm_centers  : (n_assemblies, 2) array — analytically computed (x, y)
+    bundle_pitch : assembly centre-to-centre distance (hex inradius = bundle_pitch/2)
 
     Returns
     -------
     asm_q : (n_assemblies, nz) array — total heating [W] per axial level
-    asm_centers : (n_assemblies, 2) array — (x, y) of assembly centres
     """
     nx, ny, nz = heating_3d.shape
     dx = (mesh_ur[0] - mesh_ll[0]) / nx
@@ -221,20 +285,12 @@ def extract_assembly_heating(heating_3d, mesh_ll, mesh_ur, peak_coords,
     x_centers = np.linspace(mesh_ll[0] + dx/2, mesh_ur[0] - dx/2, nx)
     y_centers = np.linspace(mesh_ll[1] + dy/2, mesh_ur[1] - dy/2, ny)
 
-    n_asm = len(assembly_groups)
-    apothem = bundle_pitch / 2.0  # hex inradius
+    n_asm   = len(asm_centers)
+    apothem = bundle_pitch / 2.0   # hex inradius (half flat-to-flat)
 
-    # Compute assembly centres as centroid of their fuel channels
-    asm_centers = np.zeros((n_asm, 2))
-    for a, group in enumerate(assembly_groups):
-        asm_centers[a, 0] = np.mean(peak_coords[group, 0])
-        asm_centers[a, 1] = np.mean(peak_coords[group, 1])
-
-    # For each assembly, build a mask of (ix, iy) voxels inside its hex
     asm_q = np.zeros((n_asm, nz))
     for a in range(n_asm):
         cx, cy = asm_centers[a]
-        # Bounding box in pixel coords to limit search
         ix_lo = max(0, int((cx - apothem - mesh_ll[0]) / dx) - 1)
         ix_hi = min(nx, int((cx + apothem - mesh_ll[0]) / dx) + 2)
         iy_lo = max(0, int((cy - apothem - mesh_ll[1]) / dy) - 1)
@@ -245,20 +301,29 @@ def extract_assembly_heating(heating_3d, mesh_ll, mesh_ur, peak_coords,
                 if _point_in_hex(x_centers[ix], y_centers[iy], cx, cy, apothem):
                     asm_q[a, :] += heating_3d[ix, iy, :]
 
-    return asm_q, asm_centers
+    return asm_q
 
 
-def extract_mesh_heating(sp_path, source_per_sec, params, symmetry_factor):
+def extract_mesh_heating(sp_path, source_per_sec, params, symmetry_factor,
+                         tally_name='mesh_heating_full'):
     """
-    Extract per-fuel-channel axial heating profiles from the mesh_heating
-    tally using openmc.StatePoint.
+    Extract per-fuel-channel axial heating profiles from a mesh heating tally.
+
+    tally_name controls which tally is read:
+      'mesh_heating_full' (default) — full-core mesh including reflector bins.
+          The active-core z-slice is extracted using n_ax_zones from params.
+          Used by post-processing scripts.
+      'mesh_heating' — active-core-only mesh (reactor_bottom → reactor_top).
+          No slicing needed; used by the TH coupler during iteration runs
+          where only the active-core tally is written to save overhead.
 
     Steps:
-      1. Read mesh_heating tally and mesh geometry
-      2. Reshape to 3-D (nx, ny, nz)
-      3. Sum over z -> 2-D integrated heating map
-      4. Find local maxima -> fuel channel centres
-      5. Extract z-profile at each peak -> per-channel profiles
+      1. Read the named tally and mesh geometry
+      2. Reshape to 3-D (nx, ny, nz_raw)
+      3. If full-core tally: slice to active-core z-bins
+      4. Sum over z -> 2-D integrated heating map
+      5. Analytically compute fuel compact centroids
+      6. Sum voxels within compact_radius of each centroid -> per-channel profiles
 
     Returns
     -------
@@ -269,46 +334,70 @@ def extract_mesh_heating(sp_path, source_per_sec, params, symmetry_factor):
     joule_per_ev = 1.60218e-19
 
     # ------------------------------------------------------------------
-    # Read mesh_heating tally via StatePoint
+    # Read the requested tally via StatePoint
     # ------------------------------------------------------------------
     sp = openmc.StatePoint(sp_path)
-    tally = sp.get_tally(name='mesh_heating')
+    tally = sp.get_tally(name=tally_name)
     mesh = tally.find_filter(openmc.MeshFilter).mesh
 
-    nx, ny, nz = mesh.dimension
-    ll = mesh.lower_left.copy()
-    ur = mesh.upper_right.copy()
+    nx, ny, nz_raw = mesh.dimension
+    ll_raw = mesh.lower_left.copy()
+    ur_raw = mesh.upper_right.copy()
 
-    # tally.mean has shape (nx*ny*nz, 1, 1) for single score/nuclide
+    # tally.mean has shape (nx*ny*nz_raw, 1, 1) for single score/nuclide
     mean_flat = tally.mean[:, 0, 0].copy()
 
     sp.close()
     del sp, tally, mesh
     gc.collect()
 
-    print(f"  Mesh dimensions: {nx} x {ny} x {nz}")
-    print(f"  Mesh bounds: ({ll[0]:.1f},{ll[1]:.1f},{ll[2]:.1f}) -> "
-          f"({ur[0]:.1f},{ur[1]:.1f},{ur[2]:.1f}) cm")
-
-    # Axial coordinates from mesh bounds
-    z_edges = np.linspace(ll[2], ur[2], nz + 1)
-    z_centers = (z_edges[:-1] + z_edges[1:]) / 2.0
-
     # ------------------------------------------------------------------
     # Reshape and convert to physical heating (watts per voxel)
     # ------------------------------------------------------------------
     # OpenMC stores mesh tally in column-major order: x varies fastest
-    # Reshape to (nz, ny, nx) then transpose to (nx, ny, nz)
-    heating_3d = mean_flat.reshape((nz, ny, nx)).transpose((2, 1, 0))
+    # Reshape to (nz_raw, ny, nx) then transpose to (nx, ny, nz_raw)
+    heating_3d_raw = mean_flat.reshape((nz_raw, ny, nx)).transpose((2, 1, 0))
 
     conv = source_per_sec * joule_per_ev / symmetry_factor
-    heating_3d *= conv  # now in watts per voxel
-
-    print(f"  Total mesh heating: {heating_3d.sum():.3e} W")
-    print(f"  Peak voxel heating: {heating_3d.max():.3e} W")
+    heating_3d_raw *= conv  # now in watts per voxel
 
     del mean_flat
     gc.collect()
+
+    # ------------------------------------------------------------------
+    # Slice to active-core z-bins (only needed for full-core tally)
+    # ------------------------------------------------------------------
+    n_ax_zones = int(params.get("n_ax_zones", nz_raw))
+
+    if tally_name == 'mesh_heating_full':
+        # Full-core mesh has reflector bins above and below the active core.
+        n_refl = (nz_raw - n_ax_zones) // 2
+        z0, z1 = n_refl, n_refl + n_ax_zones
+
+        heating_3d = heating_3d_raw[:, :, z0:z1]
+        del heating_3d_raw
+        gc.collect()
+
+        dz = (ur_raw[2] - ll_raw[2]) / nz_raw
+        ll = ll_raw.copy(); ll[2] = ll_raw[2] + n_refl * dz
+        ur = ur_raw.copy(); ur[2] = ll[2] + n_ax_zones * dz
+        nz = n_ax_zones
+    else:
+        # Active-core tally — bounds already cover only the active region.
+        heating_3d = heating_3d_raw
+        ll = ll_raw
+        ur = ur_raw
+        nz = nz_raw
+
+    print(f"  Mesh dimensions (active core): {nx} x {ny} x {nz}")
+    print(f"  Mesh bounds: ({ll[0]:.1f},{ll[1]:.1f},{ll[2]:.1f}) -> "
+          f"({ur[0]:.1f},{ur[1]:.1f},{ur[2]:.1f}) cm")
+    print(f"  Total mesh heating: {heating_3d.sum():.3e} W")
+    print(f"  Peak voxel heating: {heating_3d.max():.3e} W")
+
+    # Axial coordinates from sliced bounds
+    z_edges = np.linspace(ll[2], ur[2], nz + 1)
+    z_centers = (z_edges[:-1] + z_edges[1:]) / 2.0
 
     # ------------------------------------------------------------------
     # 2-D integrated heating map  (sum over z)
@@ -316,50 +405,41 @@ def extract_mesh_heating(sp_path, source_per_sec, params, symmetry_factor):
     integrated_2d = heating_3d.sum(axis=2)  # shape (nx, ny)
 
     # ------------------------------------------------------------------
-    # Detect fuel channel centres as local maxima
+    # Analytically compute fuel compact centroids from geometry
     # ------------------------------------------------------------------
-    map_yx = integrated_2d.T  # shape (ny, nx) for image-like indexing
+    channel_centroids, asm_centers, channel_asm_idx, asm_nchannels = \
+        compute_fuel_compact_centroids(params)
 
+    n_channels = len(channel_centroids)
+    n_asm      = len(asm_centers)
+    bundle_pitch = 5.0 * float(params.get("fuel_to_coolant_distance", 2.5)) * np.sqrt(3.0)
+
+    print(f"  Fuel compact centroids (analytical): {n_channels}")
+    print(f"  Fuel assemblies:                     {n_asm}")
+
+    # ------------------------------------------------------------------
+    # Sum voxels within compact_radius of each analytical centroid
+    # ------------------------------------------------------------------
     dx = (ur[0] - ll[0]) / nx
     dy = (ur[1] - ll[1]) / ny
-    channel_pitch = params.get("fuel_to_coolant_distance", 2.5)
-    min_sep = max(2, int(channel_pitch / max(dx, dy) * 0.6))
+    x_vox = np.linspace(ll[0] + dx / 2, ur[0] - dx / 2, nx)
+    y_vox = np.linspace(ll[1] + dy / 2, ur[1] - dy / 2, ny)
 
-    peaks = _find_local_maxima_2d(map_yx, threshold_frac=0.05, min_separation=min_sep)
+    compact_r  = float(params.get("compact_radius", 0.635))
+    compact_r2 = compact_r ** 2
+    search_px  = int(np.ceil(compact_r / dx)) + 1
+    search_py  = int(np.ceil(compact_r / dy)) + 1
 
-    if len(peaks) == 0:
-        raise RuntimeError("No fuel channel peaks found in mesh heating map. "
-                           "Check that mesh_heating tally is correctly configured.")
+    print(f"  Fuel compact radius: {compact_r:.3f} cm  "
+          f"(search window ±{search_px}×{search_py} voxels)")
 
-    n_channels = len(peaks)
-    print(f"  Detected {n_channels} fuel channel centres (local maxima)")
-
-    # ------------------------------------------------------------------
-    # Extract z-profile at each peak by summing voxels within fuel
-    # channel radius (× 2 to capture all intersecting voxels)
-    # ------------------------------------------------------------------
-    # peaks[:, 0] = iy, peaks[:, 1] = ix  (image convention)
-    x_centers = np.linspace(ll[0] + dx/2, ur[0] - dx/2, nx)
-    y_centers = np.linspace(ll[1] + dy/2, ur[1] - dy/2, ny)
-    peak_coords = np.array([(x_centers[peaks[k, 1]], y_centers[peaks[k, 0]])
-                            for k in range(n_channels)])
-
-    compact_r = params.get("compact_radius", 0.635)
-    capture_r = compact_r * 2
-    # Max pixel offset to search (bounding box)
-    search_px = int(np.ceil(capture_r / dx)) + 1
-    search_py = int(np.ceil(capture_r / dy)) + 1
-    capture_r2 = capture_r ** 2
-
-    print(f"  Fuel compact radius: {compact_r:.3f} cm, "
-          f"capture radius (×2): {capture_r:.3f} cm")
-
-    heating_profiles = np.zeros((n_channels, nz))
+    heating_profiles  = np.zeros((n_channels, nz))
     voxels_per_channel = []
-    for k in range(n_channels):
-        iy0, ix0 = peaks[k]
-        cx = x_centers[ix0]
-        cy = y_centers[iy0]
+
+    for k, (cx, cy) in enumerate(channel_centroids):
+        # Nearest voxel index as starting point
+        ix0 = int((cx - ll[0]) / dx)
+        iy0 = int((cy - ll[1]) / dy)
         n_vox = 0
         for dix in range(-search_px, search_px + 1):
             ix = ix0 + dix
@@ -369,48 +449,97 @@ def extract_mesh_heating(sp_path, source_per_sec, params, symmetry_factor):
                 iy = iy0 + diy
                 if iy < 0 or iy >= ny:
                     continue
-                dist2 = (x_centers[ix] - cx)**2 + (y_centers[iy] - cy)**2
-                if dist2 <= capture_r2:
+                # Circle-vs-AABB: closest point on voxel cell to centroid
+                near_x = max(x_vox[ix] - dx / 2, min(cx, x_vox[ix] + dx / 2))
+                near_y = max(y_vox[iy] - dy / 2, min(cy, y_vox[iy] + dy / 2))
+                dist2 = (near_x - cx) ** 2 + (near_y - cy) ** 2
+                if dist2 <= compact_r2:
                     heating_profiles[k, :] += heating_3d[ix, iy, :]
                     n_vox += 1
         voxels_per_channel.append(n_vox)
 
-    avg_vox = np.mean(voxels_per_channel)
+    avg_vox = np.mean(voxels_per_channel) if voxels_per_channel else 0
     print(f"  Voxels summed per channel: avg {avg_vox:.1f}, "
           f"range [{min(voxels_per_channel)}, {max(voxels_per_channel)}]")
 
     # ------------------------------------------------------------------
-    # Cluster fuel channels into assemblies and extract assembly q(z)
+    # Assembly-level q(z) from hex footprint summation
     # ------------------------------------------------------------------
-    bundle_pitch = 5 * channel_pitch * np.sqrt(3.0)
-    assembly_groups = _cluster_into_assemblies(peak_coords, bundle_pitch)
-    n_asm = len(assembly_groups)
-    print(f"  Clustered into {n_asm} fuel assemblies")
+    asm_q = extract_assembly_heating(heating_3d, ll, ur, asm_centers, bundle_pitch)
 
-    asm_q, asm_centers = extract_assembly_heating(
-        heating_3d, ll, ur, peak_coords, assembly_groups, bundle_pitch)
-
-    # Assembly channel counts for diagnostics
-    asm_ch_counts = [len(g) for g in assembly_groups]
     for a in range(n_asm):
         cx, cy = asm_centers[a]
         print(f"    Asm {a}: ({cx:6.1f}, {cy:6.1f}) cm — "
-              f"{asm_ch_counts[a]} fuel channels")
+              f"{asm_nchannels[a]} fuel channels")
 
     return {
         'z_centers':        z_centers,
-        'heating_2d':       heating_profiles,   # (n_channels, nz) per-channel
+        'heating_2d':       heating_profiles,    # (n_channels, nz) per-channel [W]
         'n_channels':       n_channels,
-        'peak_coords':      peak_coords,        # (n_channels, 2) as (x, y)
+        'peak_coords':      channel_centroids,   # (n_channels, 2) analytical (x, y)
         'mesh_lower_left':  ll,
         'mesh_upper_right': ur,
-        'heating_3d':       heating_3d,         # (nx, ny, nz)
-        'integrated_2d':    integrated_2d,      # (nx, ny)
-        'asm_q':            asm_q,              # (n_asm, nz) watts per axial level
-        'asm_centers':      asm_centers,        # (n_asm, 2) assembly positions
-        'asm_groups':       assembly_groups,    # list of channel-index lists
+        'heating_3d':       heating_3d,          # (nx, ny, nz) [W/voxel]
+        'integrated_2d':    integrated_2d,       # (nx, ny)
+        'asm_q':            asm_q,               # (n_asm, nz) [W per axial level]
+        'asm_centers':      asm_centers,         # (n_asm, 2) analytical positions
+        'asm_nchannels':    asm_nchannels,       # (n_asm,) channels per assembly
+        'channel_asm_idx':  channel_asm_idx,     # (n_channels,) assembly membership
         'bundle_pitch':     bundle_pitch,
     }
+
+
+# ====================================================================================================
+# WEDGE POLYGON CLIPPING
+# ====================================================================================================
+
+def _clip_polygon_to_wedge(poly):
+    """
+    Clip a convex polygon (list of (x, y) tuples) to the 1/6-geometry wedge:
+      y >= 0   AND   y <= x * sqrt(3)
+    Uses the Sutherland-Hodgman algorithm.
+    Returns a list of (x, y) tuples (empty if fully clipped away).
+    """
+    sqrt3 = np.sqrt(3.0)
+
+    def _sh_clip(points, inside_fn, intersect_fn):
+        if not points:
+            return []
+        out = []
+        n = len(points)
+        for i in range(n):
+            cur = points[i]
+            prv = points[i - 1]
+            if inside_fn(cur):
+                if not inside_fn(prv):
+                    out.append(intersect_fn(prv, cur))
+                out.append(cur)
+            elif inside_fn(prv):
+                out.append(intersect_fn(prv, cur))
+        return out
+
+    # Half-plane 1: y >= 0
+    def inside_y0(p):
+        return p[1] >= 0.0
+
+    def isect_y0(a, b):
+        t = a[1] / (a[1] - b[1])
+        return (a[0] + t * (b[0] - a[0]), 0.0)
+
+    # Half-plane 2: y <= x * sqrt3
+    def inside_60(p):
+        return p[1] <= p[0] * sqrt3
+
+    def isect_60(a, b):
+        fa = a[0] * sqrt3 - a[1]
+        fb = b[0] * sqrt3 - b[1]
+        t  = fa / (fa - fb)
+        return (a[0] + t * (b[0] - a[0]),
+                a[1] + t * (b[1] - a[1]))
+
+    poly = _sh_clip(list(poly), inside_y0, isect_y0)
+    poly = _sh_clip(poly,       inside_60, isect_60)
+    return poly
 
 
 # ====================================================================================================
@@ -422,6 +551,7 @@ def analyze_and_plot(data, out_dir, batch, params, target_power_MW):
     Analyze per-channel heating profiles and generate plots.
     """
     show_titles = params.get("show_titles", True)
+    is_wedge    = params.get("use_1/6_geometry", False)
     run_dir = out_dir   # output directory alias used throughout function
     z_centers      = data['z_centers']
     heating_2d     = data['heating_2d']       # (n_channels, nz)
@@ -432,15 +562,15 @@ def analyze_and_plot(data, out_dir, batch, params, target_power_MW):
     ur             = data['mesh_upper_right']
     asm_q          = data['asm_q']            # (n_asm, nz) assembly q(z)
     asm_centers    = data['asm_centers']
-    asm_groups     = data['asm_groups']
+    asm_nchannels  = data['asm_nchannels']
     n_ax           = len(z_centers)
 
     if n_channels == 0:
         print("  ERROR: No fuel channels found.")
         return
 
-    print(f"\n  Fuel channels detected: {n_channels}")
-    print(f"  Axial zones:           {n_ax}")
+    print(f"\n  Fuel channels (analytical): {n_channels}")
+    print(f"  Axial zones:               {n_ax}")
 
     # ==================================================================
     # METRICS
@@ -581,14 +711,14 @@ def analyze_and_plot(data, out_dir, batch, params, target_power_MW):
     im = ax.imshow(integrated_map.T, origin='lower', extent=extent,
                    cmap='hot', aspect='equal')
     ax.scatter(peak_coords[:, 0], peak_coords[:, 1],
-               c='cyan', s=8, alpha=0.6, linewidths=0, label='Detected channels')
+               c='cyan', s=8, alpha=0.6, linewidths=0, label='Fuel compact centroids')
     ax.scatter([hot_x], [hot_y], c='lime', s=50, marker='*',
                edgecolors='black', linewidths=0.5, zorder=5,
                label='Hottest channel')
     ax.set_xlabel('x [cm]'); ax.set_ylabel('y [cm]')
     if show_titles:
         ax.set_title(f'Integrated Heating Map \u2014 {target_power_MW} MW\n'
-                     f'{n_channels} channels detected')
+                     f'{n_channels} fuel compact centroids (analytical)')
     ax.legend(fontsize=9, loc='upper left')
     plt.colorbar(im, ax=ax, label='Integrated Heating [W]', shrink=0.8)
     p = os.path.join(run_dir, f'batch{batch}_radial_heating_map_channels.png')
@@ -604,20 +734,49 @@ def analyze_and_plot(data, out_dir, batch, params, target_power_MW):
     n_asm_active = int(np.sum(asm_nonzero))
 
     if n_asm_active > 0:
-        hot_asm_idx = int(np.argmax(asm_integrated))
+        # ------------------------------------------------------------------
+        # Symmetry multipliers — for 1/6 geometry, assemblies that sit on a
+        # reflection plane are only partially inside the simulated wedge:
+        #   center (0,0)       → ×6  (shared by all 6 sectors)
+        #   on y = 0 boundary  → ×2  (half outside wedge below x-axis)
+        #   on y = x√3 boundary→ ×2  (half outside wedge above 60° line)
+        #   interior           → ×1
+        # ------------------------------------------------------------------
+        bundle_pitch = data['bundle_pitch']
+        asm_sym_mult = np.ones(n_asm)
+        if is_wedge:
+            eps_sym = bundle_pitch * 0.05
+            sqrt3   = np.sqrt(3.0)
+            for a, (ax_c, ay_c) in enumerate(asm_centers):
+                if abs(ax_c) < eps_sym and abs(ay_c) < eps_sym:
+                    asm_sym_mult[a] = 6.0
+                elif abs(ay_c) < eps_sym:
+                    asm_sym_mult[a] = 2.0
+                elif abs(ay_c - ax_c * sqrt3) < eps_sym:
+                    asm_sym_mult[a] = 2.0
+
+        asm_integrated_corrected = asm_integrated * asm_sym_mult
+
+        hot_asm_idx = int(np.argmax(asm_integrated_corrected))
         hot_asm_q   = asm_q[hot_asm_idx, :]
         avg_asm_q   = asm_q[asm_nonzero, :].mean(axis=0)
 
         hot_asm_x, hot_asm_y = asm_centers[hot_asm_idx]
-        hot_asm_nch = len(asm_groups[hot_asm_idx])
+        hot_asm_nch = int(asm_nchannels[hot_asm_idx])
+        avg_asm_total_corrected = np.mean(asm_integrated_corrected[asm_nonzero])
+        asm_radial_pf = (asm_integrated_corrected[hot_asm_idx] / avg_asm_total_corrected
+                         if avg_asm_total_corrected > 0 else 0.0)
 
         print(f"\n  --- Assembly-level results ---")
         print(f"  Active assemblies:    {n_asm_active}")
         print(f"  Hottest assembly:     {hot_asm_idx} at "
               f"({hot_asm_x:.1f}, {hot_asm_y:.1f}) cm, "
-              f"{hot_asm_nch} fuel channels")
-        print(f"  Hottest asm total q:  {asm_integrated[hot_asm_idx]:.4e} W")
-        print(f"  Average asm total q:  {np.mean(asm_integrated[asm_nonzero]):.4e} W")
+              f"{hot_asm_nch} fuel channels, sym×{asm_sym_mult[hot_asm_idx]:.0f}")
+        print(f"  Hottest asm total q:  {asm_integrated[hot_asm_idx]:.4e} W (raw) "
+              f"→ {asm_integrated_corrected[hot_asm_idx]:.4e} W (×sym)")
+        print(f"  Average asm total q:  {np.mean(asm_integrated[asm_nonzero]):.4e} W (raw) "
+              f"→ {avg_asm_total_corrected:.4e} W (×sym)")
+        print(f"  Assembly radial PF:   {asm_radial_pf:.4f}")
 
         # ==============================================================
         # PLOT 6 — Assembly q(z) profiles
@@ -667,15 +826,76 @@ def analyze_and_plot(data, out_dir, batch, params, target_power_MW):
                     row.append(f'{asm_q[a, iz]:.6e}')
                 fout.write(','.join(row) + '\n')
         print(f"  Saved: {all_asm_csv}")
+
+        # ==============================================================
+        # PLOT 7 — Assembly radial heating map with hex bounding boxes
+        # ==============================================================
+        fig, ax = plt.subplots(figsize=(8, 8), dpi=150)
+        extent = [ll[0], ur[0], ll[1], ur[1]]
+        im = ax.imshow(integrated_map.T, origin='lower', extent=extent,
+                       cmap='hot', aspect='equal')
+        plt.colorbar(im, ax=ax, label='Integrated Heating [W]', shrink=0.8)
+
+        # Flat-top hex: vertices at 0°+k*60° (first vertex due east)
+        R_hex = bundle_pitch / np.sqrt(3.0)
+        hex_angles = np.radians([k * 60 for k in range(6)])
+
+        from matplotlib.patches import Polygon as MplPolygon
+        from matplotlib.collections import PatchCollection
+
+        patches = []
+        for a, (cx, cy) in enumerate(asm_centers):
+            verts_full = [(cx + R_hex * np.cos(ang),
+                           cy + R_hex * np.sin(ang)) for ang in hex_angles[:6]]
+            if is_wedge:
+                verts = _clip_polygon_to_wedge(verts_full)
+            else:
+                verts = verts_full
+            if len(verts) >= 3:
+                patches.append(MplPolygon(verts, closed=True))
+
+        col = PatchCollection(patches, facecolor='none', edgecolor='white',
+                              linewidth=0.8, alpha=0.8)
+        ax.add_collection(col)
+
+        # Mark all assembly centroids
+        asm_arr = np.array(asm_centers)
+        ax.scatter(asm_arr[:, 0], asm_arr[:, 1],
+                   c='deepskyblue', s=12, alpha=0.7, linewidths=0,
+                   zorder=3, label='Assembly centroids')
+
+        # Highlight hottest assembly
+        ax.scatter([hot_asm_x], [hot_asm_y], c='lime', s=80, marker='*',
+                   edgecolors='black', linewidths=0.5, zorder=5,
+                   label=f'Hottest asm ({hot_asm_x:.0f},{hot_asm_y:.0f}) cm')
+
+        ax.set_xlabel('x [cm]'); ax.set_ylabel('y [cm]')
+        if show_titles:
+            ax.set_title(f'Assembly Heating Map \u2014 {target_power_MW} MW\n'
+                         f'Asm radial PF = {asm_radial_pf:.3f} '
+                         f'(sym-corrected, {n_asm_active} assemblies)')
+        ax.legend(fontsize=9, loc='upper left')
+
+        # For 1/6 geometry clip axes to wedge extent
+        if is_wedge:
+            ax.set_xlim(left=0)
+            ax.set_ylim(bottom=0)
+
+        p = os.path.join(run_dir, f'batch{batch}_radial_heating_map_assemblies.png')
+        plt.savefig(p, bbox_inches='tight'); plt.close(fig); del fig
+        print(f"  Saved: {p}"); gc.collect()
+
     else:
         hot_asm_q = None
         avg_asm_q = None
         hot_asm_idx = -1
+        asm_integrated_corrected = None
+        asm_sym_mult = None
+        asm_radial_pf = 0.0
 
     # ==================================================================
     # POWER BALANCE — sum all fuel channels at each axial level
     # ==================================================================
-    is_wedge       = params.get("use_1/6_geometry", False)
     sym            = 6 if is_wedge else 1
     total_qz       = heating_2d.sum(axis=0)          # (nz,) W per axial level
     total_ch_power = total_qz.sum()                  # W, channel voxels in sim domain
@@ -732,8 +952,8 @@ def analyze_and_plot(data, out_dir, batch, params, target_power_MW):
         f.write(f'HEATING PROFILE ANALYSIS SUMMARY (Batch {batch})\n')
         f.write('=' * 80 + '\n\n')
         f.write(f'Target Power:                    {target_power_MW} MW\n')
-        f.write(f'Extraction method:               Mesh tally + peak detection\n')
-        f.write(f'Number of fuel channels detected: {n_fuel}\n')
+        f.write(f'Extraction method:               Mesh tally + analytical centroids\n')
+        f.write(f'Number of fuel channels:         {n_fuel}\n')
         f.write(f'Number of axial zones:           {n_ax}\n\n')
 
         f.write('-' * 60 + '\n')
@@ -794,12 +1014,13 @@ def analyze_and_plot(data, out_dir, batch, params, target_power_MW):
             f.write(f'  Active assemblies:     {n_asm_active}\n')
             f.write(f'  Hottest assembly:      {hot_asm_idx} at '
                     f'({asm_centers[hot_asm_idx,0]:.1f}, '
-                    f'{asm_centers[hot_asm_idx,1]:.1f}) cm\n')
-            f.write(f'  Hottest asm total q:   {asm_integrated[hot_asm_idx]:.4e} W\n')
-            avg_asm_total = np.mean(asm_integrated[asm_nonzero])
-            f.write(f'  Average asm total q:   {avg_asm_total:.4e} W\n')
-            f.write(f'  Assembly radial PF:    '
-                    f'{asm_integrated[hot_asm_idx]/avg_asm_total:.4f}\n\n')
+                    f'{asm_centers[hot_asm_idx,1]:.1f}) cm, '
+                    f'sym×{asm_sym_mult[hot_asm_idx]:.0f}\n')
+            f.write(f'  Hottest asm total q:   {asm_integrated[hot_asm_idx]:.4e} W (raw)\n')
+            f.write(f'  Hottest asm total q:   {asm_integrated_corrected[hot_asm_idx]:.4e} W (sym-corrected)\n')
+            f.write(f'  Average asm total q:   {np.mean(asm_integrated[asm_nonzero]):.4e} W (raw)\n')
+            f.write(f'  Average asm total q:   {avg_asm_total_corrected:.4e} W (sym-corrected)\n')
+            f.write(f'  Assembly radial PF:    {asm_radial_pf:.4f}  (sym-corrected)\n\n')
 
             f.write('  Hottest Assembly q(z) [W per axial level]:\n')
             for iz in range(n_ax):
@@ -831,7 +1052,7 @@ def analyze_and_plot(data, out_dir, batch, params, target_power_MW):
     print(f"\n  {'='*60}")
     print(f"  HEATING PROFILE RESULTS")
     print(f"  {'='*60}")
-    print(f"  Fuel channels analysed:       {n_fuel}")
+    print(f"  Fuel channels analysed:       {n_fuel} (of {n_channels} analytical)")
     print(f"  Hottest channel:              {hottest_idx} at ({hot_x:.1f}, {hot_y:.1f}) cm")
     print(f"  Radial peaking factor (Fxy):  {Fxy:.4f}")
     print(f"  Axial peaking factor  (Fz):   {Fz_hot:.4f}")
@@ -858,7 +1079,7 @@ def run_heating_profile_extraction(run_dir, params, batch=None):
     """Run the full heating profile extraction and analysis."""
 
     print(f"\n{'='*80}")
-    print("HEATING PROFILE EXTRACTION (Mesh Tally + Peak Detection)")
+    print("HEATING PROFILE EXTRACTION (Mesh Tally + Analytical Centroids)")
     print(f"{'='*80}")
     print(f"Run directory: {run_dir}")
 

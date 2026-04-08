@@ -1046,7 +1046,8 @@ def _extract_heating_csv_from_statepoint(run_dir, params):
         return None, None, None
 
     try:
-        data = extract_mesh_heating(sp_path, source_per_sec, params, symmetry_factor)
+        data = extract_mesh_heating(sp_path, source_per_sec, params, symmetry_factor,
+                                    tally_name='mesh_heating')
     except Exception as exc:
         print(f"  WARNING: mesh heating extraction failed: {exc}")
         return None, None, None
@@ -1233,6 +1234,7 @@ def th_coupler(
     q_tol        = float(params.get("th_coupler_q_tol_frac", 0.05))
     min_iter     = int(params.get("th_coupler_min_iter",      4))
     max_iter     = int(params.get("th_coupler_max_iter",      10))
+    ignore_keff  = bool(params.get("th_coupler_ignore_keff",  False))
     min_keff     = 1.0 - k_tol   # valid keff range: [1.0 - k_tol, 1.0 + k_tol]
     max_keff     = 1.0 + k_tol
     th_batches   = int(params.get("th_coupler_batches",       50))
@@ -1241,28 +1243,36 @@ def th_coupler(
 
     print(f"\n{'─' * 70}")
     print(f"  TH COUPLER  (mesh heating + nc_htgr single-channel)")
-    print(f"  k_tol={k_tol}  q_tol_frac={q_tol}  "
-          f"keff_valid=[{min_keff:.4f}, {max_keff:.4f}]  "
-          f"min_iter={min_iter}  max_iter={max_iter}")
+    if ignore_keff:
+        print(f"  k_tol={k_tol}  q_tol_frac={q_tol}  ignore_keff=True  "
+              f"min_iter={min_iter}  max_iter={max_iter}")
+        print(f"  NOTE: keff validity check disabled — converging on heating profile only")
+    else:
+        print(f"  k_tol={k_tol}  q_tol_frac={q_tol}  "
+              f"keff_valid=[{min_keff:.4f}, {max_keff:.4f}]  "
+              f"min_iter={min_iter}  max_iter={max_iter}")
     print(f"  Output: {output_dir}")
     print(f"{'─' * 70}")
 
     # Build base params for all iterations — absolute minimum tally set:
-    #   use_heating_tally      → single un-filtered heating-local tally (normalization)
-    #   use_mesh_heating_tally → active-core mesh heating-local tally (axial profile)
-    # All other tally groups (flux spectrum, global rates, mesh flux/fission,
-    # full-core mesh, leakage, BeO) are disabled to reduce statepoint I/O overhead.
+    #   use_heating_tally        → single un-filtered heating-local tally (normalization)
+    #   use_mesh_heating_tally   → active-core-only 'mesh_heating' tally (axial profile).
+    #                              Covers reactor_bottom→reactor_top only, so it is
+    #                              cheaper than the full-core version: fewer bins to
+    #                              score and a smaller statepoint per iteration.
+    # All other tally groups (flux/fission, full-core, leakage, BeO) are disabled.
     base_params = copy.deepcopy(params)
-    base_params["total_batches"]          = th_batches
-    base_params["inactive_batches"]       = th_inactive
-    base_params["particles"]              = th_particles
-    base_params["make_geometry_plots"]    = False
-    base_params["use_global_tallies"]     = False
-    base_params["use_heating_tally"]      = True   # heating-local (normalization)
-    base_params["use_mesh_tallies"]       = False
-    base_params["use_mesh_heating_tally"] = True   # mesh heating-local (axial profile)
-    base_params["use_BeO_tallies"]        = False
-    base_params["use_leakage_tallies"]    = False
+    base_params["total_batches"]             = th_batches
+    base_params["inactive_batches"]          = th_inactive
+    base_params["particles"]                 = th_particles
+    base_params["make_geometry_plots"]       = False
+    base_params["use_global_tallies"]        = False
+    base_params["use_heating_tally"]         = True   # normalization tally
+    base_params["use_mesh_tallies"]          = False
+    base_params["use_mesh_heating_tally"]    = True   # active-core mesh heating (axial profile)
+    base_params["use_mesh_heating_full_tally"] = False
+    base_params["use_BeO_tallies"]           = False
+    base_params["use_leakage_tallies"]       = False
 
     if bank_1 is not None:
         base_params["bank_1_insertion"] = bank_1
@@ -1370,14 +1380,22 @@ def th_coupler(
 
         conv_k     = (not np.isnan(delta_k)       and delta_k       < k_tol)
         conv_q     = (not np.isnan(q_change_frac) and q_change_frac < q_tol)
-        keff_valid = (min_keff <= k <= max_keff)
+        keff_valid = True if ignore_keff else (min_keff <= k <= max_keff)
 
-        print(f"         k_eff = {k:.5f} ± {k_std:.5f}   "
-              f"Δk = {delta_k:.5f}   Δq/q_max = "
-              f"{q_change_frac:.4f}   keff_valid={keff_valid}"
-              if not np.isnan(q_change_frac)
-              else f"         k_eff = {k:.5f} ± {k_std:.5f}   "
-                   f"Δk = {delta_k:.5f}   keff_valid={keff_valid}")
+        if ignore_keff:
+            print(f"         k_eff = {k:.5f} ± {k_std:.5f}   "
+                  f"Δk = {delta_k:.5f}   Δq/q_max = "
+                  f"{q_change_frac:.4f}   (keff check disabled)"
+                  if not np.isnan(q_change_frac)
+                  else f"         k_eff = {k:.5f} ± {k_std:.5f}   "
+                       f"Δk = {delta_k:.5f}   (keff check disabled)")
+        else:
+            print(f"         k_eff = {k:.5f} ± {k_std:.5f}   "
+                  f"Δk = {delta_k:.5f}   Δq/q_max = "
+                  f"{q_change_frac:.4f}   keff_valid={keff_valid}"
+                  if not np.isnan(q_change_frac)
+                  else f"         k_eff = {k:.5f} ± {k_std:.5f}   "
+                       f"Δk = {delta_k:.5f}   keff_valid={keff_valid}")
 
         _fmt = lambda v: round(v, 6) if not np.isnan(v) else "nan"
         csv_rows.append({
@@ -1410,17 +1428,22 @@ def th_coupler(
         past_min = (it >= min_iter)
 
         if past_min and conv_k and conv_q and keff_valid:
-            # Full convergence: Δk, Δq, and keff all within bounds.
+            # Full convergence: Δk, Δq, and keff all within bounds (or ignored).
             converged = True
-            print(f"\n  TH Coupler converged at iteration {it}  "
-                  f"(Δk={delta_k:.5f}, Δq/q_max={q_change_frac:.4f}, "
-                  f"keff={k:.5f} ∈ [{min_keff:.4f}, {max_keff:.4f}])")
+            if ignore_keff:
+                print(f"\n  TH Coupler converged at iteration {it}  "
+                      f"(Δk={delta_k:.5f}, Δq/q_max={q_change_frac:.4f}, keff check disabled)")
+            else:
+                print(f"\n  TH Coupler converged at iteration {it}  "
+                      f"(Δk={delta_k:.5f}, Δq/q_max={q_change_frac:.4f}, "
+                      f"keff={k:.5f} ∈ [{min_keff:.4f}, {max_keff:.4f}])")
             break
 
-        if past_min and conv_q and not keff_valid:
+        if not ignore_keff and past_min and conv_q and not keff_valid:
             # Early exit only when keff has been monotonically drifting (all
             # increasing or all decreasing) over the last 4 true iterations.
             # If keff is oscillating it may still self-correct — don't bail.
+            # Skipped entirely when ignore_keff=True.
             recent4 = keff_true_iters[-4:]
             if _is_monotonic(recent4):
                 print(f"\n  WARNING: TH Coupler early exit at iteration {it}: "
@@ -1463,6 +1486,7 @@ def th_coupler(
         "use_leakage_tallies",
         "use_heating_tally",
         "use_mesh_heating_tally",
+        "use_mesh_heating_full_tally",
         "total_batches",
         "inactive_batches",
         "particles",

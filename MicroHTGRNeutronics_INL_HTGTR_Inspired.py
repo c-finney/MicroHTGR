@@ -861,67 +861,76 @@ def build_model(params, run_dir):
         tallies += [heating_tally]
 
     # ----- Mesh Tallies -----
-    # use_mesh_tallies      : full set (flux+fission active, heating active,
-    #                         flux+fission full, heating full)
-    # use_mesh_heating_tally: only the active-core 'mesh_heating' tally (TH coupler)
+    # use_mesh_heating_tally    : active-core-only 'mesh_heating' tally.
+    #                             Used exclusively by the TH coupler during its
+    #                             short-lived eigenvalue iterations.  Covers only
+    #                             reactor_bottom → reactor_top (no reflector bins)
+    #                             so it is cheaper to score and store.
+    # use_mesh_tallies          : full-core 'mesh_rates_full' + 'mesh_heating_full'
+    #                             tallies for post-processing.
+    # use_mesh_heating_full_tally: only 'mesh_heating_full' without flux/fission.
+    #                              (currently unused — placeholder for future use)
+    #
+    # XY dimensions are shared across all mesh types.
 
-    if params["use_mesh_tallies"] or params.get("use_mesh_heating_tally", False):
+    _needs_xy = (
+        params.get("use_mesh_heating_tally", False)
+        or params["use_mesh_tallies"]
+        or params.get("use_mesh_heating_full_tally", False)
+    )
+
+    if _needs_xy:
         if params["use_1/6_geometry"]:
             mesh_x_min = 0.0
             mesh_x_max = params["core_radius"]
-            mesh_nx = 250
+            mesh_nx    = round(params["n_XY_mesh_zones_full_core"] / 2)
             mesh_y_min = 0.0
-            mesh_y_max = params["core_radius"] * sin60
-            mesh_ny = 217
+            mesh_y_max = params["core_radius"]
+            mesh_ny    = round(params["n_XY_mesh_zones_full_core"] * np.sin(np.radians(60)) / 2)
         else:
             mesh_x_min = -params["core_radius"]
-            mesh_x_max = params["core_radius"]
-            mesh_nx = params["n_XY_mesh_zones_full_core"]
+            mesh_x_max =  params["core_radius"]
+            mesh_nx    =  params["n_XY_mesh_zones_full_core"]
             mesh_y_min = -params["core_radius"]
-            mesh_y_max = params["core_radius"]
-            mesh_ny = params["n_XY_mesh_zones_full_core"]
+            mesh_y_max =  params["core_radius"]
+            mesh_ny    =  params["n_XY_mesh_zones_full_core"]
 
-        # Active-core mesh (needed by both full and minimal paths)
-        mesh = openmc.RegularMesh()
-        mesh.dimension = [mesh_nx, mesh_ny, params["n_ax_zones"]]
-        mesh.lower_left = [mesh_x_min, mesh_y_min, reactor_bottom]
-        mesh.upper_right = [mesh_x_max, mesh_y_max, reactor_top]
-        mesh_filter = openmc.MeshFilter(mesh)
+    # --- Active-core heating mesh (TH coupler only) ---
+    if params.get("use_mesh_heating_tally", False):
+        mesh_active = openmc.RegularMesh()
+        mesh_active.dimension  = [mesh_nx, mesh_ny, params["n_ax_zones"]]
+        mesh_active.lower_left  = [mesh_x_min, mesh_y_min, reactor_bottom]
+        mesh_active.upper_right = [mesh_x_max, mesh_y_max, reactor_top]
+        mesh_active_filter = openmc.MeshFilter(mesh_active)
 
-        # --- Heating Mesh Tally (active core) — always included ---
         mesh_heating_tally = openmc.Tally(name='mesh_heating')
-        mesh_heating_tally.filters = [mesh_filter]
-        mesh_heating_tally.scores = ['heating-local']
+        mesh_heating_tally.filters = [mesh_active_filter]
+        mesh_heating_tally.scores  = ['heating-local']
         tallies += [mesh_heating_tally]
 
-    if params["use_mesh_tallies"]:
-        # --- Flux/Fission Mesh Tally (active core only) ---
-        mesh_tally_active = openmc.Tally(name='mesh_rates')
-        mesh_tally_active.filters = [mesh_filter]
-        mesh_tally_active.scores = ['flux', 'fission']
-
-        n_reflector_zones = 33
+    # --- Full-core mesh (post-processing) ---
+    if params["use_mesh_tallies"] or params.get("use_mesh_heating_full_tally", False):
+        n_reflector_zones = round(params["n_ax_zones"] * params["reflector_thickness"] / params["core_height"])
         n_total_zones = n_reflector_zones + params["n_ax_zones"] + n_reflector_zones
-
-        # --- Full-core mesh ---
-        mesh_full = openmc.RegularMesh()
-        mesh_full.dimension = [mesh_nx, mesh_ny, n_total_zones]
         mesh_bottom = reactor_bottom - params["reflector_thickness"]
-        mesh_top = reactor_top + params["reflector_thickness"]
-        mesh_full.lower_left = [mesh_x_min, mesh_y_min, mesh_bottom]
+        mesh_top    = reactor_top    + params["reflector_thickness"]
+
+        mesh_full = openmc.RegularMesh()
+        mesh_full.dimension   = [mesh_nx, mesh_ny, n_total_zones]
+        mesh_full.lower_left  = [mesh_x_min, mesh_y_min, mesh_bottom]
         mesh_full.upper_right = [mesh_x_max, mesh_y_max, mesh_top]
         mesh_full_filter = openmc.MeshFilter(mesh_full)
 
-        mesh_tally_full = openmc.Tally(name='mesh_rates_full')
-        mesh_tally_full.filters = [mesh_full_filter]
-        mesh_tally_full.scores = ['flux', 'fission']
-
-        # --- Heating Mesh Tally (full core) ---
         mesh_heating_tally_full = openmc.Tally(name='mesh_heating_full')
         mesh_heating_tally_full.filters = [mesh_full_filter]
-        mesh_heating_tally_full.scores = ['heating-local']
+        mesh_heating_tally_full.scores  = ['heating-local']
+        tallies += [mesh_heating_tally_full]
 
-        tallies += [mesh_tally_active, mesh_tally_full, mesh_heating_tally_full]
+    if params["use_mesh_tallies"]:
+        mesh_tally_full = openmc.Tally(name='mesh_rates_full')
+        mesh_tally_full.filters = [mesh_full_filter]
+        mesh_tally_full.scores  = ['flux', 'fission']
+        tallies += [mesh_tally_full]
 
     # ----- Neutron Leakage Tallies -----
 
@@ -3151,12 +3160,12 @@ if __name__ == "__main__":
         print(f"{'='*80}")
 
         # Converge temperatures before the single simulation
-        th_single_params = _run_th_coupler_initial(cfg.params, BASE_DIR)
+        # th_single_params = _run_th_coupler_initial(cfg.params, BASE_DIR)
 
-        n_trisos = run_simulation(th_single_params, BASE_DIR)
+        n_trisos = run_simulation(cfg.params, BASE_DIR)
 
         if cfg.params["run_post_processing"]:
-            run_post_processing(BASE_DIR, th_single_params, n_trisos)
+            run_post_processing(BASE_DIR, cfg.params, n_trisos)
 
         print(f"\n{'='*80}")
         print("SIMULATION COMPLETE")

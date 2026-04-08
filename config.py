@@ -111,8 +111,8 @@ params = {
     "n_XY_mesh_zones_full_core": 200,
     "use_global_tallies": True,
     "use_mesh_tallies": True,
-    "use_leakage_tallies": True,
-    "use_BeO_tallies": True,
+    "use_leakage_tallies": False,
+    "use_BeO_tallies": False,
 
     # ----- OpenMC Monte Carlo Settings -----
     "total_batches": 50,
@@ -302,7 +302,7 @@ params = {
     ],
 
     # ----- Study Execution Mode Configuration -----
-    "study_execution_mode": "CSDepletionStudy",
+    "study_execution_mode": "SingleStudy",
     # Study Execution Mode Options:
     #    "SingleStudy"      — Singular steady state monte carlo simulation of specified core layout
     #    "ParametricStudy"  — Creates multiple steady state monte carlo simulations varying a single core parameter
