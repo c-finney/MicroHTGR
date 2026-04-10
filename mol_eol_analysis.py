@@ -707,7 +707,7 @@ def find_critical_rod_insertion(
         print(f"         k_eff = {k_at_hint:.5f} +/- {k_at_hint_std:.5f}   "
               f"(delta = {(k_at_hint - k_target)*1e5:+.0f} pcm)")
 
-        if abs(k_at_hint - k_target) < k_tol and k_at_hint > 1.0:
+        if abs(k_at_hint - k_target) < k_tol:
             print(f"\n  Converged at warm-start bracket: bank_1 = "
                   f"{_prev_b1_hint:.4f}, k = {k_at_hint:.5f} +/- {k_at_hint_std:.5f}")
             print(f"  CSV summary -> {csv_path}")
@@ -753,7 +753,7 @@ def find_critical_rod_insertion(
         print(f"  k_eff = {k0:.5f} +/- {k0_std:.5f}   "
               f"(delta = {(k0 - k_target)*1e5:+.0f} pcm)")
 
-        if abs(k0 - k_target) < k_tol and k0 > 1.0:
+        if abs(k0 - k_target) < k_tol:
             print(f"\n  Converged at stage 0: bank 1 = 1.0, bank 2 = 0.0")
             print(f"  CSV summary -> {csv_path}")
             return {
@@ -832,7 +832,7 @@ def find_critical_rod_insertion(
                 print(f"         k_eff = {k_at_hint:.5f} +/- {k_at_hint_std:.5f}   "
                       f"(delta = {(k_at_hint - k_target)*1e5:+.0f} pcm)")
 
-                if abs(k_at_hint - k_target) < k_tol and k_at_hint > 1.0:
+                if abs(k_at_hint - k_target) < k_tol:
                     print(f"\n  Converged at warm-start bracket: bank_2 = "
                           f"{_prev_b2_hint:.4f}, "
                           f"k = {k_at_hint:.5f} +/- {k_at_hint_std:.5f}")
@@ -961,7 +961,7 @@ def find_critical_rod_insertion(
             best_ins = mid
             best_dir = trial_dir
  
-        if abs(k - k_target) < k_tol and k > 1.0:
+        if abs(k - k_target) < k_tol:
             converged = True
             print(f"\n  Converged: {active_bank} = {mid:.4f}, "
                   f"k = {k:.5f} +/- {k_std:.5f}")
@@ -1089,8 +1089,8 @@ def _nc_htgr_temps(params, neutronics_csv_path):
     """
     try:
         from nc_htgr import (
-            ChannelInputs, NeutronicsTable,
-            solve_htgr_single_channel,
+            NeutronicsTable, integrated_cycle_with_channel,
+            read_key_value_csv, parse_inputs_from_deck,
         )
     except ImportError as exc:
         print(f"  WARNING: cannot import nc_htgr: {exc}")
@@ -1103,48 +1103,42 @@ def _nc_htgr_temps(params, neutronics_csv_path):
     L_m        = (core_h_cm + 2.0 * refl_t_cm) * 0.01
     L_unheated = 0.5 * (L_m - L_heated_m)      # unheated entry/exit length [m]
 
+    # Load all TH/Brayton inputs from nc_input.csv.
+    _nc_input_path = os.path.join(_NC_HTGR_DIR, "nc_input.csv")
+    _deck = read_key_value_csv(_nc_input_path) if os.path.exists(_nc_input_path) else {}
+    ch, br = parse_inputs_from_deck(_deck)
+
     try:
         ntable = NeutronicsTable(neutronics_csv_path,
-                                 N_fuel_channels=int(params["th_N_fuel_channels"]))
+                                 N_fuel_channels=ch.N_fuel_channels)
     except Exception as exc:
         print(f"  WARNING: NeutronicsTable load failed: {exc}")
         return None, None, None
 
-    ch = ChannelInputs(
-        L                          = L_m,
-        L_heated                   = L_heated_m,
-        N                          = int(params.get("th_N_nodes", 200)),
-        D_cool                     = 2.0 * float(params["coolant_radius"]) * 0.01,
-        D_fuel_hole                = float(params["th_D_fuel_hole_m"]),
-        D_compact                  = 2.0 * float(params["compact_radius"]) * 0.01,
-        pitch                      = float(params["fuel_to_coolant_distance"]) * 0.01,
-        roughness                  = float(params.get("th_roughness_m", 1.0e-5)),
-        m_dot                      = float(params["th_m_dot_kg_s"]),
-        P_in                       = float(params["th_P_in_Pa"]),
-        T_in_C                     = float(params["coolant_inlet"]) - 273.15,
-        flow_upward                = bool(params.get("th_flow_upward", False)),
-        qprime_max                 = 0.0,          # unused — neutronics_table mode
-        axial_shape                = "neutronics_table",
-        peaking_factor             = 1.0,
-        n_fuel_adjacent_to_coolant = int(params.get("th_n_fuel_adj_to_cool", 6)),
-        n_coolant_adjacent_to_fuel = int(params.get("th_n_cool_adj_to_fuel", 3)),
-        emiss_compact              = float(params.get("th_emiss_compact", 0.85)),
-        emiss_fuel_hole            = float(params.get("th_emiss_fuel_hole", 0.85)),
-        graphite_k_model           = str(params.get("th_graphite_k_model", "pcea_table")),
-        k_compact_eff              = float(params.get("th_k_compact_eff_W_mK", 6.0)),
-        packing_fraction           = float(params["triso_pf"]),
-        N_fuel_channels            = int(params["th_N_fuel_channels"]),
-        N_cool_channels            = int(params["th_N_cool_channels"]),
-        Q_total_MWth               = None,
-        neutronics_file            = neutronics_csv_path,
-        channel_case               = "average",
-        _neutronics_table          = ntable,
-        _Q_per_channel_W           = ntable.Q_per_channel["average"],
-    )
-    ch.L_heated = ntable.L_heated
+    # Override geometry-derived fields (computed from OpenMC params).
+    ch.L              = L_m
+    ch.L_heated       = L_heated_m
+    ch.D_cool         = 2.0 * float(params["coolant_radius"]) * 0.01
+    ch.D_compact      = 2.0 * float(params["compact_radius"]) * 0.01
+    ch.pitch          = float(params["fuel_to_coolant_distance"]) * 0.01
+    ch.packing_fraction = float(params["triso_pf"])
+
+    # Fields not present in nc_input.csv — set by the coupling context.
+    ch.axial_shape       = "neutronics_table"
+    ch.neutronics_file   = neutronics_csv_path
+    ch.channel_case      = "average"
+    ch._neutronics_table = ntable
+    ch._Q_per_channel_W  = ntable.Q_per_channel["average"]
+    ch.L_heated          = ntable.L_heated
 
     try:
-        channel_df = solve_htgr_single_channel(ch)
+        # integrated_cycle_with_channel iterates the recuperator to find the
+        # self-consistent core inlet temperature T3, then runs the full channel
+        # solve at that inlet.  This replaces the fixed cold-inlet approach.
+        channel_df, _, cycle_summary = integrated_cycle_with_channel(ch, br)
+        print(f"    [TH] Brayton T3={cycle_summary['T3_K']:.1f} K  "
+              f"T4={cycle_summary['T4_K']:.1f} K  "
+              f"η_th={cycle_summary['eta_th']:.3f}")
     except Exception as exc:
         print(f"  WARNING: nc_htgr channel solve failed: {exc}")
         return None, None, None
@@ -1155,8 +1149,7 @@ def _nc_htgr_temps(params, neutronics_csv_path):
     z_centers_cm = np.linspace(0.5 * axial_section_h_cm,
                                core_h_cm - 0.5 * axial_section_h_cm, n_ax)
 
-    flow_upward = bool(params.get("th_flow_upward", False))
-    if flow_upward:
+    if ch.flow_upward:
         # Inlet at bottom; z_nc increases from bottom to top
         frac_from_inlet = z_centers_cm / core_h_cm
     else:
@@ -1335,7 +1328,7 @@ def th_coupler(
                                 round(float(tp), 4),
                                 round(float(tm), 4)])
 
-    for it in range(max_iter):
+    for it in range(max_iter + 1):  # +1: iteration 0 is the base; max_iter additional iters follow
         iter_dir = os.path.join(output_dir, f"th_iter_{it:02d}")
         iter_dirs.append(iter_dir)
 
@@ -1366,8 +1359,8 @@ def th_coupler(
         # Compute convergence metrics
         delta_k = abs(k - prev_k) if prev_k is not None else float("nan")
         if prev_q is not None and q_avg is not None and q_avg.max() > 0:
-            q_max_diff    = float(np.max(np.abs(q_avg - prev_q)))
-            q_curr_max    = float(q_avg.max())
+            q_max_diff    = float(np.max(np.abs(q_avg - prev_q)))  # max change across all zones
+            q_curr_max    = float(q_avg.max())                     # peak q (denominator)
             q_change_frac = q_max_diff / q_curr_max
         else:
             q_max_diff    = float("nan")
@@ -1458,7 +1451,8 @@ def th_coupler(
                       f"keff not monotonic over last {len(recent4)} true iters — continuing)")
 
     if not converged:
-        print(f"\n  WARNING: TH Coupler did not converge in {max_iter} iterations.")
+        print(f"\n  WARNING: TH Coupler did not converge in {max_iter + 1} iterations "
+              f"(1 base + {max_iter} additional).")
         print(f"  Best k_eff = {final_keff:.5f}")
 
     print(f"\n  Summary CSV -> {csv_path}")

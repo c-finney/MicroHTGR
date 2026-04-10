@@ -109,10 +109,8 @@ params = {
 
     # ----- Tally Configuration -----
     "n_XY_mesh_zones_full_core": 200,
-    "use_global_tallies": True,          # Full tally set: flux spectrum, heating-local, global rates
+    "use_global_tallies": True,
     "use_mesh_tallies": True,
-    "use_mesh_heating_tally": False,     # Active-core-only mesh heating tally used by TH coupler iterations (cheaper than full mesh)
-    "use_mesh_heating_full_tally": False, # Full-core mesh heating tally without flux/fission scores (placeholder, currently unused)
     "use_leakage_tallies": True,
     "use_BeO_tallies": True,
 
@@ -142,9 +140,9 @@ params = {
     #   Lower bound: maximum self-shielding (all TRISO volume in inner cylinder)
     #   Upper bound: flat homogenization (no benefit over simple mixing)
     "use_homogenized_fuel": True,
-    "rpt_radius": 0.44636,                   # Calibrated inner cylinder radius (cm). None = not yet calibrated.
-    "rpt_calibration_max_iter": 20,       # Maximum Illinois interpolation iterations in RPTCalibration study.
-    "rpt_calibration_k_tol": 0.0002,       # k_eff convergence tolerance for RPTCalibration study.
+    "rpt_radius": 0.4434517226538618, # Calibrated inner cylinder radius (cm). None = not yet calibrated.
+    "rpt_calibration_max_iter": 20,    # Maximum Illinois interpolation iterations in RPTCalibration study.
+    "rpt_calibration_k_tol": 0.0002,   # k_eff convergence tolerance for RPTCalibration study.
 
     # ----- Parametric Study Configuration -----
     "parametric_param": "BeO_thickness",
@@ -167,26 +165,6 @@ params = {
     "th_coupler_inactive": 20,         # inactive batches per th_coupler eigenvalue run
     "th_coupler_particles": 50_000,    # particles per th_coupler eigenvalue run
 
-    # ----- nc_htgr Channel Parameters (used by th_coupler) -----
-    # Computed from geometry: L_m = (core_height + 2*reflector_thickness)*0.01
-    # L_heated_m = core_height*0.01, D_cool_m = 2*coolant_radius*0.01,
-    # D_compact_m = 2*compact_radius*0.01, pitch_m = fuel_to_coolant_distance*0.01,
-    # packing_fraction = triso_pf  — all derived automatically from params above.
-    "th_m_dot_kg_s": 0.0097,           # per-channel helium mass flow rate [kg/s]
-    "th_P_in_Pa": 4.6e6,               # core inlet helium pressure [Pa]
-    "th_N_fuel_channels": 1218,        # total fuel channels in full core
-    "th_N_cool_channels": 558,         # total coolant channels in full core
-    "th_D_fuel_hole_m": 0.0127,        # fuel hole bore diameter [m]
-    "th_roughness_m": 1.0e-5,          # coolant channel wall roughness [m]
-    "th_emiss_compact": 0.85,          # compact outer surface emissivity
-    "th_emiss_fuel_hole": 0.85,        # fuel hole wall emissivity
-    "th_k_compact_eff_W_mK": 6.0,      # effective compact thermal conductivity [W/m·K]
-    "th_flow_upward": False,           # False = downward flow (inlet at top)
-    "th_N_nodes": 200,                 # nc_htgr axial node count per channel solve
-    "th_n_fuel_adj_to_cool": 6,        # fuel compacts sharing heat with each coolant channel
-    "th_n_cool_adj_to_fuel": 3,        # coolant channels shared by each fuel compact
-    "th_graphite_k_model": "pcea_table",  # graphite conductivity model for nc_htgr
-
     # ----- Critical Rod Search Configuration -----
     "critical_search_k_tol": 0.002,
     "critical_search_max_iter": 10,
@@ -202,7 +180,7 @@ params = {
     "thermal_power_MW": 10.0,
     # "depletion_chain_file": "/home/cade/Desktop/OpenMC/CrossSections/chain_endfb81_thermal.xml",
     "depletion_chain_file": "/home/cade/Desktop/OpenMC/CrossSections/chain_casl_pwr.xml",
-    "use_reduced_chain_file": False,
+    "use_reduced_chain_file": True,
     # "depletion_timesteps_days": [1, 3, 3, 3, 10, 10, 10, 30, 30, 30, 60, 60, 60, 120, 120, 120, 180, 180, 180], # Normal depletion time steps
     "depletion_timesteps_days": [1, 3, 3, 3, 10, 10, 10, 30, 30, 30, 60, 60, 60, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90], # CS depletion time steps
     # "depletion_timesteps_days": [1, 3, 3, 3],  # Testing timme steps
@@ -214,9 +192,9 @@ params = {
     #    "LEQIIntegrator"      — LE/QI (good accuracy, 2× cost)
 
     # ----- Depletion Restart Configuration -----
-    "restart_depletion": False,
-    "restart_run_dir": "/home/cade/Desktop/OpenMC/SeniorDesign/MicroHTGR_Output/htgr_run_02.23.2026_14.00.15_Depletion",
-    "restart_timesteps_days": [120], # Remaining timesteps to run (replaces original list)
+    # "restart_depletion": False,
+    # "restart_run_dir": "/home/cade/Desktop/OpenMC/SeniorDesign/MicroHTGR_Output/htgr_run_02.23.2026_14.00.15_Depletion",
+    # "restart_timesteps_days": [120], # Remaining timesteps to run (replaces original list)
     # To use restart:
     #    1. Set restart_depletion = True
     #    2. Set restart_run_dir to the path of the failed run directory
@@ -241,7 +219,7 @@ params = {
 
         # --- FP Poisons ---
         "Xe131", "Xe135",
-        "I235",
+        "I135",
         "Pm147", "Pm149",
         "Sm149", "Sm151", "Sm152",
 
@@ -250,7 +228,7 @@ params = {
         "Sr90",
         "Mo95",
         "Tc99",
-        "Rho103",
+        "Rh103",
         "Cs134", "Cs137",
         "Ce144",
         "Nd143", "Nd145",
@@ -263,27 +241,27 @@ params = {
 
     # ----- Depletion Post-Processing Plot Groups -----
     "depletion_plot_groups": {
-            "Fissile Actinides": ["U235",
-                                  "Pu239", "Pu241"],
-            "Fertile Actinides": ["U238", "U234", "U236",
-                                  "Pu238", "Pu240", "Pu242"],
-            "Minor Actinides":   ["Np237", "Np239",
-                                  "Am241", "Am243",
-                                  "Cm242", "Cm244"],
-            "FP Poisons":        ["Xe131", "Xe135",
-                                  "I135",
-                                  "Pm147", "Pm149",
-                                  "Sm149", "Sm151", "Sm152"],
-            "Other FPs":         ["Kr83",
-                                  "Sr90",
-                                  "Mo95",
-                                  "Tc99",
-                                  "Rh103",
-                                  "Cs134", "Cs137",
-                                  "Ce144",
-                                  "Nd143", "Nd145",
-                                  "Eu152", "Eu154", "Eu155"],
-            "Boron Poisons":     ["B10"]
+        "Fissile Actinides": ["U235",
+                                "Pu239", "Pu241"],
+        "Fertile Actinides": ["U238", "U234", "U236",
+                                "Pu238", "Pu240", "Pu242"],
+        "Minor Actinides":   ["Np237", "Np239",
+                                "Am241", "Am243",
+                                "Cm242", "Cm244"],
+        "FP Poisons":        ["Xe131", "Xe135",
+                                "I135",
+                                "Pm147", "Pm149",
+                                "Sm149", "Sm151", "Sm152"],
+        "Other FPs":         ["Kr83",
+                                "Sr90",
+                                "Mo95",
+                                "Tc99",
+                                "Rh103",
+                                "Cs134", "Cs137",
+                                "Ce144",
+                                "Nd143", "Nd145",
+                                "Eu152", "Eu154", "Eu155"],
+        "Boron Poisons":     ["B10"]
     },
 
     # ----- Depletion EOL Gamma Sources of Interest -----

@@ -1483,23 +1483,27 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
             # Read Brayton parameters from nc_input.csv (same directory as nc_htgr.py)
             _nc_input_csv = os.path.join(_nc_htgr_dir, "nc_input.csv")
             _br_raw = {'P1_Pa': 2e6, 'T1_C': 30.0, 'pressure_ratio': 2.3,
-                       'eta_c': 0.90, 'eta_t': 0.90, 'eps_recup': 0.90}
+                       'eta_c': 0.90, 'eta_t': 0.90, 'eps_recup': 0.90,
+                       'm_dot_kg_s': 0.0097, 'N_cool_channels': 558}
             if os.path.exists(_nc_input_csv):
                 with open(_nc_input_csv, newline="") as _fh:
                     for _row in csv.reader(_fh):
                         if len(_row) >= 2 and not str(_row[0]).strip().startswith("#"):
                             _br_raw[_row[0].strip()] = _row[1].strip()
             _br = {
-                'P1':        float(_br_raw.get('P1_Pa',         2e6)),
-                'T1_C':      float(_br_raw.get('T1_C',          30.0)),
-                'PR':        float(_br_raw.get('pressure_ratio', 2.3)),
-                'eta_c':     float(_br_raw.get('eta_c',         0.90)),
-                'eta_t':     float(_br_raw.get('eta_t',         0.90)),
-                'eps_recup': float(_br_raw.get('eps_recup',     0.90)),
+                'P1':         float(_br_raw.get('P1_Pa',          2e6)),
+                'T1_C':       float(_br_raw.get('T1_C',           30.0)),
+                'PR':         float(_br_raw.get('pressure_ratio',  2.3)),
+                'eta_c':      float(_br_raw.get('eta_c',           0.90)),
+                'eta_t':      float(_br_raw.get('eta_t',           0.90)),
+                'eps_recup':  float(_br_raw.get('eps_recup',       0.90)),
+                'm_dot':      float(_br_raw.get('m_dot_kg_s',      0.0097)),
+                'N_cool':     int(float(_br_raw.get('N_cool_channels', 558))),
             }
             _nc_htgr_avail = True
             print(f"  [MWe] nc_htgr loaded. Brayton: PR={_br['PR']}, "
-                  f"η_c={_br['eta_c']}, η_t={_br['eta_t']}, ε_recup={_br['eps_recup']}")
+                  f"η_c={_br['eta_c']}, η_t={_br['eta_t']}, ε_recup={_br['eps_recup']}, "
+                  f"m_dot={_br['m_dot']} kg/s, N_cool={_br['N_cool']}")
         except Exception as _nc_ex:
             print(f"  WARNING: could not import nc_htgr ({_nc_ex}); MWe calculation skipped.")
 
@@ -1517,8 +1521,9 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
         _th_q_max    = []   # max avg channel heating [W]
         _th_mwe      = []   # net electrical output [MWe]
 
-        _mwe_m_dot = float(params.get('th_m_dot_kg_s', 0.0097))
-        _mwe_N_cool = int(params.get('th_N_cool_channels', 558))
+        # m_dot and N_cool_channels come from nc_input.csv (loaded above into _br).
+        _mwe_m_dot  = _br.get('m_dot',   0.0097) if _nc_htgr_avail else 0.0097
+        _mwe_N_cool = _br.get('N_cool',  558)     if _nc_htgr_avail else 558
 
         for _bos_idx in sorted(_step_dirs_map.keys()):
             if _bos_idx >= n_plot:

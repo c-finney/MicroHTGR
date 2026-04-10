@@ -181,7 +181,13 @@ def build_model(params, run_dir):
     if "_th_coolant_z" in params:
         T_coolant_z = np.asarray(params["_th_coolant_z"], dtype=float)
     else:
-        T_coolant_z = np.linspace(params["coolant_inlet"], params["coolant_outlet"], params["n_ax_zones"])
+        # index 0 = bottom axial zone, index n-1 = top axial zone.
+        # Downward flow (th_flow_upward=False): inlet at top (cold), outlet at bottom (hot).
+        # Upward flow (th_flow_upward=True):    inlet at bottom (cold), outlet at top (hot).
+        if params.get("th_flow_upward", False):
+            T_coolant_z = np.linspace(params["coolant_inlet"], params["coolant_outlet"], params["n_ax_zones"])
+        else:
+            T_coolant_z = np.linspace(params["coolant_outlet"], params["coolant_inlet"], params["n_ax_zones"])
 
     if "_th_compact_z" in params:
         T_compact_z = np.asarray(params["_th_compact_z"], dtype=float)
@@ -960,7 +966,7 @@ def build_model(params, run_dir):
             beo_inner_r = params["BeO_inner_radius"] if params["BeO_inner_radius"] is not None else lattice_extent_r
             beo_outer_r = min(beo_inner_r + params["BeO_thickness"], params["core_radius"])
 
-            num_bins = round(params["n_XY_mesh_zones_full_core"] / 180 * params["BeO_thickness"])
+            num_bins = round(params["n_XY_mesh_zones_full_core"] / (2 * params["core_radius"]) * params["BeO_thickness"])
 
             if params["use_1/6_geometry"]:
                 phi_grid = np.linspace(0, np.pi / 3, 7)
@@ -2414,6 +2420,7 @@ def run_critical_search_depletion_simulation(params, run_dir):
         critical_k  = critical_std = None
         crit_converged  = False
         th_converged    = False
+        th_result       = None   # will hold last th_coupler result for keff logging
         # Tracks the crit_result from the previous retry within this timestep
         # so we can warm-start the rod search on each subsequent attempt.
         _attempt_prev_crit = None
@@ -2488,10 +2495,26 @@ def run_critical_search_depletion_simulation(params, run_dir):
                 th_converged = True   # treat as converged so we don't loop
                 break
 
+            # If the core is subcritical at ARO (all rods out), the critical
+            # search returned rods-out with k < 1.0 - k_tol.  In this case,
+            # disable the keff validity check in th_coupler — the core is no
+            # longer operational and we only need the temperature profile.
+            _aro_subcritical = (
+                critical_b1 == 0.0 and critical_b2 == 0.0
+                and critical_k is not None
+                and critical_k < 1.0 - k_tol
+            )
+            if _aro_subcritical:
+                print(f"\n  Core is subcritical at ARO (k={critical_k:.5f} < "
+                      f"{1.0 - k_tol:.4f}); disabling keff check in TH coupler.")
+
+            _th_params_step = copy.deepcopy(current_th_params)
+            _th_params_step["th_coupler_ignore_keff"] = _aro_subcritical
+
             th_dir = os.path.join(cs_th_dir, f"th_coupler{attempt_sfx}")
 
             th_result = _th_coupler(
-                params            = current_th_params,
+                params            = _th_params_step,
                 depleted          = depleted_arg,
                 output_dir        = th_dir,
                 depletion_run_dir = run_dir,
@@ -2765,6 +2788,16 @@ def run_critical_search_depletion_simulation(params, run_dir):
         step_operational = 0 if (critical_b1 == 0.0 and critical_b2 == 0.0
                                   and critical_k < 1.0) else 1
 
+        # Use TH-coupler final keff for the log (reflects the actual operating
+        # state after temperature feedback).  Fall back to critical search keff
+        # if th_coupler was not available or did not run.
+        if th_result is not None:
+            log_keff     = th_result["final_keff"]
+            log_keff_std = th_result["final_keff_std"]
+        else:
+            log_keff     = critical_k
+            log_keff_std = critical_std
+
         step_entry = {
             "step":              step_idx + 1,
             "step_start_days":   step_start_day,
@@ -2772,8 +2805,8 @@ def run_critical_search_depletion_simulation(params, run_dir):
             "dt_days":           dt_days,
             "bank_1_insertion":  critical_b1,
             "bank_2_insertion":  critical_b2,
-            "critical_keff":     critical_k,
-            "critical_keff_std": critical_std,
+            "critical_keff":     log_keff,
+            "critical_keff_std": log_keff_std,
             "converged":         crit_converged,
             "operational":       step_operational,
             "search_csv":        csv_dest,   # search_dir has been deleted

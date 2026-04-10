@@ -4,6 +4,7 @@ BeO Reflector Depletion Post-Processing Script
 Extracts and plots BeO reflector fluence results from OpenMC depletion simulations:
  - Peak flux per depletion step from per-step statepoints (beo_flux_radial tally)
  - Cumulative peak fluence vs. burnup/time
+ - Area-averaged fast flux/fluence at the inner BeO surface vs. burnup/time
  - BeO fluence CSV export
 
 Usage:
@@ -76,12 +77,15 @@ def extract_beo_peak_fluence(run_dir, time_steps_s, keff_mean, params):
       1. Reads the 'beo_flux_radial' CylindricalMesh tally.
       2. Normalises the raw (per-source-particle) flux to physical flux [n/cm²/s]
          using the total thermal power and the 'heating' global tally.
-      3. Finds the peak flux density across all (r, φ, z) mesh cells.
-      4. Multiplies by the step duration to obtain the step's fluence contribution.
+      3. Stores the full per-voxel physical flux density array for each step.
+      4. After determining the shutdown step, accumulates per-voxel fluence over
+         operational steps only and identifies the single voxel with the highest
+         total fluence (the "peak-fluence voxel").
+      5. Reports that voxel's flux and cumulative fluence history for plotting.
 
-    Total peak fluence is accumulated only while the reactor is operational
-    (k_eff ≥ 1.0). The first step where k_eff < 1.0 is treated as the shutdown
-    point; no further fluence is integrated after that.
+    This ensures the peak-fluence voxel is consistent across all steps (the same
+    spatial location throughout the run), rather than taking the spatial maximum
+    independently at each step.
 
     Parameters
     ----------
@@ -93,12 +97,16 @@ def extract_beo_peak_fluence(run_dir, time_steps_s, keff_mean, params):
     Returns
     -------
     dict with keys:
-        peak_flux_per_step_n_cm2_s : (n_sp,) array — physical peak flux at each step [n/cm²/s]
-        step_fluence_n_cm2         : (n_sp,) array — peak fluence contribution per step [n/cm²]
-        cumulative_fluence_n_cm2   : (n_steps+1,) array — cumulative fluence at each result time [n/cm²]
-        total_peak_fluence_n_cm2   : float — total integrated peak fluence [n/cm²]
-        shutdown_step_idx          : int — first step index where k_eff < 1.0 (n_steps+1 if never)
-        n_statepoints_found        : int
+        peak_flux_per_step_n_cm2_s      : (n_sp,) array — flux at the peak-fluence voxel each step [n/cm²/s]
+        step_fluence_n_cm2              : (n_sp,) array — fluence at peak-fluence voxel per step [n/cm²]
+        cumulative_fluence_n_cm2        : (n_steps+1,) array — cumulative fluence at peak-fluence voxel [n/cm²]
+        total_peak_fluence_n_cm2        : float — total integrated fluence at peak-fluence voxel [n/cm²]
+        inner_avg_flux_per_step_n_cm2_s : (n_sp,) array — area-averaged fast flux on inner BeO surface [n/cm²/s]
+        inner_avg_step_fluence_n_cm2    : (n_sp,) array — inner-surface avg fluence per step [n/cm²]
+        inner_avg_cumulative_n_cm2      : (n_steps+1,) array — cumulative inner-surface avg fluence [n/cm²]
+        total_inner_avg_fluence_n_cm2   : float — total integrated inner-surface avg fluence [n/cm²]
+        shutdown_step_idx               : int — first step index where k_eff < 1.0 (n_steps+1 if never)
+        n_statepoints_found             : int
     None if BeO tallies are disabled or no statepoints are found.
     """
     if not params.get("use_BeO_tallies", False) or not params.get("use_BeO_reflector", False):
@@ -123,32 +131,35 @@ def extract_beo_peak_fluence(run_dir, time_steps_s, keff_mean, params):
 
     print(f"\n  BeO peak fluence: processing {n_sp} step statepoints...")
 
-    peak_flux = np.full(n_sp, np.nan)    # [n/cm²/s]
-    step_flu  = np.full(n_sp, np.nan)    # [n/cm²]
+    # Per-step storage — populated during first pass over statepoints.
+    # flux_phys_per_step[i] : (n_r, n_phi, n_z) physical flux density [n/cm²/s], or None
+    flux_phys_per_step = [None] * n_sp
+    dt_per_step        = np.full(n_sp, np.nan)   # step duration [s]
+    inner_avg_flux     = np.full(n_sp, np.nan)   # inner-surface area-avg fast flux [n/cm²/s]
+    inner_avg_flu      = np.full(n_sp, np.nan)   # inner-surface avg fast fluence per step [n/cm²]
+
+    # Mesh shape — captured from first successful statepoint and reused.
+    mesh_shape   = None   # (n_r, n_phi, n_z)
+    area_weights = None   # (n_phi, n_z) — for inner-surface average
 
     for i, sp_path in enumerate(sp_paths):
         step_label = os.path.basename(sp_path).replace(".h5", "")
         try:
             sp = openmc.StatePoint(sp_path)
 
-            # Find tally
             beo_tally = next((t for t in sp.tallies.values()
                               if t.name == 'beo_flux_radial'), None)
             if beo_tally is None:
                 print(f"    [{step_label}] 'beo_flux_radial' tally not found — skipping")
                 continue
 
-            # Normalization factor
             norm = _beo_normalization_factor(sp, thermal_power_W)
             if norm is None or norm <= 0:
                 print(f"    [{step_label}] Could not determine normalization — skipping")
                 continue
 
-            # Raw fast flux (E > 100 keV): sum(track_length)/n_source [cm/source] per mesh cell
-            # Tally has [MeshFilter, EnergyFilter(1 bin)]; squeeze out the energy dimension.
             flux_raw = beo_tally.get_values(scores=['flux']).flatten()
 
-            # Recover mesh geometry for cell volumes
             mesh     = beo_tally.filters[0].mesh
             r_grid   = np.asarray(mesh.r_grid)
             phi_grid = np.asarray(mesh.phi_grid)
@@ -159,28 +170,35 @@ def extract_beo_peak_fluence(run_dir, time_steps_s, keff_mean, params):
             n_z   = len(z_grid)   - 1
 
             # Cell volumes: V = 0.5*(r_out²–r_in²)·Δφ·Δz
-            dr2  = np.diff(r_grid**2)          # (n_r,)
-            dphi = np.diff(phi_grid)           # (n_phi,)
-            dz   = np.diff(z_grid)             # (n_z,)
+            dr2  = np.diff(r_grid**2)
+            dphi = np.diff(phi_grid)
+            dz   = np.diff(z_grid)
             vols = (0.5 * dr2[:, np.newaxis, np.newaxis]
                     * dphi[np.newaxis, :, np.newaxis]
                     * dz[np.newaxis, np.newaxis, :])   # (n_r, n_phi, n_z)
 
-            # flux_raw is ordered (r, phi, z, energy); with 1 energy bin this is
-            # equivalent to (r, phi, z) after reshape.
-            flux_density = flux_raw.reshape(n_r, n_phi, n_z) / vols
+            flux_density = flux_raw.reshape(n_r, n_phi, n_z) / vols  # [cm/source / cm³]
 
-            # Peak fast flux density [n/cm²/s] — peak is geometry-invariant (same in all sectors)
-            peak_flux[i] = float(np.nanmax(flux_density)) * norm
+            # Physical flux density [n/cm²/s] for every voxel — stored for post-processing.
+            flux_phys_per_step[i] = flux_density * norm
 
-            # Step duration: interval from time_steps_s[i] to time_steps_s[i+1]
+            if mesh_shape is None:
+                mesh_shape   = (n_r, n_phi, n_z)
+                area_weights = np.outer(dphi, dz)   # (n_phi, n_z)
+
+            # Area-weighted average on the inner BeO surface (innermost radial bin).
+            inner_fd = flux_phys_per_step[i][0, :, :]   # (n_phi, n_z)
+            inner_avg_flux[i] = float(
+                np.sum(inner_fd * area_weights) / np.sum(area_weights)
+            )
+
+            # Step duration
             if i + 1 < n_results:
-                dt_s = float(time_steps_s[i + 1] - time_steps_s[i])
-                step_flu[i] = peak_flux[i] * dt_s
+                dt_per_step[i]   = float(time_steps_s[i + 1] - time_steps_s[i])
+                inner_avg_flu[i] = inner_avg_flux[i] * dt_per_step[i]
 
             print(f"    [{step_label}] k={keff_mean[i]:.4f}  "
-                  f"peak_fast_flux={peak_flux[i]:.3e} n/cm²/s  "
-                  f"Δfast_fluence={step_flu[i]:.3e} n/cm²")
+                  f"inner_avg_fast_flux={inner_avg_flux[i]:.3e} n/cm²/s")
 
         except Exception as e:
             print(f"    [{step_label}] ERROR: {e}")
@@ -240,40 +258,78 @@ def extract_beo_peak_fluence(run_dir, time_steps_s, keff_mean, params):
                 shutdown_idx = idx
                 break
 
-    # ---- Integrate cumulative fluence (only while operational) ---------------
-    cumulative = np.zeros(n_results)
-    running_total = 0.0
+    # ---- Find the peak-fluence voxel (second pass, operational steps only) -----
+    # Accumulate per-voxel fluence = sum over operational steps of flux[i] * dt[i].
+    # The voxel with the highest total fluence is used for all peak-flux/fluence output.
+    peak_flux = np.full(n_sp, np.nan)   # flux at the peak-fluence voxel each step [n/cm²/s]
+    step_flu  = np.full(n_sp, np.nan)   # fluence contribution from that voxel per step [n/cm²]
+
+    if mesh_shape is not None:
+        voxel_cumulative = np.zeros(mesh_shape)   # total fluence per voxel [n/cm²]
+        for i in range(min(n_sp, shutdown_idx)):
+            if flux_phys_per_step[i] is None or np.isnan(dt_per_step[i]):
+                continue
+            voxel_cumulative += flux_phys_per_step[i] * dt_per_step[i]
+
+        peak_voxel_flat = int(np.argmax(voxel_cumulative))
+        peak_voxel_idx  = np.unravel_index(peak_voxel_flat, mesh_shape)
+        print(f"  Peak-fluence voxel: r_bin={peak_voxel_idx[0]}, "
+              f"phi_bin={peak_voxel_idx[1]}, z_bin={peak_voxel_idx[2]}")
+
+        for i in range(n_sp):
+            if flux_phys_per_step[i] is None:
+                continue
+            peak_flux[i] = float(flux_phys_per_step[i][peak_voxel_idx])
+            if not np.isnan(dt_per_step[i]) and i < shutdown_idx:
+                step_flu[i] = peak_flux[i] * dt_per_step[i]
+
+    # ---- Integrate cumulative fluence (peak-fluence voxel and inner avg) -----
+    cumulative       = np.zeros(n_results)
+    inner_cumulative = np.zeros(n_results)
+    running_total       = 0.0
+    inner_running_total = 0.0
 
     for i in range(n_sp):
         if i >= shutdown_idx:
             break
-        if np.isnan(step_flu[i]):
-            continue
-        running_total += step_flu[i]
-        if i + 1 < n_results:
-            cumulative[i + 1] = running_total
+        if not np.isnan(step_flu[i]):
+            running_total += step_flu[i]
+            if i + 1 < n_results:
+                cumulative[i + 1] = running_total
+        if not np.isnan(inner_avg_flu[i]):
+            inner_running_total += inner_avg_flu[i]
+            if i + 1 < n_results:
+                inner_cumulative[i + 1] = inner_running_total
 
-    # Fill any remaining result indices with the final total
-    for j in range(n_results):
-        if cumulative[j] == 0.0 and j > 0:
+    # Forward-fill any gaps (steps where statepoint was missing)
+    for j in range(1, n_results):
+        if cumulative[j] == 0.0:
             cumulative[j] = cumulative[j - 1]
+        if inner_cumulative[j] == 0.0:
+            inner_cumulative[j] = inner_cumulative[j - 1]
 
-    total_fluence = running_total
+    total_fluence       = running_total
+    total_inner_fluence = inner_running_total
 
-    print(f"\n  BeO peak fast fluence summary (E > 100 keV):")
-    print(f"    Total peak fast fluence:  {total_fluence:.4e} n/cm²")
+    print(f"\n  BeO fast fluence summary (E > 100 keV):")
+    print(f"    Total peak-voxel fast fluence:    {total_fluence:.4e} n/cm²")
+    print(f"    Total inner-surface avg fluence:  {total_inner_fluence:.4e} n/cm²")
     if shutdown_idx < n_results:
         print(f"    Shutdown at step {shutdown_idx}")
     else:
         print(f"    Reactor remained operational throughout all steps")
 
     return {
-        "peak_flux_per_step_n_cm2_s": peak_flux,
-        "step_fluence_n_cm2":         step_flu,
-        "cumulative_fluence_n_cm2":   cumulative,
-        "total_peak_fluence_n_cm2":   total_fluence,
-        "shutdown_step_idx":          shutdown_idx,
-        "n_statepoints_found":        n_sp,
+        "peak_flux_per_step_n_cm2_s":      peak_flux,
+        "step_fluence_n_cm2":              step_flu,
+        "cumulative_fluence_n_cm2":        cumulative,
+        "total_peak_fluence_n_cm2":        total_fluence,
+        "inner_avg_flux_per_step_n_cm2_s": inner_avg_flux,
+        "inner_avg_step_fluence_n_cm2":    inner_avg_flu,
+        "inner_avg_cumulative_n_cm2":      inner_cumulative,
+        "total_inner_avg_fluence_n_cm2":   total_inner_fluence,
+        "shutdown_step_idx":               shutdown_idx,
+        "n_statepoints_found":             n_sp,
     }
 
 
@@ -299,25 +355,28 @@ def plot_and_save_beo_results(beo_fluence_data, x_data, x_label, x_label_short,
     output_dir         : str — directory to write plots and CSV into
     show_titles        : bool — whether to add titles to plots (default True)
     """
-    beo_peak_flux = beo_fluence_data["peak_flux_per_step_n_cm2_s"]
-    beo_step_flu  = beo_fluence_data["step_fluence_n_cm2"]
-    beo_cum_flu   = beo_fluence_data["cumulative_fluence_n_cm2"]
-    beo_sd_idx    = beo_fluence_data["shutdown_step_idx"]
-    n_sp          = beo_fluence_data["n_statepoints_found"]
+    beo_peak_flux    = beo_fluence_data["peak_flux_per_step_n_cm2_s"]
+    beo_step_flu     = beo_fluence_data["step_fluence_n_cm2"]
+    beo_cum_flu      = beo_fluence_data["cumulative_fluence_n_cm2"]
+    inner_avg_flux   = beo_fluence_data["inner_avg_flux_per_step_n_cm2_s"]
+    inner_avg_flu    = beo_fluence_data["inner_avg_step_fluence_n_cm2"]
+    inner_avg_cum    = beo_fluence_data["inner_avg_cumulative_n_cm2"]
+    beo_sd_idx       = beo_fluence_data["shutdown_step_idx"]
+    n_sp             = beo_fluence_data["n_statepoints_found"]
 
     # Truncate to operational range — non-operational steps are non-physical.
     n_plot_beo = min(beo_sd_idx, len(x_data), len(beo_cum_flu))
     if n_plot_beo == 0:
         n_plot_beo = len(x_data)   # fallback: plot everything if always operational
 
-    # --- Plot: cumulative peak fluence vs. time/burnup (truncated at shutdown) ---
+    # --- Plot: cumulative peak fluence vs. time/burnup ---
     fig, ax = plt.subplots(figsize=(12, 6), dpi=150)
     ax.plot(x_data[:n_plot_beo], beo_cum_flu[:n_plot_beo], "o-", markersize=5,
-            linewidth=1.5, color="darkcyan", label="Cumulative peak fluence")
+            linewidth=1.5, color="darkcyan", label="Cumulative fluence (peak-fluence voxel)")
     ax.set_xlabel(x_label, fontsize=12)
-    ax.set_ylabel("Cumulative Peak Fast Fluence (n/cm²) [E > 100 keV]", fontsize=12)
+    ax.set_ylabel("Cumulative Fast Fluence at Peak-Fluence Voxel (n/cm²) [E > 100 keV]", fontsize=12)
     if show_titles:
-        ax.set_title("BeO Reflector Peak Fast Fluence vs. Burnup", fontsize=14)
+        ax.set_title("BeO Reflector Fast Fluence at Peak-Fluence Voxel vs. Burnup", fontsize=14)
     ax.legend(fontsize=10)
     ax.grid(True, alpha=0.3)
     ax.ticklabel_format(style='sci', axis='y', scilimits=(0, 0))
@@ -327,7 +386,24 @@ def plot_and_save_beo_results(beo_fluence_data, x_data, x_label, x_label_short,
     plt.close()
     print(f"  Saved: depletion_beo_fluence_vs_{x_label_short}.png")
 
-    # --- Plot: peak flux per step (truncated at shutdown) ---
+    # --- Plot: cumulative inner-surface average fluence vs. time/burnup ---
+    fig, ax = plt.subplots(figsize=(12, 6), dpi=150)
+    ax.plot(x_data[:n_plot_beo], inner_avg_cum[:n_plot_beo], "o-", markersize=5,
+            linewidth=1.5, color="steelblue", label="Cumulative inner-surface avg fluence")
+    ax.set_xlabel(x_label, fontsize=12)
+    ax.set_ylabel("Cumulative Inner-Surface Avg Fast Fluence (n/cm²) [E > 100 keV]", fontsize=12)
+    if show_titles:
+        ax.set_title("BeO Reflector Inner-Surface Average Fast Fluence vs. Burnup", fontsize=14)
+    ax.legend(fontsize=10)
+    ax.grid(True, alpha=0.3)
+    ax.ticklabel_format(style='sci', axis='y', scilimits=(0, 0))
+    plt.savefig(os.path.join(output_dir,
+                              f"depletion_beo_inner_avg_fluence_vs_{x_label_short}.png"),
+                bbox_inches="tight")
+    plt.close()
+    print(f"  Saved: depletion_beo_inner_avg_fluence_vs_{x_label_short}.png")
+
+    # --- Plot: peak flux per step ---
     _n_flux_plot = min(beo_sd_idx, n_sp)
     step_indices = np.arange(_n_flux_plot)
     fig, ax = plt.subplots(figsize=(12, 5), dpi=150)
@@ -335,9 +411,9 @@ def plot_and_save_beo_results(beo_fluence_data, x_data, x_label, x_label_short,
            np.where(np.isnan(beo_peak_flux[:_n_flux_plot]), 0, beo_peak_flux[:_n_flux_plot]),
            color="teal", alpha=0.8, edgecolor="black", linewidth=0.5)
     ax.set_xlabel("Depletion Step Index", fontsize=12)
-    ax.set_ylabel("Peak Fast Flux (n/cm²/s) [E > 100 keV]", fontsize=12)
+    ax.set_ylabel("Fast Flux at Peak-Fluence Voxel (n/cm²/s) [E > 100 keV]", fontsize=12)
     if show_titles:
-        ax.set_title("BeO Reflector Peak Fast Flux per Depletion Step", fontsize=14)
+        ax.set_title("BeO Reflector Fast Flux at Peak-Fluence Voxel per Depletion Step", fontsize=14)
     ax.grid(True, alpha=0.3, axis='y')
     ax.ticklabel_format(style='sci', axis='y', scilimits=(0, 0))
     plt.savefig(os.path.join(output_dir,
@@ -346,26 +422,48 @@ def plot_and_save_beo_results(beo_fluence_data, x_data, x_label, x_label_short,
     plt.close()
     print(f"  Saved: depletion_beo_peak_flux_per_step.png")
 
+    # --- Plot: inner-surface average flux per step ---
+    fig, ax = plt.subplots(figsize=(12, 5), dpi=150)
+    ax.bar(step_indices,
+           np.where(np.isnan(inner_avg_flux[:_n_flux_plot]), 0, inner_avg_flux[:_n_flux_plot]),
+           color="steelblue", alpha=0.8, edgecolor="black", linewidth=0.5)
+    ax.set_xlabel("Depletion Step Index", fontsize=12)
+    ax.set_ylabel("Inner-Surface Avg Fast Flux (n/cm²/s) [E > 100 keV]", fontsize=12)
+    if show_titles:
+        ax.set_title("BeO Reflector Inner-Surface Average Fast Flux per Depletion Step", fontsize=14)
+    ax.grid(True, alpha=0.3, axis='y')
+    ax.ticklabel_format(style='sci', axis='y', scilimits=(0, 0))
+    plt.savefig(os.path.join(output_dir,
+                              "depletion_beo_inner_avg_flux_per_step.png"),
+                bbox_inches="tight")
+    plt.close()
+    print(f"  Saved: depletion_beo_inner_avg_flux_per_step.png")
+
     # --- CSV: step-by-step BeO fluence ---
     beo_csv = os.path.join(output_dir, "depletion_beo_fluence.csv")
     with open(beo_csv, "w") as f:
         header = "step_idx,time_days,keff"
         if burnup_MWd_per_MtU is not None:
             header += ",burnup_MWd_per_MtU"
-        header += ",peak_fast_flux_n_cm2_s,step_fast_fluence_n_cm2,cumulative_fast_fluence_n_cm2,operational"
+        header += (",peak_fast_flux_n_cm2_s,step_fast_fluence_n_cm2,cumulative_fast_fluence_n_cm2"
+                   ",inner_avg_fast_flux_n_cm2_s,inner_avg_step_fluence_n_cm2"
+                   ",inner_avg_cumulative_fluence_n_cm2,operational")
         f.write(header + "\n")
         for i in range(n_sp):
-            t_d = float(time_days[i])
-            k   = float(keff_mean[i])
-            bu  = float(burnup_MWd_per_MtU[i]) if burnup_MWd_per_MtU is not None else None
-            pf  = float(beo_peak_flux[i]) if not np.isnan(beo_peak_flux[i]) else 0.0
-            sf  = float(beo_step_flu[i])  if not np.isnan(beo_step_flu[i])  else 0.0
-            cf  = float(beo_cum_flu[i])
-            op  = 1 if i < beo_sd_idx else 0
-            row = f"{i},{t_d:.4f},{k:.6f}"
+            t_d  = float(time_days[i])
+            k    = float(keff_mean[i])
+            bu   = float(burnup_MWd_per_MtU[i]) if burnup_MWd_per_MtU is not None else None
+            pf   = float(beo_peak_flux[i])  if not np.isnan(beo_peak_flux[i])  else 0.0
+            sf   = float(beo_step_flu[i])   if not np.isnan(beo_step_flu[i])   else 0.0
+            cf   = float(beo_cum_flu[i])
+            iaf  = float(inner_avg_flux[i]) if not np.isnan(inner_avg_flux[i]) else 0.0
+            iasf = float(inner_avg_flu[i])  if not np.isnan(inner_avg_flu[i])  else 0.0
+            iacf = float(inner_avg_cum[i])
+            op   = 1 if i < beo_sd_idx else 0
+            row  = f"{i},{t_d:.4f},{k:.6f}"
             if bu is not None:
                 row += f",{bu:.2f}"
-            row += f",{pf:.6e},{sf:.6e},{cf:.6e},{op}"
+            row += f",{pf:.6e},{sf:.6e},{cf:.6e},{iaf:.6e},{iasf:.6e},{iacf:.6e},{op}"
             f.write(row + "\n")
     print(f"  Saved: {beo_csv}")
 
