@@ -23,7 +23,7 @@ params = {
     # ----- Fuel Compact  -----
     "compact_radius": 0.635,
     "compact_height": 4.93,
-    "triso_pf": 0.30,           # Packing fraction of triso particles in fuel compact
+    "triso_pf": 0.33,           # Packing fraction of triso particles in fuel compact
 
     # ----- Coolant Channel -----
     "coolant_radius": 0.8,
@@ -115,8 +115,8 @@ params = {
     "use_BeO_tallies": True,
 
     # ----- OpenMC Monte Carlo Settings -----
-    "total_batches": 50,
-    "inactive_batches": 20,
+    "total_batches": 200,
+    "inactive_batches": 80,
     "particles": 50_000,
 
     # ----- Geometry Plots -----
@@ -140,7 +140,7 @@ params = {
     #   Lower bound: maximum self-shielding (all TRISO volume in inner cylinder)
     #   Upper bound: flat homogenization (no benefit over simple mixing)
     "use_homogenized_fuel": True,
-    "rpt_radius": 0.4434517226538618, # Calibrated inner cylinder radius (cm). None = not yet calibrated.
+    "rpt_radius": 0.4689496373993184, # Calibrated inner cylinder radius (cm). None = not yet calibrated.
     "rpt_calibration_max_iter": 20,    # Maximum Illinois interpolation iterations in RPTCalibration study.
     "rpt_calibration_k_tol": 0.0002,   # k_eff convergence tolerance for RPTCalibration study.
 
@@ -161,28 +161,28 @@ params = {
     "th_coupler_ignore_keff": False,   # if True, skip k_eff convergence check and converge on heating profile only
     "th_coupler_min_iter": 4,          # minimum iterations before checking convergence
     "th_coupler_max_iter": 10,         # maximum iterations before breaking
-    "th_coupler_batches": 50,          # active batches per th_coupler eigenvalue run
-    "th_coupler_inactive": 20,         # inactive batches per th_coupler eigenvalue run
-    "th_coupler_particles": 50_000,    # particles per th_coupler eigenvalue run
+    "th_coupler_batches": 100,          # active batches per th_coupler eigenvalue run
+    "th_coupler_inactive": 40,         # inactive batches per th_coupler eigenvalue run
+    "th_coupler_particles": 100_000,    # particles per th_coupler eigenvalue run
 
     # ----- Critical Rod Search Configuration -----
     "critical_search_k_tol": 0.002,
     "critical_search_max_iter": 10,
-    "critical_search_batches": 50,
-    "critical_search_inactive": 20,
-    "critical_search_particles": 50_000,
+    "critical_search_batches": 100,
+    "critical_search_inactive": 40,
+    "critical_search_particles": 100_000,
 
     # ----- Graphite Depletion -----
     "deplete_graphite": True,               # Deplete graphite as a single lumped core-averaged material
     "graphite_volume_particles": 10_000_000, # Stochastic volume calculation samples (auto-enabled when deplete_graphite=True)
 
     # ----- Depletion Study Configuration -----
-    "thermal_power_MW": 10.0,
-    # "depletion_chain_file": "/home/cade/Desktop/OpenMC/CrossSections/chain_endfb81_thermal.xml",
-    "depletion_chain_file": "/home/cade/Desktop/OpenMC/CrossSections/chain_casl_pwr.xml",
+    "thermal_power_MW": 10,
+    "depletion_chain_file": "/home/cade/Desktop/OpenMC/CrossSections/chain_endfb81_thermal.xml",
+    # "depletion_chain_file": "/home/cade/Desktop/OpenMC/CrossSections/chain_casl_pwr.xml",
     "use_reduced_chain_file": True,
     # "depletion_timesteps_days": [1, 3, 3, 3, 10, 10, 10, 30, 30, 30, 60, 60, 60, 120, 120, 120, 180, 180, 180], # Normal depletion time steps
-    "depletion_timesteps_days": [1, 3, 3, 3, 10, 10, 10, 30, 30, 30, 60, 60, 60, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90], # CS depletion time steps
+    "depletion_timesteps_days": [1, 3, 3, 3, 10, 10, 10, 30, 30, 30, 60, 60, 60, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90], # CS depletion time steps
     # "depletion_timesteps_days": [1, 3, 3, 3],  # Testing timme steps
     "depletion_integrator": "PredictorIntegrator",
     # Integrator options:

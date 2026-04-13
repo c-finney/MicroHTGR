@@ -729,6 +729,7 @@ def create_assembly_univs(
     # ==================================================================
 
     graphite_outer_cell = openmc.Cell(fill=mats.graphite)
+    graphite_outer_cell.temperature = float(np.mean(T_matrix_z))
     inf_graphite_universe = openmc.Universe(cells=[graphite_outer_cell])
 
     graphite_outer_refl = openmc.Cell(fill=mats.graphite)
@@ -936,26 +937,13 @@ def create_assembly_univs(
     # PURE GRAPHITE REFLECTOR BLOCK (rr) — ring-independent
     # ==================================================================
 
-    rr_lattice_univs = []
-    for idx in range(len(axial_coords) - 1):
-        T_reflector = T_reflector_z[idx]
-
-        graphite_rr_cell = openmc.Cell(fill=mats.graphite)
-        graphite_rr_cell.temperature = T_reflector
-        graphite_rr_univ = openmc.Universe(cells=[graphite_rr_cell])
-
-        rr_lattice_univs.append([[graphite_rr_univ]])
-
-    rr_assembly_lat = openmc.HexLattice(name="Pure Graphite Reflector Lattice")
-    rr_assembly_lat.orientation = 'x'
-    rr_assembly_lat.center = (0.0, 0.0, 0.5 * (reactor_bottom + reactor_top))
-    rr_assembly_lat.pitch = (bundle_pitch, axial_section_height)
-    rr_assembly_lat.universes = rr_lattice_univs
-    rr_assembly_lat.outer = inf_graphite_refl_universe
-
-    rr_assembly_cell = openmc.Cell(
-        fill=rr_assembly_lat, region=hex_prism_refl & +min_z & -max_z)
-    assemblies["rr"] = openmc.Universe(cells=[rr_assembly_cell])
+    rr_cells = []
+    for idx, (z_min, z_max) in enumerate(zip(axial_coords[:-1], axial_coords[1:])):
+        cell = openmc.Cell(fill=mats.graphite,
+                           region=hex_prism_refl & +openmc.ZPlane(z0=z_min) & -openmc.ZPlane(z0=z_max))
+        cell.temperature = T_reflector_z[idx]
+        rr_cells.append(cell)
+    assemblies["rr"] = openmc.Universe(cells=rr_cells)
 
     return assemblies, m_colors, bundle_pitch
 

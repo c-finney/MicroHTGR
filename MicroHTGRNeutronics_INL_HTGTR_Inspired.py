@@ -3090,12 +3090,8 @@ if __name__ == "__main__":
         BASE_DIR_RPT = os.path.join(OUTPUT_BASE, run_name + "_RPTCalibration")
         os.makedirs(BASE_DIR_RPT, exist_ok=True)
 
-        # Converge temperatures once; both the explicit-TRISO reference and all
-        # RPT homogenized cases will use the same converged _th_*_z arrays.
-        th_rpt_params = _run_th_coupler_initial(cfg.params, BASE_DIR_RPT)
-
         run_rpt_calibration(
-            params            = th_rpt_params,
+            params            = cfg.params,
             output_base_dir   = BASE_DIR_RPT,
             run_simulation_fn = run_simulation,
         )
