@@ -3030,6 +3030,76 @@ def _run_th_coupler_initial(params, base_dir):
     return th_result["converged_params"]
 
 
+def _resolve_temp_profile(params, base_dir):
+    """
+    Return a params dict with temperature profile keys populated according to
+    params["temp_profile_source"]:
+
+        "THCoupling"   — runs th_coupler() to converge temperatures (delegates to
+                         _run_th_coupler_initial; same behaviour as before)
+        "IdealProfile" — no _th_*_z keys set; build_model uses the config.py
+                         cosine/linear min/max profiles as the temperature profile
+        "Isothermal"   — all axial zones set to params["isothermal_temp"] (K)
+        "FromCSV"      — reads z_center_cm/T_coolant_K/T_compact_K/T_matrix_K columns
+                         from params["temp_profile_path"] and interpolates to n_ax_zones
+
+    Returns a deep-copy of params (possibly augmented with _th_*_z arrays).
+    Only affects SingleStudy, ParametricStudy, ReactivityStudy, and DepletionStudy.
+    """
+    source = params.get("temp_profile_source", "THCoupling")
+
+    if source == "THCoupling":
+        return _run_th_coupler_initial(params, base_dir)
+
+    result = copy.deepcopy(params)
+    n_ax = params["n_ax_zones"]
+
+    if source == "IdealProfile":
+        for key in ("_th_coolant_z", "_th_compact_z", "_th_matrix_z"):
+            result.pop(key, None)
+        print(f"\n  Temperature profile source: IdealProfile — using config.py cosine/linear profiles.")
+        return result
+
+    if source == "Isothermal":
+        T = float(params["isothermal_temp"])
+        result["_th_coolant_z"] = [T] * n_ax
+        result["_th_compact_z"] = [T] * n_ax
+        result["_th_matrix_z"]  = [T] * n_ax
+        print(f"\n  Temperature profile source: Isothermal — {T} K for all {n_ax} axial zones.")
+        return result
+
+    if source == "FromCSV":
+        import csv as _csv
+        csv_path = params.get("temp_profile_path", "")
+        if not csv_path or not os.path.exists(csv_path):
+            raise FileNotFoundError(
+                f"temp_profile_source='FromCSV' but temp_profile_path not found: {csv_path!r}"
+            )
+        z_col, tc_col, tp_col, tm_col = [], [], [], []
+        with open(csv_path, newline="") as fh:
+            reader = _csv.DictReader(fh)
+            for row in reader:
+                z_col.append(float(row["z_center_cm"]))
+                tc_col.append(float(row["T_coolant_K"]))
+                tp_col.append(float(row["T_compact_K"]))
+                tm_col.append(float(row["T_matrix_K"]))
+        # Interpolate CSV points to current model's axial zone centres
+        core_h    = params["core_height"]
+        ax_h      = core_h / n_ax
+        z_centers = np.linspace(0.5 * ax_h, core_h - 0.5 * ax_h, n_ax)
+        z_arr     = np.asarray(z_col)
+        result["_th_coolant_z"] = np.interp(z_centers, z_arr, np.asarray(tc_col)).tolist()
+        result["_th_compact_z"] = np.interp(z_centers, z_arr, np.asarray(tp_col)).tolist()
+        result["_th_matrix_z"]  = np.interp(z_centers, z_arr, np.asarray(tm_col)).tolist()
+        print(f"\n  Temperature profile source: FromCSV — loaded {len(z_col)} points from:\n    {csv_path}")
+        return result
+
+    raise ValueError(
+        f"Unknown temp_profile_source: {source!r}. "
+        "Valid options: 'THCoupling', 'IdealProfile', 'Isothermal', 'FromCSV'."
+    )
+
+
 # ====================================================================================================
 # STUDY EXECUTION
 # ====================================================================================================
@@ -3067,10 +3137,10 @@ if __name__ == "__main__":
             print(f"Run Directory: {run_dir}")
             print(f"{'='*80}")
 
-            # Set the parametric value, then converge temperatures for this case
+            # Set the parametric value, then resolve temperatures for this case
             params_copy = cfg.params.copy()
             params_copy[cfg.params["parametric_param"]] = val
-            params_copy = _run_th_coupler_initial(params_copy, run_dir)
+            params_copy = _resolve_temp_profile(params_copy, run_dir)
 
             n_trisos = run_simulation(params_copy, run_dir)
 
@@ -3109,8 +3179,8 @@ if __name__ == "__main__":
         BASE_DIR_RC = os.path.join(OUTPUT_BASE, run_name + "_ReactivityCoeffs")
         os.makedirs(BASE_DIR_RC, exist_ok=True)
 
-        # Converge temperatures before running reactivity coefficient study
-        th_rc_params = _run_th_coupler_initial(cfg.params, BASE_DIR_RC)
+        # Resolve temperatures before running reactivity coefficient study
+        th_rc_params = _resolve_temp_profile(cfg.params, BASE_DIR_RC)
 
         run_reactivity_coefficients(
             params = th_rc_params,
@@ -3142,8 +3212,8 @@ if __name__ == "__main__":
             print(f"Run directory: {BASE_DIR}")
             print(f"{'='*80}")
 
-            # Converge temperatures before depletion
-            th_dep_params = _run_th_coupler_initial(cfg.params, BASE_DIR)
+            # Resolve temperatures before depletion
+            th_dep_params = _resolve_temp_profile(cfg.params, BASE_DIR)
 
         n_trisos = run_depletion_simulation(th_dep_params, BASE_DIR)
 
@@ -3188,13 +3258,13 @@ if __name__ == "__main__":
         print(f"Run directory: {BASE_DIR}")
         print(f"{'='*80}")
 
-        # Converge temperatures before the single simulation
-        # th_single_params = _run_th_coupler_initial(cfg.params, BASE_DIR)
+        # Resolve temperatures before the single simulation
+        th_single_params = _resolve_temp_profile(cfg.params, BASE_DIR)
 
-        n_trisos = run_simulation(cfg.params, BASE_DIR)
+        n_trisos = run_simulation(th_single_params, BASE_DIR)
 
         if cfg.params["run_post_processing"]:
-            run_post_processing(BASE_DIR, cfg.params, n_trisos)
+            run_post_processing(BASE_DIR, th_single_params, n_trisos)
 
         print(f"\n{'='*80}")
         print("SIMULATION COMPLETE")

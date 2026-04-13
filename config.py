@@ -97,13 +97,23 @@ params = {
     #    "rssa"           — Alt reflector block with 3 secondary shutdown rods in hexagonal ring (ONLY WORKS FOR 1/6 GEOMETRY)
 
     # ----- Temperature Profile -----
+    "temp_profile_source": "THCoupling",
+    # Temperature Profile Source Options:
+    #    "THCoupling"   — Couples with thermal hydraulics code to get accurate temperatures at core configuration
+    #    "IdealProfile" — Uses an ideal profile (linear for coolant, cosine for compact and matrix) with temperatures set in config.py
+    #    "Isothermal"   — Uses a single temperature for all cells in the core
+    #    "FromCSV"      — Extracts temp profile for coolant, compact, and matrix from a previous run's TH coupler CSV output file
+    "isothermal_temp": 300,
+    "temp_profile_path": "/home/cade/Desktop/OpenMC/SeniorDesign/MicroHTGR_Output/htgr_run_04.13.2026_11.38.46_CSDepletion/cs_th_step001_t0d/th_coupler_attempt2_th_iter_04_temperatures.csv",
+
+    # ----- Ideal Temperature Profile -----
     "coolant_inlet": 573.15,
     "coolant_outlet": 1023.15,
     "compact_min": 973.15,
     "compact_max": 1173.15,
     "matrix_min": 903.15,
     "matrix_max": 1083.15,
-    # NOTE: reflector temps are no longer separate parameters.
+    # NOTE: Used for initial guess of TH Coupling
     # Top/bottom axial reflectors use matrix_max/matrix_min respectively.
     # Radial reflector cells use the matrix axial profile (T_matrix_z).
 
@@ -192,9 +202,9 @@ params = {
     #    "LEQIIntegrator"      — LE/QI (good accuracy, 2× cost)
 
     # ----- Depletion Restart Configuration -----
-    # "restart_depletion": False,
-    # "restart_run_dir": "/home/cade/Desktop/OpenMC/SeniorDesign/MicroHTGR_Output/htgr_run_02.23.2026_14.00.15_Depletion",
-    # "restart_timesteps_days": [120], # Remaining timesteps to run (replaces original list)
+    "restart_depletion": False,
+    "restart_run_dir": "/home/cade/Desktop/OpenMC/SeniorDesign/MicroHTGR_Output/htgr_run_02.23.2026_14.00.15_Depletion",
+    "restart_timesteps_days": [120], # Remaining timesteps to run (replaces original list)
     # To use restart:
     #    1. Set restart_depletion = True
     #    2. Set restart_run_dir to the path of the failed run directory
