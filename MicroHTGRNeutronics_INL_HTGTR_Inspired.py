@@ -3160,8 +3160,12 @@ if __name__ == "__main__":
         BASE_DIR_RPT = os.path.join(OUTPUT_BASE, run_name + "_RPTCalibration")
         os.makedirs(BASE_DIR_RPT, exist_ok=True)
 
+        # Resolve temperatures once; all calibration cases (explicit-TRISO reference
+        # and every RPT bracket/iteration run) will share this baseline profile.
+        rpt_params = _resolve_temp_profile(cfg.params, BASE_DIR_RPT)
+
         run_rpt_calibration(
-            params            = cfg.params,
+            params            = rpt_params,
             output_base_dir   = BASE_DIR_RPT,
             run_simulation_fn = run_simulation,
         )
