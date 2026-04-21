@@ -103,14 +103,16 @@ def _build_moderator_perturbed_params(base_params, delta_T):
     """
     Perturb MODERATOR / GRAPHITE temperatures only (MTC).
 
-    Shifts matrix_min, matrix_max, reflector_min, reflector_max by delta_T.
-    Fuel compact and coolant temperatures stay at nominal.
+    Shifts matrix_min, matrix_max, and reflector_min/reflector_max (if present)
+    by delta_T.  Fuel compact and coolant temperatures stay at nominal.
     """
     p = copy.deepcopy(base_params)
     p["matrix_min"] += delta_T
     p["matrix_max"] += delta_T
-    p["reflector_min"] += delta_T
-    p["reflector_max"] += delta_T
+    if "reflector_min" in p:
+        p["reflector_min"] += delta_T
+    if "reflector_max" in p:
+        p["reflector_max"] += delta_T
     return p
 
 
@@ -127,8 +129,10 @@ def _build_isothermal_perturbed_params(base_params, delta_T):
     p["compact_max"] += delta_T
     p["matrix_min"] += delta_T
     p["matrix_max"] += delta_T
-    p["reflector_min"] += delta_T
-    p["reflector_max"] += delta_T
+    if "reflector_min" in p:
+        p["reflector_min"] += delta_T
+    if "reflector_max" in p:
+        p["reflector_max"] += delta_T
     return p
 
 

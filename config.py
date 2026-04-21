@@ -53,10 +53,10 @@ params = {
     "fuel_assembly_control_radius": 2.54,    # Radius for fuel assembly control rod absorber material
     "sheath_thickness": 0.1, 
     "guide_tube_thickness": 0.2,  
-    "bank_1_insertion": 0.0,                 # Fractional control rod insertion for bank 1 (0-1.0)
-    "bank_2_insertion": 0.0,                 # Fractional control rod insertion for bank 2 (0-1.0)
-    # "bank_1_insertion": 1.0,                 # Critical control rod insertion for bank 1 (0-1.0)
-    # "bank_2_insertion": 0.734336,            # Critical control rod insertion for bank 2 (0-1.0)
+    # "bank_1_insertion": 0.0,                 # Fractional control rod insertion for bank 1 (0-1.0)
+    # "bank_2_insertion": 0.0,                 # Fractional control rod insertion for bank 2 (0-1.0)
+    "bank_1_insertion": 1.0,                 # Critical control rod insertion for bank 1 (0-1.0)
+    "bank_2_insertion": 0.7041546538014286,  # Critical control rod insertion for bank 2 (0-1.0)
     "bank_3_insertion": 0.0,                 # Fractional control rod insertion for bank 3 (0-1.0)
     "B10_enrichment_control": 0.9,
     "B10_wt_percent_control": 0.687,
@@ -97,14 +97,14 @@ params = {
     #    "rssa"           — Alt reflector block with 3 secondary shutdown rods in hexagonal ring (ONLY WORKS FOR 1/6 GEOMETRY)
 
     # ----- Temperature Profile -----
-    "temp_profile_source": "THCoupling",
+    "temp_profile_source": "FromCSV",
     # Temperature Profile Source Options:
     #    "THCoupling"   — Couples with thermal hydraulics code to get accurate temperatures at core configuration
     #    "IdealProfile" — Uses an ideal profile (linear for coolant, cosine for compact and matrix) with temperatures set in config.py
     #    "Isothermal"   — Uses a single temperature for all cells in the core
     #    "FromCSV"      — Extracts temp profile for coolant, compact, and matrix from a previous run's TH coupler CSV output file
-    "isothermal_temp": 300,
-    "temp_profile_path": "/home/cade/Desktop/OpenMC/SeniorDesign/MicroHTGR_Output/htgr_run_04.13.2026_11.38.46_CSDepletion/cs_th_step001_t0d/th_coupler_attempt2_th_iter_04_temperatures.csv",
+    "isothermal_temp": 350,
+    "temp_profile_path": "/home/cade/Desktop/OpenMC/SeniorDesign/MicroHTGR_Output/htgr_run_04.14.2026_20.50.38_CriticalSearch/th_coupler_attempt2_th_iter_04_temperatures.csv",
 
     # ----- Ideal Temperature Profile -----
     "coolant_inlet": 573.15,
@@ -125,9 +125,9 @@ params = {
     "use_BeO_tallies": True,
 
     # ----- OpenMC Monte Carlo Settings -----
-    "total_batches": 200,
-    "inactive_batches": 80,
-    "particles": 50_000,
+    "total_batches": 500,
+    "inactive_batches": 100,
+    "particles": 100_000,
 
     # ----- Geometry Plots -----
     "make_geometry_plots": True,
@@ -293,7 +293,7 @@ params = {
     ],
 
     # ----- Study Execution Mode Configuration -----
-    "study_execution_mode": "CSDepletionStudy",
+    "study_execution_mode": "ReactivityStudy",
     # Study Execution Mode Options:
     #    "SingleStudy"      — Singular steady state monte carlo simulation of specified core layout
     #    "ParametricStudy"  — Creates multiple steady state monte carlo simulations varying a single core parameter

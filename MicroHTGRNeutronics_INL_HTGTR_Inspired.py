@@ -3075,23 +3075,18 @@ def _resolve_temp_profile(params, base_dir):
             raise FileNotFoundError(
                 f"temp_profile_source='FromCSV' but temp_profile_path not found: {csv_path!r}"
             )
-        z_col, tc_col, tp_col, tm_col = [], [], [], []
+        tc_col, tp_col, tm_col = [], [], []
         with open(csv_path, newline="") as fh:
             reader = _csv.DictReader(fh)
             for row in reader:
-                z_col.append(float(row["z_center_cm"]))
                 tc_col.append(float(row["T_coolant_K"]))
                 tp_col.append(float(row["T_compact_K"]))
                 tm_col.append(float(row["T_matrix_K"]))
-        # Interpolate CSV points to current model's axial zone centres
-        core_h    = params["core_height"]
-        ax_h      = core_h / n_ax
-        z_centers = np.linspace(0.5 * ax_h, core_h - 0.5 * ax_h, n_ax)
-        z_arr     = np.asarray(z_col)
-        result["_th_coolant_z"] = np.interp(z_centers, z_arr, np.asarray(tc_col)).tolist()
-        result["_th_compact_z"] = np.interp(z_centers, z_arr, np.asarray(tp_col)).tolist()
-        result["_th_matrix_z"]  = np.interp(z_centers, z_arr, np.asarray(tm_col)).tolist()
-        print(f"\n  Temperature profile source: FromCSV — loaded {len(z_col)} points from:\n    {csv_path}")
+
+        result["_th_coolant_z"] = tc_col
+        result["_th_compact_z"] = tp_col
+        result["_th_matrix_z"]  = tm_col
+
         return result
 
     raise ValueError(
@@ -3324,11 +3319,11 @@ if __name__ == "__main__":
             critical_b2 = cs_result["critical_bank_2"]
 
             # Copy search CSV to BASE_DIR_CS and clean up
-            search_csv = os.path.join(search_dir, "critical_search_iterations.csv")
+            search_csv = cs_result.get("csv_path", "")
             if os.path.isfile(search_csv):
                 shutil.copy2(search_csv,
                              os.path.join(BASE_DIR_CS,
-                                          f"critical_search_iterations{attempt_sfx}.csv"))
+                                          f"critical_search_summary{attempt_sfx}.csv"))
             shutil.rmtree(search_dir, ignore_errors=True)
 
             # Step B: run th_coupler with the critical rod positions
@@ -3343,11 +3338,16 @@ if __name__ == "__main__":
                 bank_2            = critical_b2,
             )
 
-            # Copy summary CSV to BASE_DIR_CS and clean up th_dir tree
-            if os.path.isfile(th_result["csv_path"]):
-                shutil.copy2(th_result["csv_path"],
-                             os.path.join(BASE_DIR_CS,
-                                          f"th_coupler_summary{attempt_sfx}.csv"))
+            # Extract all CSVs from th_dir to BASE_DIR_CS, then delete th subdir.
+            # This preserves per-iteration heating and temperature profile CSVs.
+            try:
+                for _src in glob.glob(os.path.join(th_dir, "*.csv")):
+                    _fname = os.path.basename(_src)
+                    _dest  = os.path.join(BASE_DIR_CS,
+                                          f"th_coupler{attempt_sfx}_{_fname}")
+                    shutil.copy2(_src, _dest)
+            except Exception as e:
+                print(f"  WARNING: Could not copy th_coupler CSVs: {e}")
             shutil.rmtree(th_dir, ignore_errors=True)
 
             cs_current_params = th_result["converged_params"]

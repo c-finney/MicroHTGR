@@ -21,10 +21,12 @@ fuel.depletable = True
 # ----- TRISO Layers -----
 buffer = openmc.Material(name="Buffer") # Carbon buffer layer
 buffer.add_element("C", 1.0)
+buffer.add_s_alpha_beta('c_Graphite')
 buffer.set_density("kg/m3", params["buffer_density"])
 
 pyc = openmc.Material(name="PyC") # Pyrolytic carbon layer (inner and outer)
 pyc.add_element("C", 1.0)
+pyc.add_s_alpha_beta('c_Graphite')
 pyc.set_density("kg/m3", params["pyc_density"])
 
 sic = openmc.Material(name="SiC") # Silicon carbide layer
@@ -40,6 +42,7 @@ A_boron = 10.811
 boron_atom_fraction = boron_mass_fraction * A_carbon / A_boron
 graphite.add_element("C", 1.0 - boron_atom_fraction)
 graphite.add_element("B", boron_atom_fraction)
+graphite.add_s_alpha_beta('c_Graphite')
 graphite.set_density("kg/m3", params["matrix_density"])
 if params.get("deplete_graphite", False):
     graphite.depletable = True
