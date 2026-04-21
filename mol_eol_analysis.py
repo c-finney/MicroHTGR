@@ -1525,7 +1525,7 @@ def run_full_tally_eigenvalue(params, depleted, run_dir, label="", depletion_run
     full_params["use_leakage_tallies"] = True
     full_params["make_geometry_plots"] = False
     full_params["total_batches"]       = 500
-    full_params["inactive_batches"]    = 200
+    full_params["inactive_batches"]    = 100
 
     print(f"\n{'=' * 70}")
     if label:
@@ -2025,6 +2025,8 @@ def run_mol_eol_analysis(
     critical_bank_1 = 0.0   # fall back to rods-out if search skipped
     critical_bank_2 = 0.0
 
+    _cs_log_path = os.path.join(depletion_run_dir, "critical_search_depletion_log.json")
+
     if critical_bank_1_override is not None:
         critical_bank_1 = float(critical_bank_1_override)
         critical_bank_2 = float(critical_bank_2_override) if critical_bank_2_override is not None else 0.0
@@ -2036,6 +2038,34 @@ def run_mol_eol_analysis(
         print(f"\n{'─' * 70}")
         print(f"  CRITICAL ROD SEARCH — skipped (using supplied values)")
         print(f"  Bank 1 = {critical_bank_1:.4f},  Bank 2 = {critical_bank_2:.4f}")
+        print(f"{'─' * 70}")
+    elif os.path.exists(_cs_log_path) and (run_heat_map or run_reactivity_study):
+        # CS depletion run — read the stored critical rod position for this step
+        # from critical_search_depletion_log.json instead of re-running the search.
+        # The log is a list of per-step entries (1-based "step" field) written by
+        # run_coupled_depletion().  H5 index i (0-based) maps to log entry i.
+        with open(_cs_log_path) as _f:
+            _cs_log = json.load(_f)
+        _log_idx = step_idx if step_idx >= 0 else len(_cs_log) + step_idx
+        _log_idx = max(0, min(_log_idx, len(_cs_log) - 1))
+        _log_entry = _cs_log[_log_idx]
+        critical_bank_1 = float(_log_entry["bank_1_insertion"])
+        critical_bank_2 = float(_log_entry["bank_2_insertion"])
+        summary["critical_rod_search"] = {
+            "from_cs_log":    True,
+            "log_step":       _log_entry["step"],
+            "critical_bank_1": critical_bank_1,
+            "critical_bank_2": critical_bank_2,
+            "critical_keff":   _log_entry.get("critical_keff"),
+            "critical_keff_std": _log_entry.get("critical_keff_std"),
+            "converged":       _log_entry.get("converged"),
+        }
+        print(f"\n{'─' * 70}")
+        print(f"  CRITICAL ROD SEARCH — skipped (CS depletion log found)")
+        print(f"  Step {_log_entry['step']}:  "
+              f"bank_1 = {critical_bank_1:.4f},  bank_2 = {critical_bank_2:.4f}"
+              + (f"  (k = {_log_entry['critical_keff']:.5f})"
+                 if _log_entry.get("critical_keff") is not None else ""))
         print(f"{'─' * 70}")
     elif run_heat_map or run_reactivity_study:
         print(f"\n{'─' * 70}")

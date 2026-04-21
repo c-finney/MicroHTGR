@@ -90,12 +90,16 @@ def _build_fuel_perturbed_params(base_params, delta_T):
     """
     Perturb FUEL temperatures only (Doppler coefficient).
 
-    Shifts compact_min, compact_max by delta_T.
+    Shifts compact_min, compact_max by delta_T.  When a CS-converged
+    _th_compact_z profile is present it takes priority over the scalar
+    bounds in build_model, so it is also shifted here.
     Everything else stays at nominal.
     """
     p = copy.deepcopy(base_params)
     p["compact_min"] += delta_T
     p["compact_max"] += delta_T
+    if "_th_compact_z" in p:
+        p["_th_compact_z"] = [T + delta_T for T in p["_th_compact_z"]]
     return p
 
 
@@ -104,7 +108,9 @@ def _build_moderator_perturbed_params(base_params, delta_T):
     Perturb MODERATOR / GRAPHITE temperatures only (MTC).
 
     Shifts matrix_min, matrix_max, and reflector_min/reflector_max (if present)
-    by delta_T.  Fuel compact and coolant temperatures stay at nominal.
+    by delta_T.  When a CS-converged _th_matrix_z profile is present it takes
+    priority over the scalar bounds in build_model, so it is also shifted here.
+    Fuel compact and coolant temperatures stay at nominal.
     """
     p = copy.deepcopy(base_params)
     p["matrix_min"] += delta_T
@@ -113,6 +119,8 @@ def _build_moderator_perturbed_params(base_params, delta_T):
         p["reflector_min"] += delta_T
     if "reflector_max" in p:
         p["reflector_max"] += delta_T
+    if "_th_matrix_z" in p:
+        p["_th_matrix_z"] = [T + delta_T for T in p["_th_matrix_z"]]
     return p
 
 
@@ -121,6 +129,8 @@ def _build_isothermal_perturbed_params(base_params, delta_T):
     Perturb ALL temperatures uniformly (ITC).
 
     Shifts coolant, compact, matrix, and reflector temperatures by delta_T.
+    When CS-converged _th_*_z profiles are present they take priority over
+    the scalar bounds in build_model, so they are also shifted here.
     """
     p = copy.deepcopy(base_params)
     p["coolant_inlet"] += delta_T
@@ -133,6 +143,9 @@ def _build_isothermal_perturbed_params(base_params, delta_T):
         p["reflector_min"] += delta_T
     if "reflector_max" in p:
         p["reflector_max"] += delta_T
+    for key in ("_th_coolant_z", "_th_compact_z", "_th_matrix_z"):
+        if key in p:
+            p[key] = [T + delta_T for T in p[key]]
     return p
 
 
