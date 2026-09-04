@@ -40,3 +40,6 @@ tallies.xml
 plots.xml
 cross_sections.xml
 chain_reduced.xml
+
+# Standalone nc_htgr.py output (written to the working directory)
+htgr_out_*.csv

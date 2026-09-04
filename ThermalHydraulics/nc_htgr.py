@@ -50,6 +50,7 @@ from __future__ import annotations
 import argparse
 import csv
 import math
+import os
 from dataclasses import dataclass, field
 from typing import Dict, Tuple, Optional
 
@@ -840,6 +841,15 @@ def main() -> None:
         parser.error("--deck is required. Please provide a key-value CSV input deck.")
     deck = read_key_value_csv(args.deck)
     ch_in, br_in = parse_inputs_from_deck(deck)
+
+    # A relative neutronics_file is interpreted relative to the deck, not the
+    # working directory, so the shipped deck runs from anywhere.
+    if ch_in.neutronics_file and not os.path.isabs(ch_in.neutronics_file):
+        if not os.path.exists(ch_in.neutronics_file):
+            _beside_deck = os.path.join(os.path.dirname(os.path.abspath(args.deck)),
+                                        ch_in.neutronics_file)
+            if os.path.exists(_beside_deck):
+                ch_in.neutronics_file = _beside_deck
 
     # Load neutronics table if requested
     ntable: Optional[NeutronicsTable] = None

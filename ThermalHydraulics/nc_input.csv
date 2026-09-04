@@ -30,7 +30,7 @@ flow_upward,false
 #   axial_shape = neutronics_table          
 #   axial_shape = cosine                    
 axial_shape,neutronics_table
-neutronics_file,BOLCriticalHeating.csv
+neutronics_file,neutronics.csv
 
 # Which channel to simulate:  average / hot / cold
 channel_case,hot
