@@ -23,12 +23,17 @@ contribution to the CHUDR senior design project (University of Florida,
 ENU 4192). It is included here with his permission so that the coupled
 neutronics/TH workflow lives in a single repository.
 
-Modifications made in this repository relative to the upstream original:
-  * Converted the indirect Brayton cycle to a direct recuperated cycle.
-  * Recuperator effectiveness updated to 0.94.
-  * Corrected the axial heating profile, which was previously read in reverse.
-  * TRISO packing fraction default changed to 0.33 to match the calibrated
-    neutronics model.
+Modifications made relative to the upstream original:
+  * Corrected the axial heating profile for downward flow — the z lookup in
+    _get_qprime is mirrored so the inlet node reads the power at the physical
+    top of the core. Without this the profile is applied backwards.
+  * Recuperator effectiveness raised from 0.90 to 0.94.
+  * TRISO packing fraction raised from 0.30 to 0.33.
+  * neutronics_file repointed to the neutronics.csv that ships here, and a
+    relative neutronics_file is resolved against the deck's own directory.
+
+The power cycle was already a direct recuperated Brayton cycle upstream; the
+upstream repository description calling it indirect is stale metadata.
 
 See NOTICE.md in the repository root for the full provenance statement.
 

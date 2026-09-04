@@ -105,12 +105,22 @@ repository. The upstream project remains the canonical source.
 **Modifications made in this repository** (originally made in the fork at
 `c-finney/HTGR-SCAPC`, now integrated here):
 
-- Converted the indirect Brayton cycle to a **direct** recuperated cycle.
-- Recuperator effectiveness updated to 0.94.
-- Corrected the axial heating profile, which was being read in reverse.
-- TRISO packing fraction default changed to 0.33 to match the calibrated
+- Corrected the axial heating profile for downward flow. The solver iterates
+  from the physical bottom of the core upward, but with `flow_upward` false the
+  inlet is at the physical top; the z lookup in `_get_qprime` is now mirrored so
+  the inlet node reads the power at the top of the core and the outlet node the
+  power at the bottom. Without this the profile is applied backwards.
+- Recuperator effectiveness raised from 0.90 to 0.94.
+- TRISO packing fraction raised from 0.30 to 0.33, matching the calibrated
   neutronics model.
 - Module docstring and input-deck header added for provenance and usage.
+- `neutronics_file` in the deck repointed from `BOLCriticalHeating.csv`, which
+  was never part of the project, to the `neutronics.csv` that ships here, and a
+  relative `neutronics_file` is now resolved against the deck's own directory.
+
+The solver's power cycle was already a direct recuperated Brayton cycle in the
+upstream source (`# Direct recuperated Brayton cycle`); the upstream repository
+description calling it indirect is stale metadata, not a difference in code.
 
 `ThermalHydraulics/neutronics.csv` is an example axial heating profile produced
 by the neutronics side of this repository and consumed by `nc_htgr.py`; it is not
