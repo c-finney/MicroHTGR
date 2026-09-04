@@ -97,7 +97,7 @@ Everything else — enrichment, TRISO layer thicknesses, packing fraction, compa
 | **Multiphysics** | Converged neutronics ↔ single-channel thermal-hydraulics iteration on both `k_eff` and the axial heating profile |
 | **Reactivity coefficients** | FTC, MTC and ITC by direct perturbation, at beginning, middle or end of life |
 | **MOL/EOL analysis** | Re-analyse any depletion step — coefficients, heat maps, leakage spectra — without re-running the depletion |
-| **Post-processing** | Nine modules producing burnup, isotopics, peaking, spectra, reflector fluence, power cycle output and parametric summaries |
+| **Post-processing** | Ten modules producing burnup, isotopics, peaking, spectra, reflector fluence, power cycle output and parametric summaries |
 
 ## Installation
 
@@ -229,6 +229,7 @@ Runs automatically unless `run_post_processing` is disabled; each module also wo
 | `leakage_spectrum` | Leakage spectra and absolute rates across every core boundary |
 | `BeO_depletion_postprocessing` | Reflector peak and area-averaged fast flux and cumulative fluence vs. burnup |
 | `reactivity_coefficients_postprocessing` | Coefficient plots and tabulated results |
+| `rod_worth_postprocessing` | Integral and differential control rod worth curves from an insertion sweep, with propagated uncertainties |
 | `parametric_postprocessing` | Cross-case comparison plots and summary tables for a parameter sweep |
 
 Every run directory also carries `run_params.json` — a complete snapshot of the parameters that produced it, which is what makes results reproducible and what `mol_eol_analysis.py` reads to reconstruct a model.
@@ -309,7 +310,7 @@ MicroHTGR/
 │   ├── nc_input.csv              TH and power cycle input deck
 │   └── neutronics.csv            Example axial heating profile
 │
-├── PostProcessingScripts/      Nine analysis and plotting modules
+├── PostProcessingScripts/      Ten analysis and plotting modules
 │
 ├── examples/
 │   └── chudr_cs_depletion_config.py    Reference coupled CS-depletion run

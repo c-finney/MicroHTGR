@@ -784,10 +784,12 @@ def build_model(params, run_dir):
                 m_colors[pmat] = 'purple'
     if params["secondary_SD_rods_inserted"] and params["use_homogenized_SS_rods"]:
         m_colors[mats.b4c_ss] = 'gold'
-    elif params["bank_1_insertion"] > 0 or params["bank_2_insertion"] > 0 or params["bank_3_insertion"] > 0:
-        m_colors[mats.b4c_control] = 'black'
     elif params["secondary_SD_rods_inserted"]:
         m_colors[mats.b4c_control] = 'gold'
+    # Independent of the reserve shutdown branch above: inserted control rods are
+    # always drawn black, so a plot with both systems inserted shows both.
+    if params["bank_1_insertion"] > 0 or params["bank_2_insertion"] > 0 or params["bank_3_insertion"] > 0:
+        m_colors[mats.b4c_control] = 'black'
     m_colors[mats.incoloy800H] = 'gray'
     m_colors[mats.beo] = 'lightblue'
 

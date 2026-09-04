@@ -9,6 +9,7 @@ This package contains scripts for post-processing OpenMC simulation results:
 - reactivity_coefficients_postprocessing: Reactivity coefficient plotting and reporting
 - depletion_postprocessing: Depletion simulation results and nuclide tracking
 - leakage_spectrum: Neutron leakage energy spectra at reflector boundaries
+- rod_worth_postprocessing: Integral and differential control rod worth curves
 """
 
 from .burnup_estimation import run_burnup_estimation
@@ -19,6 +20,7 @@ from .reactivity_coefficients_postprocessing import save_results, plot_results
 from .depletion_postprocessing import run_depletion_postprocessing
 from .leakage_spectrum import run_leakage_analysis
 from .BeO_depletion_postprocessing import run_BeO_depletion_postprocessing
+from .rod_worth_postprocessing import run_rod_worth_postprocessing
 
 __all__ = [
     'run_burnup_estimation',
@@ -29,5 +31,6 @@ __all__ = [
     'plot_results',
     'run_depletion_postprocessing',
     'run_leakage_analysis',
-    'run_BeO_depletion_postprocessing'
+    'run_BeO_depletion_postprocessing',
+    'run_rod_worth_postprocessing'
 ]
