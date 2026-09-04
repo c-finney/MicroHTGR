@@ -1,0 +1,23 @@
+# Conda environment for the MicroHTGR framework.
+#
+#   conda env create -f environment.yml
+#   conda activate microhtgr
+#
+# OpenMC is only distributed through conda-forge, so conda (or mamba) is the
+# supported installation route. Cross-section data is NOT installed by this
+# file — see README.md, "Cross-section data".
+name: microhtgr
+channels:
+  - conda-forge
+dependencies:
+  - python>=3.11
+  - openmc>=0.15.0      # Monte Carlo transport and depletion
+  - numpy>=1.24
+  - scipy>=1.10
+  - matplotlib>=3.7     # All post-processing figures
+  - h5py>=3.8           # Statepoint and depletion_results.h5 access
+  - pandas>=2.0         # Thermal-hydraulics tables
+  - uncertainties>=3.1  # Propagated k_eff uncertainties
+  - pip
+  - pip:
+      - CoolProp>=6.4   # Helium equation of state for ThermalHydraulics/nc_htgr.py

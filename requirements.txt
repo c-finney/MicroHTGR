@@ -1,0 +1,16 @@
+# Python dependencies for the MicroHTGR framework.
+#
+# NOTE: OpenMC itself is NOT installable from PyPI. Install it with conda from
+# conda-forge (see environment.yml, which is the supported route):
+#
+#     conda env create -f environment.yml
+#
+# This file covers the remaining dependencies for anyone installing OpenMC by
+# another means (a source build, a system package, or an existing environment).
+numpy>=1.24
+scipy>=1.10
+matplotlib>=3.7
+h5py>=3.8
+pandas>=2.0
+uncertainties>=3.1
+CoolProp>=6.4
