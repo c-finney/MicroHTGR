@@ -1,3 +1,21 @@
+"""
+TRISO Particle Lattice Construction
+===================================
+
+Builds the explicit TRISO particle model for one axial section of a fuel compact.
+
+``generate_triso_positions`` performs the random sphere packing once for a given
+packing fraction and compact geometry; ``build_triso_lattice_for_material`` then
+reuses those positions to build a lattice for any fuel material. Splitting the
+work this way matters for depletion, where every axial burnup zone needs its own
+independently depletable fuel material but should share identical particle
+positions so that geometric differences do not contaminate the burnup comparison.
+
+Particles are packed into an OpenMC repeated-structures lattice rather than being
+placed as individual cells, which keeps the tracking cost roughly independent of
+particle count.
+"""
+
 import types
 import openmc
 import numpy as np

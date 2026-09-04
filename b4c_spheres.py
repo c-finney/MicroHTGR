@@ -1,3 +1,18 @@
+"""
+B4C Sphere Lattice Construction for the Reserve Shutdown System
+===============================================================
+
+Builds the explicit packed-sphere model of the reserve (secondary) shutdown
+system, in which B4C spheres fall by gravity into dedicated core channels.
+
+Mirrors the structure of ``trisos.py``: positions are generated once for a target
+packing fraction and channel radius, then filled into an OpenMC lattice. Modelling
+the spheres explicitly rather than as a homogenised B4C/He mixture captures the
+self-shielding of the absorber, which is significant at the packing fractions used
+here. Set ``use_homogenized_SS_rods`` in ``config.py`` to fall back to the
+homogenised treatment for faster scoping runs.
+"""
+
 import types
 import openmc
 import numpy as np

@@ -1,3 +1,25 @@
+"""
+OpenMC Material Definitions
+===========================
+
+Defines every material used by the core model — TRISO kernel and coating layers,
+graphite matrix and reflector, helium coolant, B4C absorbers, Incoloy 800H
+structural components and the BeO reflector — from the parameter values in
+``config.py``.
+
+Material compositions are built once at import time and shared by all study
+modes. Densities and compositions that depend on user-set parameters (enrichment,
+boron content, B-10 enrichment, packing fractions) are computed here rather than
+being written out as literals, so changing a value in ``config.py`` is sufficient
+to change the model.
+
+Derived from the NRIC Virtual Test Bed (VTB) prismatic HTGR assembly model,
+``htgr/assembly`` in https://github.com/idaholab/virtual_test_bed, which is
+distributed under the Creative Commons Attribution 4.0 International licence
+(CC BY 4.0). See NOTICE.md in the repository root for the full attribution and
+a description of the changes made.
+"""
+
 import openmc
 import config as cfg
 

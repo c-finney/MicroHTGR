@@ -1,3 +1,28 @@
+"""
+Hexagonal Prismatic Assembly and Core Construction
+==================================================
+
+Builds every assembly universe used by the core model and assembles them into a
+full or 1/6-symmetric hexagonal lattice.
+
+Assembly types are selected per lattice position by the short codes listed under
+``core_rings`` in ``config.py`` (``"f"`` fuelled, ``"fc1"`` fuelled with a bank-1
+control rod, ``"rr"`` reflector, and so on), so an entirely different core layout
+is a config edit rather than a code change. Control rods are modelled with a
+continuous ``ZPlane`` at the exact insertion depth rather than being snapped to
+axial zone boundaries, which is what makes the criticality search able to resolve
+rod worth to arbitrary precision.
+
+Each assembly is divided into ``n_ax_zones`` axial sections so that per-zone
+temperatures and, in depletion runs, per-zone fuel materials can be assigned.
+
+Derived from the NRIC Virtual Test Bed (VTB) prismatic HTGR assembly model,
+``htgr/assembly`` in https://github.com/idaholab/virtual_test_bed, which is
+distributed under the Creative Commons Attribution 4.0 International licence
+(CC BY 4.0). See NOTICE.md in the repository root for the full attribution and
+a description of the changes made.
+"""
+
 import math
 import types
 import openmc
