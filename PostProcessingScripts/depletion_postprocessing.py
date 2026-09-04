@@ -1407,6 +1407,7 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
                 label='ARO k-eff (discharge interp.)', zorder=5)
         ax.set_xlabel("Time (years)")
         ax.set_ylabel("k-effective")
+        ax.set_ylim(top=1.015)
         if show_titles:
             ax.set_title("k-effective vs. Time (BOS & EOS)")
         ax.legend()

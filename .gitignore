@@ -1,0 +1,42 @@
+# ----- Python bytecode / build artifacts -----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# ----- Virtual environments -----
+.venv/
+venv/
+env/
+
+# ----- Editor / IDE -----
+.vscode/
+.idea/
+*.code-workspace
+*.swp
+*~
+
+# ----- OS -----
+.DS_Store
+Thumbs.db
+
+# ----- OpenMC run products -----
+# Simulation output is written to the directory set by MICROHTGR_OUTPUT_DIR
+# (default: ../MicroHTGR_Output) and is never tracked here.
+MicroHTGR_Output/
+htgr_run_*/
+*.h5
+statepoint.*
+summary.h5
+tallies.out
+geometry.xml
+materials.xml
+settings.xml
+tallies.xml
+plots.xml
+cross_sections.xml
+chain_reduced.xml
