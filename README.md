@@ -83,7 +83,7 @@ The available assembly codes:
 
 Everything else — enrichment, TRISO layer thicknesses, packing fraction, compact and coolant channel dimensions, lattice and bundle pitch, core height, axial zoning, reflector material and thickness, absorber enrichment, rod bank assignments, depletion schedule, tally configuration, Monte Carlo settings — is a key in the same dictionary.
 
-**Consequence:** a wide range of prismatic HTGR cores can be analysed without touching the source. Fort St. Vrain-style large cores, INL HTGTR-derived layouts, compact micro-assembly cores, graphite- or BeO-reflected, single- or multi-bank, poisoned or clean.
+**Consequence:** a wide range of prismatic HTGR cores can be analysed without touching the source. Fort St. Vrain-style large cores, INL HTGTR-derived layouts, compact micro-assembly cores, graphite- or BeO-reflected, single- or multi-bank, poisoned or clean. Additional assembly geometries can be added to the code as well, allowing for further modularity in core design.
 
 ## Capabilities
 
