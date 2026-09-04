@@ -1,0 +1,76 @@
+cff-version: 1.2.0
+message: "If you use this software in your research, please cite it as below."
+title: "MicroHTGR: A Modular OpenMC Neutronics and Depletion Framework for Prismatic High-Temperature Gas-Cooled Reactors"
+abstract: >-
+  A configuration-driven OpenMC framework for full-core neutronics, criticality
+  search, spatially resolved depletion, and coupled neutronics/thermal-hydraulics
+  analysis of prismatic high-temperature gas-cooled reactors. Core layout, fuel,
+  reactivity control, reflectors and depletion schedules are all defined in a
+  single parameter file, so a wide range of prismatic HTGR cores can be analysed
+  without modifying the source. Developed for, and demonstrated on, the Compact
+  Helium-cooled Universal Defense Reactor (CHUDR) senior design project.
+type: software
+authors:
+  - family-names: Finney
+    given-names: Cade
+    email: finney.cade@ufl.edu
+    affiliation: >-
+      Department of Materials Science and Engineering, Nuclear Engineering
+      Program, University of Florida
+repository-code: "https://github.com/c-finney/MicroHTGR"
+license: MIT
+keywords:
+  - nuclear-engineering
+  - reactor-physics
+  - openmc
+  - monte-carlo
+  - neutron-transport
+  - depletion
+  - burnup
+  - htgr
+  - triso
+  - microreactor
+  - thermal-hydraulics
+  - multiphysics
+references:
+  - type: software
+    title: "Virtual Test Bed (VTB): Prismatic HTGR Assembly Model"
+    authors:
+      - name: "Idaho National Laboratory / National Reactor Innovation Center"
+    repository-code: "https://github.com/idaholab/virtual_test_bed"
+    url: "https://virtualtestbed.inl.gov/htgr/assembly/index.html"
+    license: CC-BY-4.0
+    notes: >-
+      Portions of the material and geometry models in this repository are derived
+      from the VTB prismatic HTGR assembly model. See NOTICE.md.
+  - type: software
+    title: "HTGR-SCAPC: Single-Channel Analysis Coupled with a Brayton Cycle"
+    authors:
+      - family-names: Huynh
+        given-names: Bryan
+    repository-code: "https://github.com/bryanhhuynh/HTGR-SCAPC"
+    notes: >-
+      ThermalHydraulics/nc_htgr.py originates from this project and is included
+      with the author's permission. See NOTICE.md.
+  - type: article
+    title: >-
+      OpenMC: A State-of-the-Art Monte Carlo Code for Research and Development
+    authors:
+      - family-names: Romano
+        given-names: Paul K.
+      - family-names: Horelik
+        given-names: Nicholas E.
+      - family-names: Herman
+        given-names: Bryan R.
+      - family-names: Nelson
+        given-names: Adam G.
+      - family-names: Forget
+        given-names: Benoit
+      - family-names: Smith
+        given-names: Kord
+    journal: "Annals of Nuclear Energy"
+    volume: 82
+    start: 90
+    end: 97
+    year: 2015
+    doi: "10.1016/j.anucene.2014.07.048"
