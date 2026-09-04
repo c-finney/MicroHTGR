@@ -1,0 +1,74 @@
+# ============================================================================
+# nc_htgr input deck
+# ----------------------------------------------------------------------------
+# Values below are the CHUDR design point. Edit them to analyse a different
+# HTGR channel; nothing in this file is hard-coded elsewhere in the framework.
+#
+# Originates from the HTGR-SCAPC project by Bryan Huynh
+# (https://github.com/bryanhhuynh/HTGR-SCAPC), included with permission.
+# See NOTICE.md in the repository root.
+# ============================================================================
+
+# Channel / core-side geometry
+L_m,3.965
+L_heated_m,2.379
+N,500
+D_cool_m,0.016
+D_fuel_hole_m,0.0127
+D_compact_m,0.01245
+pitch_m,0.025
+roughness_m,1.0e-5
+
+# Flow conditions
+m_dot_kg_s,0.0097
+P_in_Pa,4.6e6
+T_in_C,300.0
+flow_upward,false
+
+# Axial power profile
+# artifact from orginal SCA
+#   axial_shape = neutronics_table          
+#   axial_shape = cosine                    
+axial_shape,neutronics_table
+neutronics_file,BOLCriticalHeating.csv
+
+# Which channel to simulate:  average / hot / cold
+channel_case,hot
+
+# Peaking factor is only used when axial_shape = cosine
+peaking_factor,1.2
+
+# qprime_max_W_m is ignored when axial_shape = neutronics_table
+qprime_max_W_m,1600.0
+
+# Lattice sharing
+n_fuel_adjacent_to_coolant,6
+n_coolant_adjacent_to_fuel,3
+
+# Gap assumptions
+emiss_compact,0.85
+emiss_fuel_hole,0.85
+Pr_He,0.67
+
+# Thermal assumptions
+graphite_k_model,pcea_table
+k_compact_eff_W_mK,6.0
+packing_fraction,0.33
+
+# Reactor-scale
+N_fuel_channels,1218
+N_cool_channels,558
+
+# Direct Recuperated Brayton cycle
+P1_Pa,2e6
+T1_C,30.0
+pressure_ratio,2.3
+eta_c,0.90
+eta_t,0.90
+eps_recup,0.94
+dP_recup_cold_Pa,0.0
+dP_recup_hot_Pa,0.0
+dP_precooler_Pa,0.0
+dP_core_extra_Pa,0.0
+max_iter,100
+tol_K,1.0e-3
