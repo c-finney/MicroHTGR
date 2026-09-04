@@ -1,3 +1,26 @@
+"""
+Reactor Definition and Path Configuration
+=========================================
+
+This file *is* the reactor. Everything the framework builds — core layout,
+fuel, TRISO geometry, reactivity control, reflectors, temperatures, tallies,
+depletion schedule and the study to run — is a key in the ``params`` dictionary
+below. Analysing a different prismatic HTGR means editing this file, not the
+source.
+
+Start with ``study_execution_mode`` at the bottom to choose what runs, and
+``core_rings`` in the CORE LAYOUT section to lay out the core. Both list their
+valid options inline.
+
+The PATH CONFIGURATION section immediately below resolves every filesystem path
+from environment variables, so no machine-specific path is committed to the
+repository. See README.md for setup, and examples/ for a complete worked
+configuration.
+
+Unless otherwise stated, lengths are in cm, densities in kg/m3, and
+temperatures in Kelvin.
+"""
+
 import os
 
 # ====================================================================================================
