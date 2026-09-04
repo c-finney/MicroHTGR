@@ -1475,7 +1475,7 @@ def run_depletion_postprocessing(run_dir, params, pdf_output=False):
         _br = {}
         try:
             _nc_htgr_dir = os.path.normpath(
-                os.path.join(os.path.dirname(__file__), "..", "..", "HTGR-SCAPC"))
+                os.path.join(os.path.dirname(__file__), "..", "ThermalHydraulics"))
             if _nc_htgr_dir not in sys.path:
                 sys.path.insert(0, _nc_htgr_dir)
             from nc_htgr import (compressor_T2 as _nc_comp_T2,

@@ -1,3 +1,36 @@
+"""
+MicroHTGR — Main Simulation Driver
+==================================
+
+Entry point for every study mode in the framework. Builds the OpenMC model from
+``config.py``, runs the requested study, and dispatches post-processing.
+
+Study modes (set ``study_execution_mode`` in ``config.py``)::
+
+    SingleStudy       Single steady-state eigenvalue calculation.
+    ParametricStudy   Sweeps one parameter across a list of values.
+    ReactivityStudy   FTC / MTC / ITC via direct perturbation.
+    CriticalSearch    Searches control rod insertion for k_eff = 1.
+    DepletionStudy    All-rods-out depletion over the configured timesteps.
+    CSDepletionStudy  Depletion with a criticality search at every timestep,
+                      optionally coupled to the thermal-hydraulics solver.
+    RPTCalibration    Calibrates the Reactivity-equivalent Physical Transform
+                      radius against an explicit-TRISO reference.
+
+Running::
+
+    export OPENMC_CROSS_SECTIONS=/path/to/cross_sections.xml
+    python main_simulation.py
+
+Output is written to a timestamped directory under ``config.output_base_dir``.
+
+Derived from the NRIC Virtual Test Bed (VTB) prismatic HTGR assembly model,
+``htgr/assembly`` in https://github.com/idaholab/virtual_test_bed, which is
+distributed under the Creative Commons Attribution 4.0 International licence
+(CC BY 4.0). See NOTICE.md in the repository root for the full attribution and
+a description of the changes made.
+"""
+
 import os
 import math
 import shutil
@@ -28,7 +61,9 @@ POST_PROCESSING_DIR = os.path.join(SCRIPT_DIR, "PostProcessingScripts")
 if os.path.exists(POST_PROCESSING_DIR):
     sys.path.insert(0, POST_PROCESSING_DIR)
 
-cross_sections_path = '/home/cade/Desktop/OpenMC/CrossSections/cross_sections.xml'
+# Cross-section library location comes from config.py, which reads it from the
+# OPENMC_CROSS_SECTIONS environment variable (see README.md for setup).
+cross_sections_path = cfg.require_cross_sections()
 os.environ['OPENMC_CROSS_SECTIONS'] = cross_sections_path
 openmc.config['cross_sections'] = cross_sections_path
 
@@ -3103,8 +3138,9 @@ if __name__ == "__main__":
     now = datetime.now()
     run_name = f"htgr_run_{now.strftime('%m.%d.%Y_%H.%M.%S')}"
     
-    PARENT_DIR = os.path.dirname(SCRIPT_DIR)
-    OUTPUT_BASE = os.path.join(PARENT_DIR, "MicroHTGR_Output")
+    # Run directories are created under config.output_base_dir, which honours
+    # MICROHTGR_OUTPUT_DIR and otherwise defaults to ../MicroHTGR_Output.
+    OUTPUT_BASE = cfg.output_base_dir
     os.makedirs(OUTPUT_BASE, exist_ok=True)
     
     BASE_DIR = os.path.join(OUTPUT_BASE, run_name)

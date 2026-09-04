@@ -1,3 +1,64 @@
+import os
+
+# ====================================================================================================
+# PATH CONFIGURATION
+# ====================================================================================================
+#
+# Every filesystem path used by the framework is resolved here from environment
+# variables, so that no machine-specific absolute path is committed to the
+# repository. Set these in your shell before running (see README.md):
+#
+#   export OPENMC_CROSS_SECTIONS="/path/to/endfb-viii.0-hdf5/cross_sections.xml"
+#   export OPENMC_DEPLETION_CHAIN="/path/to/chain_endfb81_thermal.xml"   # optional
+#   export MICROHTGR_OUTPUT_DIR="/path/to/MicroHTGR_Output"              # optional
+#
+# OPENMC_CROSS_SECTIONS is the standard OpenMC variable and is the only one that
+# must be set; the other two fall back to sensible defaults derived from it and
+# from the repository location.
+
+REPO_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Continuous-energy cross-section library (cross_sections.xml).
+cross_sections_path = os.environ.get("OPENMC_CROSS_SECTIONS", "")
+
+# Depletion chain. Defaults to a chain file sitting alongside the cross-section
+# library, which is how the OpenMC data downloads are normally laid out.
+depletion_chain_path = os.environ.get(
+    "OPENMC_DEPLETION_CHAIN",
+    os.path.join(os.path.dirname(cross_sections_path), "chain_endfb81_thermal.xml")
+    if cross_sections_path else "",
+)
+
+# Root directory that every run directory is created under. Defaults to a
+# MicroHTGR_Output folder alongside the repository, keeping bulky OpenMC output
+# (statepoints, depletion results) out of the working tree.
+output_base_dir = os.environ.get(
+    "MICROHTGR_OUTPUT_DIR",
+    os.path.join(os.path.dirname(REPO_DIR), "MicroHTGR_Output"),
+)
+
+
+def require_cross_sections() -> str:
+    """
+    Return the configured cross-section path, raising a clear error if unset.
+
+    Called by the entry points rather than at import time so that modules which
+    only need the parameter dictionary (post-processing, for example) can be
+    imported without an OpenMC data installation present.
+    """
+    if not cross_sections_path:
+        raise EnvironmentError(
+            "OPENMC_CROSS_SECTIONS is not set. Point it at the cross_sections.xml "
+            "of your OpenMC data library, e.g.\n"
+            '  export OPENMC_CROSS_SECTIONS="$HOME/openmc_data/endfb-viii.0-hdf5/cross_sections.xml"'
+        )
+    if not os.path.exists(cross_sections_path):
+        raise FileNotFoundError(
+            f"OPENMC_CROSS_SECTIONS points at a file that does not exist: {cross_sections_path}"
+        )
+    return cross_sections_path
+
+
 # ====================================================================================================
 # GLOBAL PARAMETERS
 # ====================================================================================================
@@ -104,7 +165,10 @@ params = {
     #    "Isothermal"   — Uses a single temperature for all cells in the core
     #    "FromCSV"      — Extracts temp profile for coolant, compact, and matrix from a previous run's TH coupler CSV output file
     "isothermal_temp": 350,
-    "temp_profile_path": "/home/cade/Desktop/OpenMC/SeniorDesign/MicroHTGR_Output/htgr_run_04.14.2026_20.50.38_CriticalSearch/th_coupler_attempt2_th_iter_04_temperatures.csv",
+    # Path to a *_temperatures.csv written by a previous TH-coupled run.
+    # Only read when temp_profile_source == "FromCSV"; set it to an absolute path
+    # or to a path relative to output_base_dir.
+    "temp_profile_path": "",
 
     # ----- Ideal Temperature Profile -----
     "coolant_inlet": 573.15,
@@ -188,8 +252,8 @@ params = {
 
     # ----- Depletion Study Configuration -----
     "thermal_power_MW": 10,
-    "depletion_chain_file": "/home/cade/Desktop/OpenMC/CrossSections/chain_endfb81_thermal.xml",
-    # "depletion_chain_file": "/home/cade/Desktop/OpenMC/CrossSections/chain_casl_pwr.xml",
+    # Resolved from OPENMC_DEPLETION_CHAIN (see PATH CONFIGURATION above).
+    "depletion_chain_file": depletion_chain_path,
     "use_reduced_chain_file": True,
     # "depletion_timesteps_days": [1, 3, 3, 3, 10, 10, 10, 30, 30, 30, 60, 60, 60, 120, 120, 120, 180, 180, 180], # Normal depletion time steps
     "depletion_timesteps_days": [1, 3, 3, 3, 10, 10, 10, 30, 30, 30, 60, 60, 60, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90], # CS depletion time steps
@@ -203,7 +267,7 @@ params = {
 
     # ----- Depletion Restart Configuration -----
     "restart_depletion": False,
-    "restart_run_dir": "/home/cade/Desktop/OpenMC/SeniorDesign/MicroHTGR_Output/htgr_run_02.23.2026_14.00.15_Depletion",
+    "restart_run_dir": "",   # Absolute path to the depletion run directory to resume
     "restart_timesteps_days": [120], # Remaining timesteps to run (replaces original list)
     # To use restart:
     #    1. Set restart_depletion = True

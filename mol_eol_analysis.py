@@ -50,12 +50,11 @@ from datetime import datetime
 # Path setup — script can be called from anywhere
 # ---------------------------------------------------------------------------
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PARENT_DIR  = os.path.dirname(SCRIPT_DIR)   # SeniorDesign/
-sys.path.insert(0, PARENT_DIR)
 sys.path.insert(0, SCRIPT_DIR)
 
-# nc_htgr thermal-hydraulics solver
-_NC_HTGR_DIR = os.path.join(PARENT_DIR, "HTGR-SCAPC")
+# Single-channel thermal-hydraulics / Brayton cycle solver (nc_htgr.py).
+# Vendored into ThermalHydraulics/ — see NOTICE.md for provenance.
+_NC_HTGR_DIR = os.path.join(SCRIPT_DIR, "ThermalHydraulics")
 if os.path.isdir(_NC_HTGR_DIR):
     sys.path.insert(0, _NC_HTGR_DIR)
 
@@ -67,7 +66,11 @@ if os.path.isdir(_POST_PROC_DIR):
 import openmc
 import openmc.deplete
 
-cross_sections_path = '/home/cade/Desktop/OpenMC/CrossSections/cross_sections.xml'
+# Cross-section library location comes from config.py, which reads it from the
+# OPENMC_CROSS_SECTIONS environment variable (see README.md for setup).
+import config as _cfg
+
+cross_sections_path = _cfg.require_cross_sections()
 os.environ['OPENMC_CROSS_SECTIONS'] = cross_sections_path
 openmc.config['cross_sections'] = cross_sections_path
 
@@ -387,7 +390,7 @@ def _run_eigenvalue_with_depleted(params, depleted, run_dir, depletion_run_dir=N
     n_trisos : int
     fuel_clones : list[list[openmc.Material]]
     """
-    from MicroHTGRNeutronics_INL_HTGTR_Inspired import build_model
+    from main_simulation import build_model
 
     _assert_new_dir(run_dir, depletion_run_dir)
     os.makedirs(run_dir, exist_ok=True)

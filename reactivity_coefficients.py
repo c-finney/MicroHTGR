@@ -226,8 +226,8 @@ def run_reactivity_coefficients(
     if run_simulation_fn is None:
         SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
         sys.path.insert(0, SCRIPT_DIR)
-        from MicroHTGRNeutronics_INL_HTGTR_Inspired import run_simulation as _run_sim
-        from MicroHTGRNeutronics_INL_HTGTR_Inspired import run_post_processing as _run_pp
+        from main_simulation import run_simulation as _run_sim
+        from main_simulation import run_post_processing as _run_pp
         run_simulation_fn = _run_sim
         if run_post_processing_fn is None:
             run_post_processing_fn = _run_pp
@@ -400,20 +400,19 @@ if __name__ == "__main__":
     Standalone usage example.
 
     Expects the simulation modules (config.py, materials.py, assembly.py,
-    trisos.py, MicroHTGRNeutronics_INL_HTGTR_Inspired.py) to be on the
+    trisos.py, main_simulation.py) to be on the
     Python path or in the same directory.
     """
     SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
     sys.path.insert(0, SCRIPT_DIR)
 
     import config as cfg
-    from MicroHTGRNeutronics_INL_HTGTR_Inspired import run_simulation, run_post_processing
+    from main_simulation import run_simulation, run_post_processing
 
     now = datetime.now()
     run_name = f"htgr_reactivity_coeffs_{now.strftime('%m.%d.%Y_%H.%M.%S')}"
 
-    PARENT_DIR = os.path.dirname(SCRIPT_DIR)
-    OUTPUT_BASE = os.path.join(PARENT_DIR, "MicroHTGR_Output")
+    OUTPUT_BASE = cfg.output_base_dir
     os.makedirs(OUTPUT_BASE, exist_ok=True)
 
     output_dir = os.path.join(OUTPUT_BASE, run_name)
