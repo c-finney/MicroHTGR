@@ -369,7 +369,7 @@ It contains material derived from work by others, and redistribution requires ca
 
 - **NRIC Virtual Test Bed, prismatic HTGR assembly model.** [`htgr/assembly`](https://github.com/idaholab/virtual_test_bed/tree/main/htgr/assembly), [documentation](https://virtualtestbed.inl.gov/htgr/assembly/index.html). Licensed **[CC BY 4.0](licenses/CC-BY-4.0.txt)**. The material definitions in `materials.py`, the prismatic assembly parameterisation in `config.py`, and the assembly construction approach in `assembly.py` are derived from it. **This repository is a modified derivative and is not the VTB model**; `NOTICE.md` lists the changes. Neither INL, NRIC, nor the DOE endorses or has reviewed this work.
 
-- **HTGR-SCAPC** by **Bryan Huynh.** [github.com/bryanhhuynh/HTGR-SCAPC](https://github.com/bryanhhuynh/HTGR-SCAPC). `ThermalHydraulics/nc_htgr.py` originates from this project and is included **with the author's permission**, with the modifications listed in `NOTICE.md`.
+- **HTGR-SCAPC** by **Bryan Huynh.** [github.com/bryanhhuynh/HTGR-SCAPC](https://github.com/bryanhhuynh/HTGR-SCAPC). `ThermalHydraulics/nc_htgr.py` originates from this project and is included with the modifications listed in `NOTICE.md`.
 
 - **OpenMC.** MIT-licensed, developed by MIT and contributors. A dependency, not a derivative.
 
