@@ -5,7 +5,7 @@
 #
 # OpenMC is only distributed through conda-forge, so conda (or mamba) is the
 # supported installation route. Cross-section data is NOT installed by this
-# file — see README.md, "Cross-section data".
+# file; see README.md, "Cross-section data", for how to obtain it.
 name: microhtgr
 channels:
   - conda-forge

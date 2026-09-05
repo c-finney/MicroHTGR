@@ -787,10 +787,6 @@ def export_gamma_sources_csv(results, gamma_sources, last_operational_idx,
     found    = {}   # nuclide -> total atoms at last_operational_idx
     missing  = []
 
-    # # >>>>>>>>>> HACK: extract at timestep 15 instead of last_operational_idx <<<<<<<<<<
-    _HACK_TIMESTEP = 17
-    # # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-
     for nuc in gamma_sources:
         total = 0.0
         found_in_any = False
@@ -798,11 +794,8 @@ def export_gamma_sources_csv(results, gamma_sources, last_operational_idx,
             try:
                 _t, atoms = results.get_atoms(str(mid), nuc)
                 atoms = np.array(atoms, dtype=float)
-                # if last_operational_idx < len(atoms) and atoms[last_operational_idx] > 0:  # HACK: comment out
-                #     total += atoms[last_operational_idx]                                    # HACK: comment out
-                #     found_in_any = True
-                if _HACK_TIMESTEP < len(atoms) and atoms[_HACK_TIMESTEP] > 0:               # HACK
-                    total += atoms[_HACK_TIMESTEP]                                           # HACK
+                if last_operational_idx < len(atoms) and atoms[last_operational_idx] > 0:
+                    total += atoms[last_operational_idx]
                     found_in_any = True
             except Exception:
                 continue

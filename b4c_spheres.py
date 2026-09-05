@@ -7,10 +7,10 @@ system, in which B4C spheres fall by gravity into dedicated core channels.
 
 Mirrors the structure of ``trisos.py``: positions are generated once for a target
 packing fraction and channel radius, then filled into an OpenMC lattice. Modelling
-the spheres explicitly rather than as a homogenised B4C/He mixture captures the
-self-shielding of the absorber, which is significant at the packing fractions used
-here. Set ``use_homogenized_SS_rods`` in ``config.py`` to fall back to the
-homogenised treatment for faster scoping runs.
+the spheres explicitly rather than as a homogenised B4C/He mixture retains the
+spatial self-shielding of the absorber, which a homogenised mixture averages away.
+Set ``use_homogenized_SS_rods`` in ``config.py`` to fall back to the homogenised
+treatment for faster scoping runs (note that this will overrepresent control rod worth).
 """
 
 import types

@@ -10,8 +10,9 @@ Assembly types are selected per lattice position by the short codes listed under
 control rod, ``"rr"`` reflector, and so on), so an entirely different core layout
 is a config edit rather than a code change. Control rods are modelled with a
 continuous ``ZPlane`` at the exact insertion depth rather than being snapped to
-axial zone boundaries, which is what makes the criticality search able to resolve
-rod worth to arbitrary precision.
+axial zone boundaries, so the criticality search can place a bank anywhere in the
+active height rather than only at a zone edge. Search resolution is then set by
+``critical_search_k_tol`` and ``critical_search_max_iter``, not by the axial mesh.
 
 Each assembly is divided into ``n_ax_zones`` axial sections so that per-zone
 temperatures and, in depletion runs, per-zone fuel materials can be assigned.
